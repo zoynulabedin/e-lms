@@ -5,6 +5,7 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  useNavigate,
 } from "react-router";
 
 import type { Route } from "./+types/root";
@@ -46,30 +47,83 @@ export default function App() {
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-  let message = "Oops!";
-  let details = "An unexpected error occurred.";
+  const navigate = useNavigate();
+
+  let status = 500;
+  let title = "Something went wrong";
+  let message = "An unexpected error occurred. Please try again.";
+  let showStack = false;
   let stack: string | undefined;
 
   if (isRouteErrorResponse(error)) {
-    message = error.status === 404 ? "404" : "Error";
-    details =
-      error.status === 404
-        ? "The requested page could not be found."
-        : error.statusText || details;
-  } else if (import.meta.env.DEV && error && error instanceof Error) {
-    details = error.message;
-    stack = error.stack;
+    status = error.status;
+    if (error.status === 404) {
+      title = "Page not found";
+      message = "The page you're looking for doesn't exist or has been moved.";
+    } else if (error.status === 401 || error.status === 403) {
+      title = "Access denied";
+      message = "You don't have permission to view this page.";
+    } else if (error.status === 500) {
+      title = "Server error";
+      message = error.statusText || message;
+    } else {
+      title = `Error ${error.status}`;
+      message = error.statusText || message;
+    }
+  } else if (error instanceof Error) {
+    message = import.meta.env.DEV ? error.message : message;
+    stack = import.meta.env.DEV ? error.stack : undefined;
+    showStack = !!stack;
   }
 
+  const statusColors: Record<number, string> = {
+    404: "text-blue-400",
+    401: "text-yellow-400",
+    403: "text-yellow-400",
+    500: "text-red-400",
+  };
+  const statusColor = statusColors[status] || "text-red-400";
+
   return (
-    <main className="pt-16 p-4 container mx-auto">
-      <h1>{message}</h1>
-      <p>{details}</p>
-      {stack && (
-        <pre className="w-full p-4 overflow-x-auto">
-          <code>{stack}</code>
-        </pre>
-      )}
+    <main className="min-h-screen bg-linear-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-6">
+      <div className="w-full max-w-lg text-center">
+        {/* Status code */}
+        <p className={`text-8xl font-black mb-4 ${statusColor}`}>{status}</p>
+
+        {/* Title */}
+        <h1 className="text-2xl font-bold text-white mb-3">{title}</h1>
+
+        {/* Message */}
+        <p className="text-slate-400 text-sm mb-8 leading-relaxed">{message}</p>
+
+        {/* Actions */}
+        <div className="flex items-center justify-center gap-3">
+          <button
+            onClick={() => navigate(-1)}
+            className="px-5 py-2.5 rounded-lg border border-white/10 text-slate-300 text-sm font-medium hover:bg-white/5 transition-colors"
+          >
+            ← Go back
+          </button>
+          <button
+            onClick={() => navigate("/")}
+            className="px-5 py-2.5 rounded-lg bg-polaris-green text-white text-sm font-medium hover:bg-[#006e52] transition-colors"
+          >
+            Go to dashboard
+          </button>
+        </div>
+
+        {/* Dev stack trace */}
+        {showStack && stack && (
+          <details className="mt-8 text-left">
+            <summary className="text-xs text-slate-500 cursor-pointer hover:text-slate-400 mb-2">
+              Stack trace (dev only)
+            </summary>
+            <pre className="bg-black/40 border border-white/10 rounded-lg p-4 text-xs text-red-300 overflow-x-auto whitespace-pre-wrap">
+              {stack}
+            </pre>
+          </details>
+        )}
+      </div>
     </main>
   );
 }

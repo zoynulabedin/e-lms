@@ -9,9 +9,13 @@ declare global {
 
 function createPrismaClient() {
   const connectionString = process.env.DATABASE_URL!;
-  // PrismaNeon v7 accepts a PoolConfig object directly
-  const adapter = new PrismaNeon({ connectionString });
-  return new PrismaClient({ adapter });
+  // Use Neon serverless adapter only for Neon-hosted databases
+  if (connectionString.includes("neon.tech")) {
+    const adapter = new PrismaNeon({ connectionString });
+    return new PrismaClient({ adapter });
+  }
+  // Standard PostgreSQL (Coolify internal, Railway, etc.)
+  return new PrismaClient();
 }
 
 if (!global.__db) {

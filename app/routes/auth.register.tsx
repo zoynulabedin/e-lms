@@ -36,15 +36,19 @@ export async function action({ request }: ActionFunctionArgs) {
     );
   }
 
+  // First registered user becomes ADMIN
+  const userCount = await prisma.user.count();
+  const role = userCount === 0 ? "ADMIN" : "STUDENT";
+
   const passwordHash = await hashPassword(password);
   const user = await prisma.user.create({
-    data: { name, email, passwordHash, role: "STUDENT" },
+    data: { name, email, passwordHash, role },
   });
 
   const token = await createSession(user.id, user.role, request);
   const cookie = createSessionCookie(token);
 
-  return redirect("/student", {
+  return redirect(role === "ADMIN" ? "/" : "/student", {
     headers: { "Set-Cookie": cookie },
   });
 }
