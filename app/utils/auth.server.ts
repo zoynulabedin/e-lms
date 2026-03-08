@@ -161,73 +161,41 @@ export async function createSession(
     VALUES (${sessionId}, ${userId}, ${tokenHash}, ${deviceId}, ${ipAddress}, ${userAgent}, true, ${expiresAt}, NOW(), NOW())
   `;
 
-  console.log("[createSession] inserted sessionId:", sessionId, "tokenHash:", tokenHash.substring(0, 8) + "...");
-
   return token;
 }
 
 // ─── Session helpers ──────────────────────────────────────────────────────────
 
 export async function getSessionUser(request: Request) {
-  const cookieHeader = request.headers.get("Cookie");
-  console.log("[getSessionUser] Cookie header present:", !!cookieHeader, "length:", cookieHeader?.length ?? 0);
   const token = getTokenFromRequest(request);
-  if (!token) {
-    console.log("[getSessionUser] no token in cookie — headers:", request.headers.get("Cookie")?.substring(0, 50));
-    return null;
-  }
+  if (!token) return null;
 
   const payload = verifyToken(token);
-  if (!payload) {
-    console.log("[getSessionUser] JWT verification failed");
-    return null;
-  }
-
-  console.log("[getSessionUser] sessionId:", payload.sessionId, "userId:", payload.userId);
+  if (!payload) return null;
 
   const tokenHash = hashToken(token);
 
   // Validate session exists, is active, and not expired
   const sessions = await prisma.$queryRaw<Array<{ id: string; lastActiveAt: Date; isActive: boolean; expiresAt: Date }>>`
     SELECT id, "lastActiveAt", "isActive", "expiresAt" FROM "UserSession"
-    WHERE id = ${payload.sessionId}
+    WHERE id = ${payload.sessionId} AND token = ${tokenHash}
   `;
 
-  console.log("[getSessionUser] raw session rows:", JSON.stringify(sessions));
-
-  const validSessions = sessions.filter(
+  const validSession = sessions.find(
     (s) => s.isActive && new Date(s.expiresAt) > new Date()
   );
 
-  // Also verify token hash matches
-  const tokenSessions = await prisma.$queryRaw<Array<{ id: string }>>`
-    SELECT id FROM "UserSession"
-    WHERE id = ${payload.sessionId} AND token = ${tokenHash}
-  `;
-  console.log("[getSessionUser] token hash match:", tokenSessions.length > 0);
-
-  if (!validSessions.length || !tokenSessions.length) {
-    console.log("[getSessionUser] session not valid — isActive/expiry check failed or token mismatch");
-    return null;
-  }
-
-  const session = validSessions[0];
+  if (!validSession) return null;
 
   const users = await prisma.$queryRaw<any[]>`
     SELECT id, email, name, role, "isBanned", "isSuspended", "passwordHash"
     FROM "User" WHERE id = ${payload.userId} LIMIT 1
   `;
   const user = users[0] ?? null;
-  if (!user) {
-    console.log("[getSessionUser] user not found");
-    return null;
-  }
+  if (!user) return null;
 
   // Block banned/suspended users
-  if (user.isBanned || user.isSuspended) {
-    console.log("[getSessionUser] user is banned/suspended");
-    return null;
-  }
+  if (user.isBanned || user.isSuspended) return null;
 
   // Update last active timestamp (debounced — only update every 5 minutes)
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);

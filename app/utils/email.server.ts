@@ -43,6 +43,54 @@ export async function sendLicenseEmail({
   }
 }
 
+// ─── Admin order notification email ──────────────────────────────────────────
+
+export async function sendAdminOrderNotification({
+  orderId,
+  customerEmail,
+  licenses,
+}: {
+  orderId: string;
+  customerEmail: string;
+  licenses: Array<{ key: string; courseTitle: string }>;
+}) {
+  const adminEmail = process.env.ADMIN_EMAIL;
+  if (!adminEmail) return; // Skip if not configured
+
+  const licenseRows = licenses
+    .map(
+      (l) =>
+        `<tr><td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;">${l.courseTitle}</td><td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;font-family:monospace;color:#008060;">${l.key}</td></tr>`,
+    )
+    .join("");
+
+  try {
+    await resend.emails.send({
+      from: FROM,
+      to: adminEmail,
+      subject: `New order: ${licenses.length} license(s) generated — Order #${orderId}`,
+      html: `
+        <div style="font-family:Inter,sans-serif;max-width:600px;margin:0 auto;padding:32px 24px;background:#fff;border-radius:12px;border:1px solid #e5e7eb;">
+          <h1 style="font-size:20px;font-weight:700;color:#111827;margin-bottom:4px;">🛒 New Shopify Order</h1>
+          <p style="color:#6b7280;margin-bottom:20px;">Order <strong>#${orderId}</strong> from <strong>${customerEmail}</strong></p>
+          <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+            <thead>
+              <tr style="background:#f9fafb;">
+                <th style="text-align:left;padding:8px 12px;font-size:12px;color:#6b7280;font-weight:600;border-bottom:1px solid #e5e7eb;">Course</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12px;color:#6b7280;font-weight:600;border-bottom:1px solid #e5e7eb;">License Key</th>
+              </tr>
+            </thead>
+            <tbody>${licenseRows}</tbody>
+          </table>
+          <a href="${APP_URL}/licenses" style="display:inline-block;background:#008060;color:#fff;text-decoration:none;padding:10px 22px;border-radius:8px;font-weight:600;font-size:14px;">View in Dashboard →</a>
+        </div>
+      `,
+    });
+  } catch (err) {
+    console.error("[email] Failed to send admin notification:", err);
+  }
+}
+
 // ─── Password reset email ─────────────────────────────────────────────────────
 
 export async function sendPasswordResetEmail({

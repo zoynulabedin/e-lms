@@ -61,7 +61,6 @@ export async function action({ request }: ActionFunctionArgs) {
 
     const token = await createSession(user.id, user.role, request);
     const cookie = createSessionCookie(token);
-    console.log("[login] Set-Cookie header:", cookie.substring(0, 60) + "...");
 
     const destination = user.role === "ADMIN" ? "/?toast=welcome" : "/student?toast=welcome";
     return redirect(destination, {

@@ -3,7 +3,7 @@ import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { verifyShopifyWebhook } from "../utils/shopify.server";
 import { generateLicenseKey } from "../utils/auth.server";
-import { sendLicenseEmail } from "../utils/email.server";
+import { sendLicenseEmail, sendAdminOrderNotification } from "../utils/email.server";
 
 /**
  * Shopify Webhook Handler
@@ -83,10 +83,16 @@ export async function action({ request }: ActionFunctionArgs) {
     }
   }
 
-  // Send email with all license keys
+  // Send license email to customer and notify admin
   for (const { key, courseTitle } of generatedKeys) {
     await sendLicenseEmail({ to: customerEmail, licenseKey: key, courseTitle });
   }
+
+  await sendAdminOrderNotification({
+    orderId: String(order.id),
+    customerEmail,
+    licenses: generatedKeys.map(({ key, courseTitle }) => ({ key, courseTitle })),
+  });
 
   console.log(
     `[shopify webhook] Order ${order.id}: generated ${generatedKeys.length} license(s) for ${customerEmail}`,
