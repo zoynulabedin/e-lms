@@ -1,0 +1,296 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  STUDENT
+  CORPORATE
+}
+
+enum LicenseStatus {
+  ACTIVE
+  PENDING
+  REVOKED
+}
+
+enum ContentType {
+  STORYLINE
+  VIDEO
+}
+
+enum CourseType {
+  FREE
+  PAID
+}
+
+enum CourseStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum LessonType {
+  VIDEO
+  STORYLINE
+  TEXT
+  DOWNLOAD
+}
+
+enum FeedbackMode {
+  RETRY
+  REVEAL
+  DEFAULT
+}
+
+// ─── User ─────────────────────────────────────────────────────────────────────
+
+model User {
+  id             String           @id @default(uuid())
+  email          String           @unique
+  passwordHash   String
+  name           String
+  role           Role             @default(STUDENT)
+  isBanned       Boolean          @default(false)
+  isSuspended    Boolean          @default(false)
+  banReason      String?
+  maxDevices     Int              @default(1)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  licenses       License[]
+  progress       Progress[]
+  lessonProgress LessonProgress[]
+  enrollments    Enrollment[]
+  passwordResets PasswordReset[]
+  sessions       UserSession[]
+}
+
+model PasswordReset {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+// ─── User Session (Device Tracking) ──────────────────────────────────────────
+
+model UserSession {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token        String   @unique // JWT token hash or session ID
+  deviceId     String? // Browser fingerprint or user-agent hash
+  ipAddress    String?
+  userAgent    String?
+  isActive     Boolean  @default(true)
+  lastActiveAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+}
+
+// ─── Course ───────────────────────────────────────────────────────────────────
+
+model Course {
+  id               String       @id @default(uuid())
+  title            String
+  summary          String? // Short one-liner description
+  description      String? // Long rich-text description
+  category         String?
+  instructor       String?
+  courseType       CourseType   @default(FREE)
+  price            Float? // Only for PAID courses, in USD
+  shopifyProductId String? // Shopify Product ID for PAID courses
+  status           CourseStatus @default(DRAFT)
+  contentType      ContentType  @default(STORYLINE)
+  embedUrl         String? // Articulate Storyline / iframe URL (flat courses)
+  videoUrl         String? // YouTube, Vimeo, or direct .mp4 (flat courses)
+  introVideoUrl    String? // Course intro/preview video
+  thumbnailUrl     String? // Featured image URL
+  isPublic          Boolean      @default(false)
+  difficulty        String?      // "Beginner" | "Intermediate" | "Advanced"
+  isQA              Boolean      @default(false)
+  whatYouLearn      String?
+  targetAudience    String?
+  materialsIncluded String?
+  requirements      String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  licenses          License[]
+  progress          Progress[]
+  enrollments       Enrollment[]
+  modules           Module[]
+}
+
+// ─── Module (Section) ─────────────────────────────────────────────────────────
+
+model Module {
+  id        String   @id @default(uuid())
+  courseId  String
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  title     String
+  summary   String? // Section summary / description
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  lessons   Lesson[]
+  quizzes   Quiz[]
+}
+
+// ─── Lesson ───────────────────────────────────────────────────────────────────
+
+model Lesson {
+  id             String           @id @default(uuid())
+  moduleId       String
+  module         Module           @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  title          String
+  lessonType     LessonType       @default(VIDEO)
+  order          Int              @default(0)
+  content        String? // Rich text / markdown for TEXT lessons
+  videoUrl       String? // YouTube, Vimeo, or .mp4 for VIDEO lessons
+  embedUrl       String? // Articulate Storyline URL for STORYLINE lessons
+  resourceUrl    String? // Download link for DOWNLOAD lessons
+  thumbnailUrl   String? // Lesson thumbnail image URL
+  duration       Int? // Duration in seconds
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  lessonProgress LessonProgress[]
+}
+
+// ─── Quiz ─────────────────────────────────────────────────────────────────────
+
+model Quiz {
+  id                   String       @id @default(uuid())
+  moduleId             String
+  module               Module       @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  title                String
+  summary              String?
+  order                Int          @default(0)
+  timeLimit            Int          @default(0)
+  hideQuizTime         Boolean      @default(false)
+  feedbackMode         FeedbackMode @default(RETRY)
+  attemptsAllowed      Int          @default(10)
+  passingGrade         Int          @default(80)
+  maxQuestionsAllowed  Int          @default(10)
+  autoStart            Boolean      @default(false)
+  questionLayout       String       @default("SINGLE")
+  questionOrder        String       @default("RANDOM")
+  hideQuestionNumber   Boolean      @default(false)
+  shortAnswerCharLimit Int          @default(200)
+  essayCharLimit       Int          @default(500)
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  questions            Question[]
+}
+
+// ─── Question ─────────────────────────────────────────────────────────────────
+
+model Question {
+  id           String   @id @default(uuid())
+  quizId       String
+  quiz         Quiz     @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  questionType String   @default("MULTIPLE_CHOICE")
+  title        String
+  order        Int      @default(0)
+  points       Int      @default(1)
+  createdAt    DateTime @default(now())
+  answers      Answer[]
+}
+
+// ─── Answer ───────────────────────────────────────────────────────────────────
+
+model Answer {
+  id         String   @id @default(uuid())
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  text       String
+  isCorrect  Boolean  @default(false)
+  videoUrl   String?  // Optional video attached to this answer
+  imageUrl   String?  // Optional image for IMAGE_ANSWERING questions
+  isOptional Boolean  @default(false) // Mark answer as optional
+  matchText  String?  // Right-column text for MATCHING questions
+}
+
+// ─── LessonProgress ───────────────────────────────────────────────────────────
+
+model LessonProgress {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lessonId    String
+  lesson      Lesson    @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  isCompleted Boolean   @default(false)
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@unique([userId, lessonId])
+}
+
+// ─── Enrollment (for FREE courses) ────────────────────────────────────────────
+
+model Enrollment {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  courseId   String
+  course     Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  enrolledAt DateTime @default(now())
+
+  @@unique([userId, courseId])
+}
+
+// ─── License ──────────────────────────────────────────────────────────────────
+
+model License {
+  id             String        @id @default(uuid())
+  key            String        @unique
+  status         LicenseStatus @default(PENDING)
+  customerEmail  String
+  courseId       String
+  course         Course        @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?         @relation(fields: [userId], references: [id])
+  shopifyOrderId String?
+  isBulk         Boolean       @default(false)
+  redeemedAt     DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+// ─── QuizAttempt ──────────────────────────────────────────────────────────────
+
+model QuizAttempt {
+  id          String   @id @default(uuid())
+  userId      String
+  quizId      String
+  score       Int      @default(0)
+  maxScore    Int      @default(0)
+  isPassed    Boolean  @default(false)
+  submittedAt DateTime @default(now())
+
+  @@index([userId, quizId])
+}
+
+// ─── Progress ─────────────────────────────────────────────────────────────────
+
+model Progress {
+  id                String    @id @default(uuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  courseId          String
+  course            Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  completionPercent Int       @default(0)
+  isCompleted       Boolean   @default(false)
+  completedAt       DateTime?
+  certificateUrl    String?
+  lastAccessedAt    DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([userId, courseId])
+}
