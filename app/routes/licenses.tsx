@@ -4,6 +4,7 @@ import { data } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireAdmin } from "../utils/auth.server";
 import { generateLicenseKey } from "../utils/auth.server";
+import { sendLicenseEmail } from "../utils/email.server";
 import { useState } from "react";
 import {
   Plus,
@@ -19,6 +20,8 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Mail,
+  Loader2,
 } from "lucide-react";
 
 const PER_PAGE = 20;
@@ -57,6 +60,28 @@ export async function action({ request }: ActionFunctionArgs) {
 
   const formData = await request.formData();
   const intent = formData.get("intent");
+
+  if (intent === "resend_email") {
+    const id = formData.get("id") as string;
+    if (!id) return data({ error: "Missing license ID" }, { status: 400 });
+
+    const license = await prisma.license.findUnique({
+      where: { id },
+      include: { course: true },
+    });
+    if (!license) return data({ error: "License not found" }, { status: 404 });
+    if (!license.customerEmail || license.customerEmail.includes("placeholder")) {
+      return data({ error: "No valid customer email on this license." }, { status: 400 });
+    }
+
+    await sendLicenseEmail({
+      to: license.customerEmail,
+      licenseKey: license.key,
+      courseTitle: license.course?.title ?? "Your Course",
+    });
+
+    return data({ success: true, message: `Email resent to ${license.customerEmail}.` });
+  }
 
   if (intent === "revoke") {
     const id = formData.get("id") as string;
@@ -152,6 +177,32 @@ function CopyKeyButton({ licenseKey }: { licenseKey: string }) {
         </>
       )}
     </button>
+  );
+}
+
+function ResendEmailButton({ licenseId }: { licenseId: string }) {
+  const fetcher = useFetcher<typeof action>();
+  const isSending = fetcher.state === "submitting";
+  const sent = fetcher.data && "success" in fetcher.data && fetcher.data.success;
+
+  return (
+    <fetcher.Form method="post">
+      <input type="hidden" name="intent" value="resend_email" />
+      <input type="hidden" name="id" value={licenseId} />
+      <button
+        type="submit"
+        disabled={isSending}
+        className="flex w-full items-center gap-2 px-4 py-2 text-xs text-left text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+      >
+        {isSending ? (
+          <><Loader2 size={11} className="animate-spin" /> Sending…</>
+        ) : sent ? (
+          <><Check size={11} className="text-green-500" /><span className="text-green-600">Sent!</span></>
+        ) : (
+          <><Mail size={11} /> Resend Email</>
+        )}
+      </button>
+    </fetcher.Form>
   );
 }
 
@@ -310,9 +361,7 @@ export default function LicenseManagement() {
                         </button>
                         <div className="hidden group-hover:block absolute right-0 z-10 w-44 mt-1 origin-top-right bg-white border border-gray-200 divide-y divide-gray-100 rounded-lg shadow-lg">
                           <div className="py-1">
-                            <button className="block w-full px-4 py-2 text-xs text-left text-gray-700 hover:bg-gray-50">
-                              Resend Email
-                            </button>
+                            <ResendEmailButton licenseId={license.id} />
                             <CopyKeyButton licenseKey={license.key} />
                           </div>
                           {license.status !== "REVOKED" && (
