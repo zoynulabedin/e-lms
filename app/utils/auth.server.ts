@@ -199,8 +199,8 @@ export async function getSessionUser(request: Request) {
 
   // Update last active timestamp (debounced — only update every 5 minutes)
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-  if (session.lastActiveAt < fiveMinutesAgo) {
-    prisma.$executeRaw`UPDATE "UserSession" SET "lastActiveAt" = NOW() WHERE id = ${session.id}`
+  if (validSession.lastActiveAt < fiveMinutesAgo) {
+    prisma.$executeRaw`UPDATE "UserSession" SET "lastActiveAt" = NOW() WHERE id = ${validSession.id}`
       .catch(() => {}); // Non-critical
   }
 
