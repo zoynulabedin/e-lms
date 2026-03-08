@@ -56,10 +56,16 @@ export function hashToken(token: string): string {
 
 // ─── Cookie helpers ───────────────────────────────────────────────────────────
 
+// COOKIE_SECURE env var controls the Secure flag:
+// - "true"  → secure cookies (HTTPS only) — set this in production with valid HTTPS
+// - "false" → insecure cookies (works over HTTP) — use behind HTTP proxies
+// - unset   → defaults to false (safe default that works everywhere)
+const COOKIE_SECURE = process.env.COOKIE_SECURE === "true";
+
 export function createSessionCookie(token: string): string {
   return serialize(COOKIE_NAME, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: COOKIE_SECURE,
     sameSite: "lax",
     maxAge: 60 * 60 * 24 * SESSION_DURATION_DAYS,
     path: "/",
@@ -69,7 +75,7 @@ export function createSessionCookie(token: string): string {
 export function clearSessionCookie(): string {
   return serialize(COOKIE_NAME, "", {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: COOKIE_SECURE,
     sameSite: "lax",
     maxAge: 0,
     path: "/",
