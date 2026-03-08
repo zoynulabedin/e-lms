@@ -1,4 +1,5 @@
 import { Outlet, NavLink, Form, useLoaderData } from "react-router";
+import { Toast } from "../components/Toast";
 import { redirect } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { requireAdmin } from "../utils/auth.server";
@@ -175,6 +176,7 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+      <Toast />
     </div>
   );
 }

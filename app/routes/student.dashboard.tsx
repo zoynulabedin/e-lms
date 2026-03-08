@@ -1,5 +1,6 @@
 import { redirect } from "react-router";
 import { Link, useLoaderData, Form } from "react-router";
+import { Toast } from "../components/Toast";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireUser } from "../utils/auth.server";
@@ -86,6 +87,7 @@ export default function StudentDashboard() {
 
   return (
     <div className="min-h-screen bg-slate-950">
+      <Toast />
       {/* Header */}
       <header className="bg-slate-900/80 backdrop-blur border-b border-slate-800 sticky top-0 z-30">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
