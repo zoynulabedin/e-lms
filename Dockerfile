@@ -1,22 +1,43 @@
-FROM node:20-alpine AS development-dependencies-env
-COPY . /app
+# ── Stage 1: Install all deps (including devDeps for build) ──────────────────
+FROM node:20-alpine AS build-deps
 WORKDIR /app
+COPY package.json package-lock.json ./
 RUN npm ci
 
-FROM node:20-alpine AS production-dependencies-env
-COPY ./package.json package-lock.json /app/
+# ── Stage 2: Build ────────────────────────────────────────────────────────────
+FROM node:20-alpine AS build
 WORKDIR /app
-RUN npm ci --omit=dev
-
-FROM node:20-alpine AS build-env
-COPY . /app/
-COPY --from=development-dependencies-env /app/node_modules /app/node_modules
-WORKDIR /app
+COPY --from=build-deps /app/node_modules ./node_modules
+COPY . .
+# Generate Prisma client from schema
+RUN npx prisma generate
+# Build the React Router app
 RUN npm run build
 
-FROM node:20-alpine
-COPY ./package.json package-lock.json /app/
-COPY --from=production-dependencies-env /app/node_modules /app/node_modules
-COPY --from=build-env /app/build /app/build
+# ── Stage 3: Production deps only ─────────────────────────────────────────────
+FROM node:20-alpine AS prod-deps
 WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+# ── Stage 4: Final image ──────────────────────────────────────────────────────
+FROM node:20-alpine
+WORKDIR /app
+
+# Copy production node_modules
+COPY --from=prod-deps /app/node_modules ./node_modules
+
+# Copy generated Prisma client (built in stage 2)
+COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
+
+# Copy build output
+COPY --from=build /app/build ./build
+
+# Copy package.json for npm start
+COPY package.json ./
+
+EXPOSE 3000
+ENV NODE_ENV=production
+ENV PORT=3000
+
 CMD ["npm", "run", "start"]
