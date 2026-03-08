@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { PrismaNeon } from "@prisma/adapter-neon";
+import { PrismaPg } from "@prisma/adapter-pg";
 import "dotenv/config";
 
 declare global {
@@ -9,13 +10,14 @@ declare global {
 
 function createPrismaClient() {
   const connectionString = process.env.DATABASE_URL!;
-  // Use Neon serverless adapter only for Neon-hosted databases
+  // Use Neon serverless adapter for Neon-hosted databases
   if (connectionString.includes("neon.tech")) {
     const adapter = new PrismaNeon({ connectionString });
     return new PrismaClient({ adapter });
   }
   // Standard PostgreSQL (Coolify internal, Railway, etc.)
-  return new PrismaClient();
+  const adapter = new PrismaPg({ connectionString });
+  return new PrismaClient({ adapter });
 }
 
 if (!global.__db) {
