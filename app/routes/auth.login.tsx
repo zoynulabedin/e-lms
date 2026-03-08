@@ -32,36 +32,43 @@ export async function action({ request }: ActionFunctionArgs) {
     return data({ error: "Email and password are required." }, { status: 400 });
   }
 
-  const user = await prisma.user.findUnique({ where: { email } });
+  try {
+    const user = await prisma.user.findUnique({ where: { email } });
 
-  if (!user || !(await verifyPassword(password, user.passwordHash))) {
-    return data({ error: "Invalid email or password." }, { status: 401 });
-  }
+    if (!user || !(await verifyPassword(password, user.passwordHash))) {
+      return data({ error: "Invalid email or password." }, { status: 401 });
+    }
 
-  if (user.isBanned) {
+    if (user.isBanned) {
+      return data(
+        {
+          error: `Your account has been banned${user.banReason ? ": " + user.banReason : ". Contact support for assistance."}`,
+        },
+        { status: 403 },
+      );
+    }
+
+    if (user.isSuspended) {
+      return data(
+        { error: "Your account is suspended. Contact support for assistance." },
+        { status: 403 },
+      );
+    }
+
+    const token = await createSession(user.id, user.role, request);
+    const cookie = createSessionCookie(token);
+
+    const destination = user.role === "ADMIN" ? "/" : "/student";
+    return redirect(destination, {
+      headers: { "Set-Cookie": cookie },
+    });
+  } catch (err) {
+    console.error("[login] action error:", err);
     return data(
-      {
-        error: `Your account has been banned${user.banReason ? ": " + user.banReason : ". Contact support for assistance."}`,
-      },
-      { status: 403 },
+      { error: "Login failed. Please try again." },
+      { status: 500 },
     );
   }
-
-  if (user.isSuspended) {
-    return data(
-      { error: "Your account is suspended. Contact support for assistance." },
-      { status: 403 },
-    );
-  }
-
-  // Create DB session (invalidates previous sessions — single-device enforcement)
-  const token = await createSession(user.id, user.role, request);
-  const cookie = createSessionCookie(token);
-
-  const destination = user.role === "ADMIN" ? "/" : "/student";
-  return redirect(destination, {
-    headers: { "Set-Cookie": cookie },
-  });
 }
 
 export default function Login() {
