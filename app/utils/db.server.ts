@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import { PrismaNeon } from "@prisma/adapter-neon";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
 import "dotenv/config";
 
 declare global {
@@ -16,7 +17,9 @@ function createPrismaClient() {
     return new PrismaClient({ adapter });
   }
   // Standard PostgreSQL (Coolify internal, Railway, etc.)
-  const adapter = new PrismaPg({ connectionString });
+  // Use explicit pg.Pool for the officially supported adapter API
+  const pool = new Pool({ connectionString });
+  const adapter = new PrismaPg(pool);
   return new PrismaClient({ adapter });
 }
 
