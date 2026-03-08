@@ -1,7 +1,7 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { parse, serialize } from "cookie";
-import crypto from "crypto";
+import crypto, { randomUUID } from "crypto";
 import { prisma } from "./db.server";
 import { redirect } from "react-router";
 
@@ -124,53 +124,36 @@ export async function createSession(
   `;
   const limit = rows[0]?.maxDevices ?? 1;
 
-  // Get active sessions for the user, ordered by lastActiveAt ascending (oldest first)
-  const activeSessions = await prisma.userSession.findMany({
-    where: { userId, isActive: true },
-    orderBy: { lastActiveAt: "asc" },
-  });
+  // Get active sessions ordered by lastActiveAt ascending (oldest first)
+  const activeSessions = await prisma.$queryRaw<Array<{ id: string; lastActiveAt: Date }>>`
+    SELECT id, "lastActiveAt" FROM "UserSession"
+    WHERE "userId" = ${userId} AND "isActive" = true
+    ORDER BY "lastActiveAt" ASC
+  `;
 
-  // If we are about to exceed the limit, invalidate the oldest sessions
-  // We want to leave exactly (limit - 1) active sessions before adding the new one.
+  // Invalidate oldest sessions if over device limit
   if (limit > 0 && activeSessions.length >= limit) {
-    const sessionsToInvalidate = activeSessions.length - limit + 1;
     const idsToInvalidate = activeSessions
-      .slice(0, sessionsToInvalidate)
+      .slice(0, activeSessions.length - limit + 1)
       .map((s) => s.id);
-
-    await prisma.userSession.updateMany({
-      where: { id: { in: idsToInvalidate } },
-      data: { isActive: false },
-    });
+    for (const sid of idsToInvalidate) {
+      await prisma.$executeRaw`UPDATE "UserSession" SET "isActive" = false WHERE id = ${sid}`;
+    }
   }
 
   const expiresAt = new Date(
     Date.now() + SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000,
   );
 
-  // Create placeholder session to get its ID
-  const session = await prisma.userSession.create({
-    data: {
-      userId,
-      token: "pending",
-      deviceId,
-      ipAddress,
-      userAgent,
-      isActive: true,
-      expiresAt,
-      lastActiveAt: new Date(),
-    },
-  });
-
-  // Now sign token with the session ID
-  const token = signToken({ userId, role, sessionId: session.id });
+  // Generate session ID upfront so we can embed it in the JWT
+  const sessionId = randomUUID();
+  const token = signToken({ userId, role, sessionId });
   const tokenHash = hashToken(token);
 
-  // Store the hash (not the raw JWT)
-  await prisma.userSession.update({
-    where: { id: session.id },
-    data: { token: tokenHash },
-  });
+  await prisma.$executeRaw`
+    INSERT INTO "UserSession" (id, "userId", token, "deviceId", "ipAddress", "userAgent", "isActive", "expiresAt", "lastActiveAt", "createdAt")
+    VALUES (${sessionId}, ${userId}, ${tokenHash}, ${deviceId}, ${ipAddress}, ${userAgent}, true, ${expiresAt}, NOW(), NOW())
+  `;
 
   return token;
 }
@@ -187,16 +170,17 @@ export async function getSessionUser(request: Request) {
   const tokenHash = hashToken(token);
 
   // Validate session exists, is active, and not expired
-  const session = await prisma.userSession.findFirst({
-    where: {
-      id: payload.sessionId,
-      token: tokenHash,
-      isActive: true,
-      expiresAt: { gt: new Date() },
-    },
-  });
+  const sessions = await prisma.$queryRaw<Array<{ id: string; lastActiveAt: Date }>>`
+    SELECT id, "lastActiveAt" FROM "UserSession"
+    WHERE id = ${payload.sessionId}
+      AND token = ${tokenHash}
+      AND "isActive" = true
+      AND "expiresAt" > NOW()
+  `;
 
-  if (!session) return null;
+  if (!sessions.length) return null;
+
+  const session = sessions[0];
 
   const user = await prisma.user.findUnique({ where: { id: payload.userId } });
   if (!user) return null;
@@ -207,11 +191,7 @@ export async function getSessionUser(request: Request) {
   // Update last active timestamp (debounced — only update every 5 minutes)
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
   if (session.lastActiveAt < fiveMinutesAgo) {
-    await prisma.userSession
-      .update({
-        where: { id: session.id },
-        data: { lastActiveAt: new Date() },
-      })
+    prisma.$executeRaw`UPDATE "UserSession" SET "lastActiveAt" = NOW() WHERE id = ${session.id}`
       .catch(() => {}); // Non-critical
   }
 
@@ -226,11 +206,7 @@ export async function invalidateSession(request: Request): Promise<void> {
   if (!payload) return;
 
   const tokenHash = hashToken(token);
-  await prisma.userSession
-    .updateMany({
-      where: { token: tokenHash },
-      data: { isActive: false },
-    })
+  await prisma.$executeRaw`UPDATE "UserSession" SET "isActive" = false WHERE token = ${tokenHash}`
     .catch(() => {});
 }
 
