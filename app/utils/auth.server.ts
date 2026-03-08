@@ -182,7 +182,11 @@ export async function getSessionUser(request: Request) {
 
   const session = sessions[0];
 
-  const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+  const users = await prisma.$queryRaw<any[]>`
+    SELECT id, email, name, role, "isBanned", "isSuspended", "passwordHash"
+    FROM "User" WHERE id = ${payload.userId} LIMIT 1
+  `;
+  const user = users[0] ?? null;
   if (!user) return null;
 
   // Block banned/suspended users

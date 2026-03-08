@@ -33,7 +33,11 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   try {
-    const user = await prisma.user.findUnique({ where: { email } });
+    const users = await prisma.$queryRaw<any[]>`
+      SELECT id, email, "passwordHash", name, role, "isBanned", "banReason", "isSuspended"
+      FROM "User" WHERE email = ${email} LIMIT 1
+    `;
+    const user = users[0] ?? null;
 
     if (!user || !(await verifyPassword(password, user.passwordHash))) {
       return data({ error: "Invalid email or password." }, { status: 401 });
