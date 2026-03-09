@@ -24,6 +24,8 @@ import {
   Clock,
   ChevronDown,
   ChevronUp,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -179,6 +181,37 @@ export async function action({ request }: ActionFunctionArgs) {
   if (intent === "unban_user") {
     await prisma.user.update({ where: { id: userId }, data: { isBanned: false, isSuspended: false, banReason: null } });
     return data({ success: true });
+  }
+
+  if (intent === "edit_user") {
+    const name = String(formData.get("name") || "").trim();
+    const email = String(formData.get("email") || "").trim().toLowerCase();
+    const password = String(formData.get("password") || "");
+    const role = (formData.get("role") as string) || "STUDENT";
+
+    if (!name || !email) {
+      return data({ error: "Name and email are required." }, { status: 400 });
+    }
+    const conflict = await prisma.user.findFirst({ where: { email, NOT: { id: userId } } });
+    if (conflict) return data({ error: "That email is already used by another account." }, { status: 409 });
+
+    const updateData: any = { name, email, role };
+    if (password.length >= 8) {
+      updateData.passwordHash = await hashPassword(password);
+    } else if (password.length > 0) {
+      return data({ error: "New password must be at least 8 characters." }, { status: 400 });
+    }
+
+    await prisma.user.update({ where: { id: userId }, data: updateData });
+    return data({ success: true, edited: true });
+  }
+
+  if (intent === "delete_user") {
+    // Cascade: revoke sessions + licenses, then delete user
+    await prisma.userSession.deleteMany({ where: { userId } });
+    await prisma.license.updateMany({ where: { userId }, data: { userId: null, status: "REVOKED" } });
+    await prisma.user.delete({ where: { id: userId } });
+    return data({ success: true, deleted: true });
   }
 
   return null;
@@ -348,19 +381,106 @@ function SessionsPanel({ user, fetcher }: { user: any; fetcher: any }) {
   );
 }
 
+// ── Edit User Modal ───────────────────────────────────────────────────────────
+
+function EditUserModal({ user, onClose, fetcher }: { user: any; onClose: () => void; fetcher: any }) {
+  const [showPw, setShowPw] = useState(false);
+  const result = fetcher.data as any;
+  const isSubmitting = fetcher.state === "submitting";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/50 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md border border-gray-100 overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gray-50/60">
+          <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
+            <Pencil size={15} className="text-[#008060]" /> Edit User
+          </h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition-colors">
+            <X size={18} />
+          </button>
+        </div>
+
+        <fetcher.Form method="post" className="p-6 space-y-4">
+          <input type="hidden" name="intent" value="edit_user" />
+          <input type="hidden" name="userId" value={user.id} />
+
+          {result?.error && (
+            <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-2.5 text-sm">
+              <AlertCircle size={14} className="shrink-0" /> {result.error}
+            </div>
+          )}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Full Name <span className="text-red-500">*</span></label>
+            <input name="name" type="text" required defaultValue={user.name} placeholder="Jane Smith"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#008060] focus:ring-1 focus:ring-[#008060]" />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Email Address <span className="text-red-500">*</span></label>
+            <input name="email" type="email" required defaultValue={user.email}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#008060] focus:ring-1 focus:ring-[#008060]" />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              New Password <span className="text-gray-400 font-normal">(leave blank to keep current)</span>
+            </label>
+            <div className="relative">
+              <input name="password" type={showPw ? "text" : "password"} placeholder="Min. 8 characters"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-9 text-sm focus:outline-none focus:border-[#008060] focus:ring-1 focus:ring-[#008060]" />
+              <button type="button" onClick={() => setShowPw(v => !v)}
+                className="absolute inset-y-0 right-2.5 flex items-center text-gray-400 hover:text-gray-600">
+                {showPw ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Role</label>
+            <select name="role" defaultValue={user.role}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#008060]">
+              <option value="STUDENT">Student</option>
+              <option value="ADMIN">Admin</option>
+              <option value="CORPORATE">Corporate</option>
+            </select>
+          </div>
+
+          <div className="flex justify-end gap-3 pt-2 border-t border-gray-100">
+            <button type="button" onClick={onClose}
+              className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+              Cancel
+            </button>
+            <button type="submit" disabled={isSubmitting}
+              className="px-5 py-2 text-sm font-medium text-white bg-[#008060] rounded-lg hover:bg-[#006e52] disabled:opacity-60 shadow-sm">
+              {isSubmitting ? "Saving…" : "Save Changes"}
+            </button>
+          </div>
+        </fetcher.Form>
+      </div>
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function UsersPage() {
   const { users, q, roleFilter, page, totalPages, total } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const createFetcher = useFetcher<typeof action>();
+  const editFetcher = useFetcher<typeof action>();
   const [showCreate, setShowCreate] = useState(false);
+  const [editUser, setEditUser] = useState<any>(null);
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
 
   const createResult = createFetcher.data as any;
+  const editResult = editFetcher.data as any;
 
   if (createResult?.created && showCreate) {
     setTimeout(() => setShowCreate(false), 300);
+  }
+  if (editResult?.edited && editUser) {
+    setTimeout(() => setEditUser(null), 300);
   }
 
   function toggleSessions(userId: string) {
@@ -385,10 +505,15 @@ export default function UsersPage() {
         </button>
       </div>
 
-      {/* Success banner */}
+      {/* Success banners */}
       {createResult?.created && (
         <div className="flex items-center gap-2 bg-green-50 border border-green-200 text-green-800 rounded-lg px-4 py-3 text-sm">
           <CheckCircle2 size={15} /> User created successfully.
+        </div>
+      )}
+      {editResult?.edited && (
+        <div className="flex items-center gap-2 bg-green-50 border border-green-200 text-green-800 rounded-lg px-4 py-3 text-sm">
+          <CheckCircle2 size={15} /> User updated successfully.
         </div>
       )}
 
@@ -563,6 +688,25 @@ export default function UsersPage() {
                                 <Ban size={13} />
                               </button>
                             </fetcher.Form>
+
+                            {/* Edit */}
+                            <button
+                              type="button"
+                              title="Edit user"
+                              onClick={() => setEditUser(user)}
+                              className="text-gray-400 hover:text-[#008060] p-1.5 rounded hover:bg-green-50 transition-colors"
+                            >
+                              <Pencil size={13} />
+                            </button>
+
+                            {/* Delete */}
+                            <fetcher.Form method="post" onSubmit={e => { if (!confirm(`Permanently delete ${user.name}? This cannot be undone.`)) e.preventDefault(); }}>
+                              <input type="hidden" name="intent" value="delete_user" />
+                              <input type="hidden" name="userId" value={user.id} />
+                              <button type="submit" title="Delete user" className="text-gray-400 hover:text-red-600 p-1.5 rounded hover:bg-red-50 transition-colors">
+                                <Trash2 size={13} />
+                              </button>
+                            </fetcher.Form>
                           </div>
                         </td>
                       </tr>
@@ -614,6 +758,9 @@ export default function UsersPage() {
 
       {/* Create User Modal */}
       {showCreate && <CreateUserModal onClose={() => setShowCreate(false)} fetcher={createFetcher} />}
+
+      {/* Edit User Modal */}
+      {editUser && <EditUserModal user={editUser} onClose={() => setEditUser(null)} fetcher={editFetcher} />}
     </div>
   );
 }
