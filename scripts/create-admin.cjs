@@ -36,7 +36,7 @@ async function main() {
   console.log(`   Password: ${password}`);
   console.log(`   ID: ${id}`);
 }
-
+//=
 main()
   .catch((e) => {
     console.error(e);
