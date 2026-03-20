@@ -1,7 +1,7 @@
 import { Resend } from "resend";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
-const FROM = process.env.EMAIL_FROM || "noreply@instructionalgraphics.com";
+const FROM = process.env.EMAIL_FROM || "noreply@instructionalgraphics.org";
 const APP_URL = process.env.APP_URL || "http://localhost:5173";
 
 // ─── License delivery email ───────────────────────────────────────────────────
@@ -17,12 +17,11 @@ export async function sendLicenseEmail({
 }) {
   const redeemUrl = `${APP_URL}/redeem?key=${licenseKey}`;
 
-  try {
-    await resend.emails.send({
-      from: FROM,
-      to,
-      subject: `🎓 Your course access is ready — ${courseTitle}`,
-      html: `
+  const { data, error } = await resend.emails.send({
+    from: FROM,
+    to: [to],
+    subject: `Your course access is ready — ${courseTitle}`,
+    html: `
 <!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/></head>
@@ -90,7 +89,7 @@ export async function sendLicenseEmail({
           <!-- CTA button -->
           <div style="text-align:center;margin-bottom:28px;">
             <a href="${redeemUrl}" style="display:inline-block;background:#008060;color:#ffffff;text-decoration:none;padding:14px 36px;border-radius:8px;font-weight:700;font-size:16px;">
-              Activate Your Course →
+              Activate Your Course &rarr;
             </a>
           </div>
 
@@ -117,11 +116,13 @@ export async function sendLicenseEmail({
   </table>
 </body>
 </html>
-      `,
-    });
-  } catch (err) {
-    // Log but don't throw — email failure shouldn't break the purchase flow
-    console.error("[email] Failed to send license email:", err);
+    `,
+  });
+
+  if (error) {
+    console.error("[email] Failed to send license email:", error);
+  } else {
+    console.log("[email] License email sent:", data?.id);
   }
 }
 
@@ -137,7 +138,7 @@ export async function sendAdminOrderNotification({
   licenses: Array<{ key: string; courseTitle: string }>;
 }) {
   const adminEmail = process.env.ADMIN_EMAIL;
-  if (!adminEmail) return; // Skip if not configured
+  if (!adminEmail) return;
 
   const licenseRows = licenses
     .map(
@@ -146,30 +147,32 @@ export async function sendAdminOrderNotification({
     )
     .join("");
 
-  try {
-    await resend.emails.send({
-      from: FROM,
-      to: adminEmail,
-      subject: `New order: ${licenses.length} license(s) generated — Order #${orderId}`,
-      html: `
-        <div style="font-family:Inter,sans-serif;max-width:600px;margin:0 auto;padding:32px 24px;background:#fff;border-radius:12px;border:1px solid #e5e7eb;">
-          <h1 style="font-size:20px;font-weight:700;color:#111827;margin-bottom:4px;">🛒 New Shopify Order</h1>
-          <p style="color:#6b7280;margin-bottom:20px;">Order <strong>#${orderId}</strong> from <strong>${customerEmail}</strong></p>
-          <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
-            <thead>
-              <tr style="background:#f9fafb;">
-                <th style="text-align:left;padding:8px 12px;font-size:12px;color:#6b7280;font-weight:600;border-bottom:1px solid #e5e7eb;">Course</th>
-                <th style="text-align:left;padding:8px 12px;font-size:12px;color:#6b7280;font-weight:600;border-bottom:1px solid #e5e7eb;">License Key</th>
-              </tr>
-            </thead>
-            <tbody>${licenseRows}</tbody>
-          </table>
-          <a href="${APP_URL}/licenses" style="display:inline-block;background:#008060;color:#fff;text-decoration:none;padding:10px 22px;border-radius:8px;font-weight:600;font-size:14px;">View in Dashboard →</a>
-        </div>
-      `,
-    });
-  } catch (err) {
-    console.error("[email] Failed to send admin notification:", err);
+  const { data, error } = await resend.emails.send({
+    from: FROM,
+    to: [adminEmail],
+    subject: `New order: ${licenses.length} license(s) generated — Order #${orderId}`,
+    html: `
+      <div style="font-family:Inter,sans-serif;max-width:600px;margin:0 auto;padding:32px 24px;background:#fff;border-radius:12px;border:1px solid #e5e7eb;">
+        <h1 style="font-size:20px;font-weight:700;color:#111827;margin-bottom:4px;">New Shopify Order</h1>
+        <p style="color:#6b7280;margin-bottom:20px;">Order <strong>#${orderId}</strong> from <strong>${customerEmail}</strong></p>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+          <thead>
+            <tr style="background:#f9fafb;">
+              <th style="text-align:left;padding:8px 12px;font-size:12px;color:#6b7280;font-weight:600;border-bottom:1px solid #e5e7eb;">Course</th>
+              <th style="text-align:left;padding:8px 12px;font-size:12px;color:#6b7280;font-weight:600;border-bottom:1px solid #e5e7eb;">License Key</th>
+            </tr>
+          </thead>
+          <tbody>${licenseRows}</tbody>
+        </table>
+        <a href="${APP_URL}/licenses" style="display:inline-block;background:#008060;color:#fff;text-decoration:none;padding:10px 22px;border-radius:8px;font-weight:600;font-size:14px;">View in Dashboard &rarr;</a>
+      </div>
+    `,
+  });
+
+  if (error) {
+    console.error("[email] Failed to send admin notification:", error);
+  } else {
+    console.log("[email] Admin notification sent:", data?.id);
   }
 }
 
@@ -184,23 +187,25 @@ export async function sendPasswordResetEmail({
 }) {
   const resetUrl = `${APP_URL}/auth/reset-password?token=${token}`;
 
-  try {
-    await resend.emails.send({
-      from: FROM,
-      to,
-      subject: "Reset your password",
-      html: `
-        <div style="font-family:Inter,sans-serif;max-width:580px;margin:0 auto;padding:32px 24px;background:#fff;border-radius:12px;border:1px solid #e5e7eb;">
-          <h1 style="font-size:22px;font-weight:700;color:#111827;margin-bottom:8px;">🔐 Password Reset</h1>
-          <p style="color:#6b7280;margin-bottom:24px;">We received a request to reset your password. Click the button below to choose a new one. This link expires in 1 hour.</p>
-          <a href="${resetUrl}" style="display:inline-block;background:#008060;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px;">Reset Password →</a>
-          <p style="color:#9ca3af;font-size:13px;">Or paste this link in your browser:<br/><a href="${resetUrl}" style="color:#008060;">${resetUrl}</a></p>
-          <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;"/>
-          <p style="color:#9ca3af;font-size:12px;">If you did not request a password reset, you can safely ignore this email.</p>
-        </div>
-      `,
-    });
-  } catch (err) {
-    console.error("[email] Failed to send reset email:", err);
+  const { data, error } = await resend.emails.send({
+    from: FROM,
+    to: [to],
+    subject: "Reset your password",
+    html: `
+      <div style="font-family:Inter,sans-serif;max-width:580px;margin:0 auto;padding:32px 24px;background:#fff;border-radius:12px;border:1px solid #e5e7eb;">
+        <h1 style="font-size:22px;font-weight:700;color:#111827;margin-bottom:8px;">Password Reset</h1>
+        <p style="color:#6b7280;margin-bottom:24px;">We received a request to reset your password. Click the button below to choose a new one. This link expires in 1 hour.</p>
+        <a href="${resetUrl}" style="display:inline-block;background:#008060;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px;">Reset Password &rarr;</a>
+        <p style="color:#9ca3af;font-size:13px;">Or paste this link in your browser:<br/><a href="${resetUrl}" style="color:#008060;">${resetUrl}</a></p>
+        <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;"/>
+        <p style="color:#9ca3af;font-size:12px;">If you did not request a password reset, you can safely ignore this email.</p>
+      </div>
+    `,
+  });
+
+  if (error) {
+    console.error("[email] Failed to send reset email:", error);
+  } else {
+    console.log("[email] Password reset email sent:", data?.id);
   }
 }
