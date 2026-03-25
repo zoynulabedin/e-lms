@@ -1,8 +1,6 @@
 import { PrismaClient } from "@prisma/client";
-import { PrismaNeon } from "@prisma/adapter-neon";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
-import "dotenv/config";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -10,15 +8,14 @@ declare global {
 }
 
 function createPrismaClient() {
-  const connectionString = process.env.DATABASE_URL!;
-  // Use Neon serverless adapter for Neon-hosted databases
-  if (connectionString.includes("neon.tech")) {
-    const adapter = new PrismaNeon({ connectionString });
-    return new PrismaClient({ adapter });
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error(
+      "DATABASE_URL environment variable is not set. Add it to your .env file."
+    );
   }
-  // Standard PostgreSQL (Coolify internal, Railway, etc.)
-  // Use explicit pg.Pool for the officially supported adapter API
-  const pool = new Pool({ connectionString });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pool = new Pool({ connectionString }) as any;
   const adapter = new PrismaPg(pool);
   return new PrismaClient({ adapter });
 }
