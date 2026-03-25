@@ -4,6 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL") // এই লাইনটি যোগ করুন
 }
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
@@ -98,23 +99,23 @@ model UserSession {
 // ─── Course ───────────────────────────────────────────────────────────────────
 
 model Course {
-  id               String       @id @default(uuid())
-  title            String
-  summary          String? // Short one-liner description
-  description      String? // Long rich-text description
-  category         String?
-  instructor       String?
-  courseType       CourseType   @default(FREE)
-  price            Float? // Only for PAID courses, in USD
-  shopifyProductId String? // Shopify Product ID for PAID courses
-  status           CourseStatus @default(DRAFT)
-  contentType      ContentType  @default(STORYLINE)
-  embedUrl         String? // Articulate Storyline / iframe URL (flat courses)
-  videoUrl         String? // YouTube, Vimeo, or direct .mp4 (flat courses)
-  introVideoUrl    String? // Course intro/preview video
-  thumbnailUrl     String? // Featured image URL
+  id                String       @id @default(uuid())
+  title             String
+  summary           String? // Short one-liner description
+  description       String? // Long rich-text description
+  category          String?
+  instructor        String?
+  courseType        CourseType   @default(FREE)
+  price             Float? // Only for PAID courses, in USD
+  shopifyProductId  String? // Shopify Product ID for PAID courses
+  status            CourseStatus @default(DRAFT)
+  contentType       ContentType  @default(STORYLINE)
+  embedUrl          String? // Articulate Storyline / iframe URL (flat courses)
+  videoUrl          String? // YouTube, Vimeo, or direct .mp4 (flat courses)
+  introVideoUrl     String? // Course intro/preview video
+  thumbnailUrl      String? // Featured image URL
   isPublic          Boolean      @default(false)
-  difficulty        String?      // "Beginner" | "Intermediate" | "Advanced"
+  difficulty        String? // "Beginner" | "Intermediate" | "Advanced"
   isQA              Boolean      @default(false)
   whatYouLearn      String?
   targetAudience    String?
@@ -215,10 +216,10 @@ model Answer {
   question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
   text       String
   isCorrect  Boolean  @default(false)
-  videoUrl   String?  // Optional video attached to this answer
-  imageUrl   String?  // Optional image for IMAGE_ANSWERING questions
+  videoUrl   String? // Optional video attached to this answer
+  imageUrl   String? // Optional image for IMAGE_ANSWERING questions
   isOptional Boolean  @default(false) // Mark answer as optional
-  matchText  String?  // Right-column text for MATCHING questions
+  matchText  String? // Right-column text for MATCHING questions
 }
 
 // ─── LessonProgress ───────────────────────────────────────────────────────────
@@ -302,13 +303,13 @@ model Progress {
 // ─── QuizAttemptAnswer ─────────────────────────────────────────────────────
 
 model QuizAttemptAnswer {
-  id           String   @id @default(uuid())
+  id           String    @id @default(uuid())
   attemptId    String
   questionId   String
   answerId     String?
   answerText   String?
   isCorrect    Boolean?
-  pointsEarned Int      @default(0)
+  pointsEarned Int       @default(0)
   manualScore  Int?
   gradedAt     DateTime?
   gradedBy     String?
