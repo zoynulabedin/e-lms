@@ -6,7 +6,9 @@
     "build": "react-router build",
     "dev": "react-router dev",
     "start": "node --env-file=.env node_modules/.bin/react-router-serve ./build/server/index.js",
-    "typecheck": "react-router typegen && tsc"
+    "typecheck": "react-router typegen && tsc",
+    "migrate:dev": "node --env-file=.env node_modules/.bin/prisma migrate dev",
+    "migrate:deploy": "node --env-file=.env node_modules/.bin/prisma migrate deploy"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.0.2",
