@@ -28,6 +28,7 @@ import {
   Bookmark,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { HlsPlayer } from "../components/HlsPlayer";
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
 
@@ -50,7 +51,7 @@ function getVimeoId(url: string): string | null {
 }
 
 function resolveVideoEmbed(raw: string): {
-  type: "youtube" | "vimeo" | "direct";
+  type: "youtube" | "vimeo" | "iframe" | "hls" | "direct";
   src: string;
 } {
   const ytId = getYouTubeId(raw);
@@ -63,7 +64,9 @@ function resolveVideoEmbed(raw: string): {
   if (vimeoId)
     return { type: "vimeo", src: `https://player.vimeo.com/video/${vimeoId}` };
   if (raw.includes("wistia.com"))
-    return { type: "direct", src: raw.replace("/medias/", "/embed/iframe/") };
+    return { type: "iframe", src: raw.replace("/medias/", "/embed/iframe/") };
+  if (raw.includes(".m3u8"))
+    return { type: "hls", src: raw };
   return { type: "direct", src: raw };
 }
 
@@ -398,8 +401,10 @@ function AnswerVideo({ videoUrl }: { videoUrl: string }) {
   const embed = resolveVideoEmbed(videoUrl);
   return (
     <div className="mt-2 rounded-xl overflow-hidden border border-blue-200 shadow-sm">
-      {embed.type === "direct" ? (
-        <video src={embed.src} controls autoPlay className="w-full max-h-56 bg-black" />
+      {embed.type === "hls" ? (
+        <HlsPlayer src={embed.src} autoPlay className="w-full max-h-56" />
+      ) : embed.type === "direct" ? (
+        <video src={embed.src} controls autoPlay playsInline className="w-full max-h-56 bg-black" />
       ) : (
         <iframe
           src={`${embed.src}${embed.src.includes("?") ? "&" : "?"}autoplay=1`}
@@ -994,7 +999,8 @@ export default function CourseViewer() {
   const videoUrl = currentLesson?.videoUrl || (!hasModules ? course.videoUrl : null);
   const embedUrl = currentLesson?.embedUrl || (!hasModules ? course.embedUrl : null);
   const videoSrc = videoUrl ? resolveVideoEmbed(videoUrl) : null;
-  const isIframeVideo = videoSrc && (videoSrc.type === "youtube" || videoSrc.type === "vimeo");
+  const isIframeVideo = videoSrc && (videoSrc.type === "youtube" || videoSrc.type === "vimeo" || videoSrc.type === "iframe");
+  const isHlsVideo = videoSrc && videoSrc.type === "hls";
   const isDirectVideo = videoSrc && videoSrc.type === "direct";
 
   const completedCount = completedLessonIds.length;
@@ -1409,11 +1415,15 @@ export default function CourseViewer() {
                     allowFullScreen
                   />
                 )}
+                {isHlsVideo && videoSrc && (
+                  <HlsPlayer src={videoSrc.src} className="absolute inset-0 w-full h-full rounded-none" />
+                )}
                 {isDirectVideo && videoSrc && (
                   <video
                     ref={videoRef}
                     src={videoSrc.src}
                     controls
+                    playsInline
                     controlsList="nodownload"
                     className="absolute inset-0 w-full h-full"
                     onContextMenu={(e) => e.preventDefault()}
@@ -1438,8 +1448,11 @@ export default function CourseViewer() {
                 {isIframeVideo && videoSrc && (
                   <iframe ref={iframeRef} src={videoSrc.src} title={course.title} allow="autoplay; fullscreen; picture-in-picture" className="absolute inset-0 w-full h-full border-0" allowFullScreen />
                 )}
+                {isHlsVideo && videoSrc && (
+                  <HlsPlayer src={videoSrc.src} className="absolute inset-0 w-full h-full rounded-none" />
+                )}
                 {isDirectVideo && videoSrc && (
-                  <video ref={videoRef} src={videoSrc.src} controls controlsList="nodownload" className="absolute inset-0 w-full h-full" onContextMenu={(e) => e.preventDefault()}>
+                  <video ref={videoRef} src={videoSrc.src} controls playsInline controlsList="nodownload" className="absolute inset-0 w-full h-full" onContextMenu={(e) => e.preventDefault()}>
                     Your browser does not support HTML5 video.
                   </video>
                 )}
