@@ -9,8 +9,8 @@ neonConfig.webSocketConstructor = ws;
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-const email = "admin@instructionalgraphics.com";
-const password = "Admin@123!";
+const email = "trustcodernet@gmail.com";
+const password = "Zoy@148151";
 const name = "Admin User";
 
 async function main() {
