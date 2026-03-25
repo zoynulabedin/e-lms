@@ -68,7 +68,7 @@ export function HlsPlayer({
         destroyHls();
 
         const hls = new Hls({
-          enableWorker: true,
+          enableWorker: false, // worker uses eval() which is blocked by CSP
           lowLatencyMode: false,
           backBufferLength: 90,
           maxBufferLength: 30,
