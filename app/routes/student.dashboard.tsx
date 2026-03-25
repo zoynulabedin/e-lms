@@ -101,6 +101,12 @@ export default function StudentDashboard() {
           </div>
           <div className="flex items-center gap-4">
             <Link
+              to="/student/quiz-history"
+              className="flex items-center gap-1.5 text-slate-400 hover:text-[#00c896] transition-colors text-sm"
+            >
+              <Award size={15} /> Quiz History
+            </Link>
+            <Link
               to="/catalog"
               className="flex items-center gap-1.5 text-slate-400 hover:text-[#00c896] transition-colors text-sm"
             >

@@ -22,6 +22,7 @@ export default [
   // ─── Student area (no admin sidebar) ───────────────────────────────
   route("student", "routes/student.dashboard.tsx"),
   route("student/course/:courseId", "routes/student.course.$courseId.tsx"),
+  route("student/quiz-history", "routes/student.quiz-history.tsx"),
 
   // ─── Certificate (raw HTML response) ───────────────────────────────
   route("certificate/:courseId", "routes/certificate.$courseId.tsx"),
@@ -45,5 +46,6 @@ export default [
     route("sessions", "routes/sessions.tsx"),
     route("reports", "routes/reports.tsx"),
     route("settings", "routes/settings.tsx"),
+    route("quiz-review", "routes/quiz-review.tsx"),
   ]),
 ] satisfies RouteConfig;

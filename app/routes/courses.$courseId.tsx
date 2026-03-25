@@ -6,7 +6,7 @@ import { randomUUID } from "crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../utils/db.server";
 import { requireAdmin } from "../utils/auth.server";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   ArrowLeft,
   ChevronDown,
@@ -410,18 +410,42 @@ export async function action({ request, params }: ActionFunctionArgs) {
     `;
     const newId = randomUUID();
     await prisma.$executeRaw`
-      INSERT INTO "Question" (id, "quizId", "questionType", title, "order", points, "createdAt")
-      VALUES (${newId}, ${quizId}, ${questionType}, ${title}, ${Number(count)}, 1, NOW())
+      INSERT INTO "Question" (id, "quizId", "questionType", title, "order", points, "answerRequired", "allowMultiple", "randomizeAnswers", "createdAt")
+      VALUES (${newId}, ${quizId}, ${questionType}, ${title}, ${Number(count)}, 1, false, false, false, NOW())
     `;
+    // Auto-seed True / False answers for TRUE_FALSE questions
+    if (questionType === "TRUE_FALSE") {
+      // Defensive delete first to prevent duplicates on any edge-case double submit
+      await prisma.$executeRaw`DELETE FROM "Answer" WHERE "questionId" = ${newId}`;
+      const trueId = randomUUID();
+      const falseId = randomUUID();
+      await prisma.$executeRaw`
+        INSERT INTO "Answer" (id, "questionId", text, "isCorrect", "isOptional")
+        VALUES (${trueId}, ${newId}, 'True', true, false),
+               (${falseId}, ${newId}, 'False', false, false)
+      `;
+    }
     return data({ success: true });
   }
 
   if (intent === "update_question") {
     const id = formData.get("id") as string;
     const title = (formData.get("title") as string)?.trim() || "";
+    const description = (formData.get("description") as string)?.trim() || null;
     const questionType = (formData.get("questionType") as string) || "MULTIPLE_CHOICE";
+    const points = Math.max(0, parseInt(formData.get("points") as string || "1", 10) || 1);
+    const answerRequired = formData.get("answerRequired") === "true";
+    const allowMultiple = formData.get("allowMultiple") === "true";
+    const randomizeAnswers = formData.get("randomizeAnswers") === "true";
     await prisma.$executeRaw`
-      UPDATE "Question" SET title = ${title}, "questionType" = ${questionType}
+      UPDATE "Question" SET
+        title = ${title},
+        description = ${description},
+        "questionType" = ${questionType},
+        points = ${points},
+        "answerRequired" = ${answerRequired},
+        "allowMultiple" = ${allowMultiple},
+        "randomizeAnswers" = ${randomizeAnswers}
       WHERE id = ${id}
     `;
     return data({ success: true });
@@ -461,6 +485,44 @@ export async function action({ request, params }: ActionFunctionArgs) {
         "imageUrl" = ${imageUrl}, "isOptional" = ${isOptional}
       WHERE id = ${id}
     `;
+    return data({ success: true });
+  }
+
+  // ── True/False: select correct answer ──────────────────────────────────────
+  if (intent === "set_tf_correct") {
+    const questionId = formData.get("questionId") as string;
+    const label = formData.get("label") as string; // "True" or "False"
+    const otherLabel = label === "True" ? "False" : "True";
+
+    // Step 1: clear correct flag on all answers for this question
+    await prisma.$executeRaw`UPDATE "Answer" SET "isCorrect" = false WHERE "questionId" = ${questionId}`;
+
+    // Step 2: find chosen label by text (server-side, not relying on client ID)
+    const chosen = await prisma.$queryRaw<any[]>`
+      SELECT id FROM "Answer" WHERE "questionId" = ${questionId} AND text = ${label}
+    `;
+    if (chosen.length > 0) {
+      await prisma.$executeRaw`UPDATE "Answer" SET "isCorrect" = true WHERE id = ${chosen[0].id}`;
+    } else {
+      const newId = randomUUID();
+      await prisma.$executeRaw`
+        INSERT INTO "Answer" (id, "questionId", text, "isCorrect", "isOptional")
+        VALUES (${newId}, ${questionId}, ${label}, true, false)
+      `;
+    }
+
+    // Step 3: ensure the other option also exists (so both are always visible)
+    const other = await prisma.$queryRaw<any[]>`
+      SELECT id FROM "Answer" WHERE "questionId" = ${questionId} AND text = ${otherLabel}
+    `;
+    if (other.length === 0) {
+      const otherId = randomUUID();
+      await prisma.$executeRaw`
+        INSERT INTO "Answer" (id, "questionId", text, "isCorrect", "isOptional")
+        VALUES (${otherId}, ${questionId}, ${otherLabel}, false, false)
+      `;
+    }
+
     return data({ success: true });
   }
 
@@ -550,13 +612,16 @@ function LessonModal({
 
         <fetcher.Form
           method="post"
-          className="flex flex-1 overflow-hidden"
+          className="flex flex-1 flex-col overflow-hidden"
           onSubmit={() => setTimeout(onClose, 150)}
         >
           <input type="hidden" name="intent" value={lesson ? "update_lesson" : "create_lesson"} />
           <input type="hidden" name="moduleId" value={moduleId} />
           {lesson && <input type="hidden" name="lessonId" value={lesson.id} />}
           <input type="hidden" name="lessonType" value={lessonType} />
+
+          {/* Main content row */}
+          <div className="flex flex-1 overflow-hidden min-h-0">
 
           {/* Left: content */}
           <div className="flex-1 p-6 space-y-5 overflow-y-auto border-r border-gray-100">
@@ -612,6 +677,7 @@ function LessonModal({
 
           {/* Right: media */}
           <div className="w-72 shrink-0 p-6 space-y-5 overflow-y-auto">
+
             {/* Featured Image */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-1.5">
@@ -710,9 +776,10 @@ function LessonModal({
               </div>
             )}
           </div>
+          </div>{/* end main content row */}
 
-          {/* Footer */}
-          <div className="absolute bottom-0 left-0 right-0 flex justify-end gap-3 px-6 py-3 bg-white border-t border-gray-200 rounded-b-2xl">
+          {/* Footer — normal flow, always visible at bottom */}
+          <div className="flex justify-end gap-3 px-6 py-3 bg-white border-t border-gray-200 rounded-b-2xl shrink-0">
             <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
               Cancel
             </button>
@@ -746,64 +813,164 @@ const QUESTION_TYPE_DEFS = [
 
 const TYPES_WITH_ANSWERS = new Set(["MULTIPLE_CHOICE", "TRUE_FALSE", "FILL_BLANK", "MATCHING", "IMAGE_ANSWERING", "VIDEO_ANSWERING", "ORDERING"]);
 
-function AnswerRow({ ans, questionType, fetcher, questionId }: { ans: any; questionType: string; fetcher: any; questionId: string }) {
+function TrueFalseAnswerEditor({ answers, questionId }: { answers: any[]; questionId: string }) {
+  const [videoEdit, setVideoEdit] = useState<"True" | "False" | null>(null);
+  const tfFetcher    = useFetcher();
+  const videoFetcher = useFetcher();
+
+  const trueAns  = answers.find((a: any) => a.text === "True")  ?? null;
+  const falseAns = answers.find((a: any) => a.text === "False") ?? null;
+
+  // Optimistically reflect a pending selection so the UI feels instant
+  const pendingLabel = tfFetcher.state !== "idle"
+    ? (tfFetcher.formData?.get("label") as "True" | "False" | null)
+    : null;
+
+  const serverCorrect = trueAns?.isCorrect ? "True" : falseAns?.isCorrect ? "False" : null;
+  const correctLabel  = pendingLabel ?? serverCorrect;
+
+  function selectCorrect(label: "True" | "False") {
+    const fd = new FormData();
+    fd.append("intent", "set_tf_correct");
+    fd.append("questionId", questionId);
+    fd.append("label", label);
+    tfFetcher.submit(fd, { method: "post" });
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <label className="text-sm font-semibold text-gray-700">Correct Answer</label>
+        <span className="text-[11px] text-gray-400">Select the correct option</span>
+      </div>
+
+      {/* Two big selector buttons */}
+      <div className="grid grid-cols-2 gap-3">
+        {(["True", "False"] as const).map((label) => {
+          const isSelected = correctLabel === label;
+          const ans = label === "True" ? trueAns : falseAns;
+          return (
+            <div key={label} className={`rounded-xl border-2 overflow-hidden transition-all ${isSelected ? "border-green-500 shadow-sm" : "border-gray-200"}`}>
+              <button
+                type="button"
+                onClick={() => selectCorrect(label)}
+                className={`w-full flex items-center gap-3 px-4 py-4 transition-colors text-left ${
+                  isSelected ? "bg-green-50 hover:bg-green-100" : "bg-white hover:bg-gray-50"
+                }`}
+              >
+                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
+                  isSelected ? "bg-green-500 border-green-500" : "border-gray-300"
+                }`}>
+                  {isSelected && <div className="w-2 h-2 rounded-full bg-white" />}
+                </div>
+                <span className={`font-bold text-base ${isSelected ? "text-green-700" : "text-gray-700"}`}>
+                  {label}
+                </span>
+                {isSelected && (
+                  <span className="ml-auto text-[10px] font-semibold text-green-600 bg-green-100 px-2 py-0.5 rounded-full">
+                    Correct
+                  </span>
+                )}
+              </button>
+              {/* Video URL toggle */}
+              <div className="border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setVideoEdit(videoEdit === label ? null : label)}
+                  className="w-full flex items-center gap-2 px-4 py-2 text-[11px] text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
+                >
+                  {ans?.videoUrl
+                    ? <><span className="text-blue-500">▶</span> Video attached</>
+                    : <><span>+</span> Add video</>
+                  }
+                  {videoEdit === label ? <ChevronUp size={11} className="ml-auto" /> : <ChevronDown size={11} className="ml-auto" />}
+                </button>
+                {videoEdit === label && ans && (
+                  <videoFetcher.Form method="post" className="px-4 pb-3 space-y-2 bg-gray-50">
+                    <input type="hidden" name="intent" value="update_answer" />
+                    <input type="hidden" name="id" value={ans.id} />
+                    <input type="hidden" name="text" value={ans.text} />
+                    <input type="hidden" name="matchText" value="" />
+                    <input type="hidden" name="imageUrl" value={ans.imageUrl || ""} />
+                    <input
+                      name="videoUrl"
+                      type="url"
+                      defaultValue={ans.videoUrl || ""}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-blue-500"
+                      placeholder="YouTube, Vimeo, or .mp4"
+                    />
+                    <div className="flex justify-end">
+                      <button type="submit" onClick={() => setVideoEdit(null)} className="px-3 py-1 text-xs text-white bg-blue-600 rounded-lg hover:bg-blue-700">
+                        {videoFetcher.state !== "idle" ? "Saving…" : "Save"}
+                      </button>
+                    </div>
+                  </videoFetcher.Form>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function AnswerRow({ ans, questionType, questionId }: { ans: any; questionType: string; questionId: string }) {
   const [expanded, setExpanded] = useState(false);
+  const toggleFetcher = useFetcher();
+  const deleteFetcher = useFetcher();
+  const editFetcher   = useFetcher();
+
+  // Optimistic correct state
+  const pendingCorrect = toggleFetcher.state !== "idle"
+    ? toggleFetcher.formData?.get("current") !== "true"
+    : null;
+  const isCorrect = pendingCorrect !== null ? pendingCorrect : ans.isCorrect;
+
+  if (deleteFetcher.state !== "idle") return null; // optimistically remove on delete
 
   return (
     <div className="border border-gray-200 rounded-lg overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-2 bg-white">
         {/* Correct toggle */}
         {questionType !== "ORDERING" && (
-          <fetcher.Form method="post" className="shrink-0">
+          <toggleFetcher.Form method="post" className="shrink-0">
             <input type="hidden" name="intent" value="toggle_answer_correct" />
             <input type="hidden" name="id" value={ans.id} />
             <input type="hidden" name="current" value={String(ans.isCorrect)} />
             <button
               type="submit"
-              title={ans.isCorrect
+              title={isCorrect
                 ? (questionType === "FILL_BLANK" ? "Remove accepted answer" : "Mark incorrect")
                 : (questionType === "FILL_BLANK" ? "Mark as accepted answer" : "Mark correct")}
-              className={`w-4 h-4 rounded border-2 shrink-0 transition-colors ${ans.isCorrect ? "bg-green-500 border-green-500" : "border-gray-300 hover:border-green-400"}`}
+              className={`w-4 h-4 rounded border-2 shrink-0 transition-colors ${isCorrect ? "bg-green-500 border-green-500" : "border-gray-300 hover:border-green-400"}`}
             />
-          </fetcher.Form>
+          </toggleFetcher.Form>
         )}
 
-        {/* Left text (always shown) */}
         <span className="flex-1 text-sm text-gray-800 truncate">
           {questionType === "MATCHING" ? (ans.text || "—") + " → " + (ans.matchText || "?") : (ans.text || "—")}
         </span>
 
-        {/* Optional badge */}
         {ans.isOptional && <span className="text-[10px] text-gray-400 italic shrink-0">optional</span>}
+        {ans.videoUrl  && <span className="text-[10px] text-blue-500 shrink-0">▶ video</span>}
+        {ans.imageUrl  && <span className="text-[10px] text-green-500 shrink-0">🖼</span>}
 
-        {/* Video indicator */}
-        {ans.videoUrl && (
-          <span className="text-[10px] text-blue-500 shrink-0">▶ video</span>
-        )}
-
-        {/* Image indicator */}
-        {ans.imageUrl && (
-          <span className="text-[10px] text-green-500 shrink-0">🖼</span>
-        )}
-
-        {/* Edit toggle */}
         <button type="button" onClick={() => setExpanded(v => !v)} className="text-gray-400 hover:text-gray-600 p-0.5 shrink-0">
           {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
         </button>
 
-        {/* Delete */}
-        <fetcher.Form method="post" className="shrink-0">
+        <deleteFetcher.Form method="post" className="shrink-0">
           <input type="hidden" name="intent" value="delete_answer" />
           <input type="hidden" name="id" value={ans.id} />
           <button type="submit" className="text-red-400 hover:text-red-600 p-0.5">
             <X size={12} />
           </button>
-        </fetcher.Form>
+        </deleteFetcher.Form>
       </div>
 
-      {/* Expanded edit panel */}
       {expanded && (
-        <fetcher.Form method="post" className="px-3 pb-3 pt-2 bg-gray-50 border-t border-gray-100 space-y-2">
+        <editFetcher.Form method="post" className="px-3 pb-3 pt-2 bg-gray-50 border-t border-gray-100 space-y-2">
           <input type="hidden" name="intent" value="update_answer" />
           <input type="hidden" name="id" value={ans.id} />
 
@@ -830,25 +997,16 @@ function AnswerRow({ ans, questionType, fetcher, questionId }: { ans: any; quest
             <div>
               <label className="block text-[11px] text-gray-500 mb-0.5">Image URL</label>
               <input name="imageUrl" type="url" defaultValue={ans.imageUrl || ""} className="w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500" placeholder="https://…/image.jpg" />
-              <input type="hidden" name="videoUrl" value={ans.videoUrl || ""} />
             </div>
           )}
+          {questionType !== "IMAGE_ANSWERING" && <input type="hidden" name="imageUrl" value={ans.imageUrl || ""} />}
 
-          {questionType === "VIDEO_ANSWERING" && (
-            <div>
-              <label className="block text-[11px] font-medium text-gray-700 mb-0.5">Video URL <span className="text-red-400">*</span></label>
-              <input name="videoUrl" type="url" defaultValue={ans.videoUrl || ""} className="w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500" placeholder="YouTube, Vimeo, or .mp4" />
-              <input type="hidden" name="imageUrl" value={ans.imageUrl || ""} />
-            </div>
-          )}
-
-          {questionType !== "IMAGE_ANSWERING" && questionType !== "VIDEO_ANSWERING" && (
-            <div>
-              <label className="block text-[11px] text-gray-500 mb-0.5">Video URL (optional)</label>
-              <input name="videoUrl" type="url" defaultValue={ans.videoUrl || ""} className="w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500" placeholder="YouTube, Vimeo, or .mp4" />
-              <input type="hidden" name="imageUrl" value={ans.imageUrl || ""} />
-            </div>
-          )}
+          <div>
+            <label className="block text-[11px] text-gray-500 mb-0.5">
+              {questionType === "VIDEO_ANSWERING" ? <>Video URL <span className="text-red-400">*</span></> : "Video URL (optional)"}
+            </label>
+            <input name="videoUrl" type="url" defaultValue={ans.videoUrl || ""} className="w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500" placeholder="YouTube, Vimeo, or .mp4" />
+          </div>
 
           <div className="flex items-center gap-2">
             <input type="checkbox" name="isOptional" value="true" id={`opt-${ans.id}`} defaultChecked={ans.isOptional} className="rounded border-gray-300" />
@@ -856,19 +1014,20 @@ function AnswerRow({ ans, questionType, fetcher, questionId }: { ans: any; quest
           </div>
 
           <div className="flex justify-end pt-1">
-            <button type="submit" className="px-3 py-1 text-xs text-white bg-blue-600 rounded hover:bg-blue-700">
-              Save
+            <button type="submit" onClick={() => setExpanded(false)} className="px-3 py-1 text-xs text-white bg-blue-600 rounded hover:bg-blue-700">
+              {editFetcher.state !== "idle" ? "Saving…" : "Save"}
             </button>
           </div>
-        </fetcher.Form>
+        </editFetcher.Form>
       )}
     </div>
   );
 }
 
-function AddAnswerRow({ questionId, questionType, fetcher }: { questionId: string; questionType: string; fetcher: any }) {
+function AddAnswerRow({ questionId, questionType }: { questionId: string; questionType: string }) {
+  const addFetcher = useFetcher();
   return (
-    <fetcher.Form method="post" className="space-y-1.5 mt-1">
+    <addFetcher.Form method="post" className="space-y-1.5 mt-1">
       <input type="hidden" name="intent" value="create_answer" />
       <input type="hidden" name="questionId" value={questionId} />
       <div className="flex gap-2">
@@ -880,12 +1039,78 @@ function AddAnswerRow({ questionId, questionType, fetcher }: { questionId: strin
         ) : (
           <input name="text" placeholder={questionType === "VIDEO_ANSWERING" ? "Caption (optional)…" : "Add answer option…"} className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-blue-500" />
         )}
-        <button type="submit" className="px-3 py-1.5 text-xs text-white bg-gray-700 rounded-lg hover:bg-gray-800 shrink-0">Add</button>
+        <button type="submit" disabled={addFetcher.state !== "idle"} className="px-3 py-1.5 text-xs text-white bg-gray-700 rounded-lg hover:bg-gray-800 disabled:opacity-60 shrink-0">
+          {addFetcher.state !== "idle" ? "Adding…" : "Add"}
+        </button>
       </div>
       {questionType === "VIDEO_ANSWERING" && (
         <input name="videoUrl" type="url" required placeholder="Video URL (YouTube, Vimeo, or .mp4)…" className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-blue-500" />
       )}
-    </fetcher.Form>
+    </addFetcher.Form>
+  );
+}
+
+function QuestionConditionsPanel({ question, fetcher }: { question: any; fetcher: any }) {
+  const [answerRequired, setAnswerRequired] = useState<boolean>(question.answerRequired ?? false);
+  const [allowMultiple, setAllowMultiple] = useState<boolean>(question.allowMultiple ?? false);
+  const [randomizeAnswers, setRandomizeAnswers] = useState<boolean>(question.randomizeAnswers ?? false);
+  const [points, setPoints] = useState<number>(question.points ?? 1);
+
+  function save(overrides?: Partial<{ answerRequired: boolean; allowMultiple: boolean; randomizeAnswers: boolean; points: number }>) {
+    const vals = { answerRequired, allowMultiple, randomizeAnswers, points, ...overrides };
+    const fd = new FormData();
+    fd.append("intent", "update_question");
+    fd.append("id", question.id);
+    fd.append("title", question.title ?? "");
+    fd.append("description", question.description ?? "");
+    fd.append("questionType", question.questionType);
+    fd.append("points", String(vals.points));
+    fd.append("answerRequired", String(vals.answerRequired));
+    fd.append("allowMultiple", String(vals.allowMultiple));
+    fd.append("randomizeAnswers", String(vals.randomizeAnswers));
+    fetcher.submit(fd, { method: "post" });
+  }
+
+  function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+    return (
+      <div className="flex items-center justify-between py-1.5">
+        <span className="text-xs text-gray-700">{label}</span>
+        <button
+          type="button"
+          onClick={() => { onChange(!checked); save({ [label === "Answer Required" ? "answerRequired" : label === "Multiple Correct Answer" ? "allowMultiple" : "randomizeAnswers"]: !checked }); }}
+          className={`relative w-9 h-5 rounded-full transition-colors shrink-0 ${checked ? "bg-blue-600" : "bg-gray-200"}`}
+        >
+          <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${checked ? "translate-x-4" : ""}`} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Conditions</p>
+
+      <Toggle label="Answer Required" checked={answerRequired} onChange={(v) => { setAnswerRequired(v); }} />
+
+      {question.questionType === "MULTIPLE_CHOICE" && (
+        <>
+          <Toggle label="Multiple Correct Answer" checked={allowMultiple} onChange={(v) => { setAllowMultiple(v); }} />
+          <Toggle label="Randomize Choice" checked={randomizeAnswers} onChange={(v) => { setRandomizeAnswers(v); }} />
+        </>
+      )}
+
+      <div className="pt-1">
+        <label className="block text-xs text-gray-700 mb-1.5">Point For This Question</label>
+        <input
+          type="number"
+          value={points}
+          min={0}
+          onChange={(e) => setPoints(Number(e.target.value))}
+          onBlur={() => save()}
+          className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm text-center focus:outline-none focus:border-blue-500"
+        />
+      </div>
+    </div>
   );
 }
 
@@ -905,6 +1130,15 @@ function QuizModal({
   const [activeTab, setActiveTab] = useState<"details" | "settings">("details");
   const [selectedQuestion, setSelectedQuestion] = useState<any | null>(null);
   const [showTypePicker, setShowTypePicker] = useState(false);
+  const [pendingClose, setPendingClose] = useState(false);
+
+  // Close modal only after a successful save (not on every click)
+  useEffect(() => {
+    if (pendingClose && fetcher.state === "idle" && fetcher.data && "success" in fetcher.data) {
+      setPendingClose(false);
+      onClose();
+    }
+  }, [fetcher.state, fetcher.data, pendingClose]);
 
   // When selectedQuestion updates from fetcher reload, keep it in sync
   const questions: any[] = quiz?.questions ?? [];
@@ -959,7 +1193,7 @@ function QuizModal({
                   <button type="button" onClick={onClose} className="flex-1 px-3 py-1.5 text-xs text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50">Cancel</button>
                   <button type="submit" disabled={fetcher.state === "submitting"}
                     className="flex-1 px-3 py-1.5 text-xs text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
-                    onClick={() => setTimeout(onClose, 150)}>Ok</button>
+                    onClick={() => setPendingClose(true)}>Ok</button>
                 </div>
               </fetcher.Form>
 
@@ -1031,109 +1265,120 @@ function QuizModal({
               </div>
             </div>
 
-            {/* Right: question detail panel */}
-            <div className="flex-1 p-6 overflow-y-auto min-h-0" onClick={() => setShowTypePicker(false)}>
+            {/* Center + Right: 3-column question editor */}
+            <div className="flex flex-1 overflow-hidden min-h-0" onClick={() => setShowTypePicker(false)}>
               {syncedQuestion ? (
-                <div className="space-y-5">
-                  {/* Question type + title form */}
-                  <fetcher.Form key={syncedQuestion.id} method="post" className="space-y-4">
-                    <input type="hidden" name="intent" value="update_question" />
-                    <input type="hidden" name="id" value={syncedQuestion.id} />
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1.5">Question Type</label>
-                      <select name="questionType" defaultValue={syncedQuestion.questionType}
-                        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
-                        {QUESTION_TYPE_DEFS.map(({ value, label }) => (
-                          <option key={value} value={value}>{label}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1.5">Question Title</label>
-                      <input type="text" name="title" defaultValue={syncedQuestion.title}
-                        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-                        placeholder="Enter your question" />
-                    </div>
-                    <button type="submit" className="px-4 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700">
-                      Save Question
-                    </button>
-                  </fetcher.Form>
+                <>
+                  {/* Center: question editor */}
+                  <div className="flex-1 p-6 overflow-y-auto min-h-0 space-y-5">
+                    {/* Question number + title + description form */}
+                    <fetcher.Form key={syncedQuestion.id} method="post" className="space-y-3">
+                      <input type="hidden" name="intent" value="update_question" />
+                      <input type="hidden" name="id" value={syncedQuestion.id} />
+                      <input type="hidden" name="questionType" value={syncedQuestion.questionType} />
+                      <input type="hidden" name="points" value={syncedQuestion.points ?? 1} />
+                      <input type="hidden" name="answerRequired" value={String(syncedQuestion.answerRequired ?? false)} />
+                      <input type="hidden" name="allowMultiple" value={String(syncedQuestion.allowMultiple ?? false)} />
+                      <input type="hidden" name="randomizeAnswers" value={String(syncedQuestion.randomizeAnswers ?? false)} />
 
-                  {/* Answers section — per type */}
-                  {TYPES_WITH_ANSWERS.has(syncedQuestion.questionType) && (
-                    <div className="border-t border-gray-100 pt-4 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <label className="text-sm font-semibold text-gray-700">
-                          {syncedQuestion.questionType === "MATCHING" ? "Match Pairs" :
-                           syncedQuestion.questionType === "ORDERING" ? "Items (in correct order)" :
-                           syncedQuestion.questionType === "IMAGE_ANSWERING" ? "Answer Images" :
-                           syncedQuestion.questionType === "VIDEO_ANSWERING" ? "Answer Videos" : "Answers"}
-                        </label>
-                        <span className="text-[11px] text-gray-400">
-                          {syncedQuestion.questionType === "FILL_BLANK" ? "✓ = accepted answer" :
-                           syncedQuestion.questionType !== "TRUE_FALSE" && syncedQuestion.questionType !== "ORDERING" ? "✓ = correct" : ""}
-                        </span>
+                      <div>
+                        <p className="text-xs text-gray-400 mb-1 font-medium uppercase tracking-wide">
+                          {(questions.indexOf(syncedQuestion) + 1) || ""}. Question
+                        </p>
+                        <input
+                          type="text"
+                          name="title"
+                          defaultValue={syncedQuestion.title}
+                          className="w-full text-lg font-semibold text-gray-900 border-0 border-b-2 border-gray-200 px-0 py-1 focus:outline-none focus:border-blue-500 bg-transparent"
+                          placeholder="Enter your question…"
+                        />
                       </div>
+                      <textarea
+                        name="description"
+                        defaultValue={syncedQuestion.description || ""}
+                        rows={2}
+                        placeholder="Description (optional)"
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-600 focus:outline-none focus:border-blue-400 resize-none bg-gray-50"
+                      />
+                      <div className="flex justify-end">
+                        <button type="submit" disabled={fetcher.state === "submitting"}
+                          className="px-3 py-1.5 text-xs text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60">
+                          {fetcher.state === "submitting" ? "Saving…" : "Save"}
+                        </button>
+                      </div>
+                    </fetcher.Form>
 
-                      {/* TRUE_FALSE: only 2 options */}
-                      {syncedQuestion.questionType === "TRUE_FALSE" ? (
-                        <div className="space-y-2">
-                          {syncedQuestion.answers?.length === 0 && (
-                            <div className="flex gap-2">
-                              {["True", "False"].map((opt) => (
-                                <fetcher.Form key={opt} method="post" className="flex-1">
-                                  <input type="hidden" name="intent" value="create_answer" />
-                                  <input type="hidden" name="questionId" value={syncedQuestion.id} />
-                                  <input type="hidden" name="text" value={opt} />
-                                  <button type="submit" className="w-full px-3 py-1.5 text-xs border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-700">
-                                    + Add "{opt}"
-                                  </button>
-                                </fetcher.Form>
-                              ))}
-                            </div>
-                          )}
-                          {(syncedQuestion.answers || []).map((ans: any) => (
-                            <AnswerRow key={ans.id} ans={ans} questionType={syncedQuestion.questionType} fetcher={fetcher} questionId={syncedQuestion.id} />
-                          ))}
+                    {/* Answers section */}
+                    {syncedQuestion.questionType === "TRUE_FALSE" ? (
+                      <TrueFalseAnswerEditor answers={syncedQuestion.answers || []} questionId={syncedQuestion.id} />
+                    ) : TYPES_WITH_ANSWERS.has(syncedQuestion.questionType) && (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <label className="text-sm font-semibold text-gray-700">
+                            {syncedQuestion.questionType === "MATCHING" ? "Match Pairs" :
+                             syncedQuestion.questionType === "ORDERING" ? "Items (correct order)" :
+                             syncedQuestion.questionType === "IMAGE_ANSWERING" ? "Answer Images" :
+                             syncedQuestion.questionType === "VIDEO_ANSWERING" ? "Answer Videos" : "Answers"}
+                          </label>
+                          <span className="text-[11px] text-gray-400">
+                            {syncedQuestion.questionType === "FILL_BLANK" ? "✓ = accepted" :
+                             syncedQuestion.questionType !== "ORDERING" ? "✓ = correct" : ""}
+                          </span>
                         </div>
-                      ) : (
                         <div className="space-y-2">
                           {(syncedQuestion.answers || []).map((ans: any) => (
                             <AnswerRow key={ans.id} ans={ans} questionType={syncedQuestion.questionType} fetcher={fetcher} questionId={syncedQuestion.id} />
                           ))}
                           <AddAnswerRow questionId={syncedQuestion.id} questionType={syncedQuestion.questionType} fetcher={fetcher} />
                         </div>
-                      )}
-                    </div>
-                  )}
+                      </div>
+                    )}
 
-                  {/* Info for text-based types */}
-                  {(syncedQuestion.questionType === "SHORT_ANSWER" || syncedQuestion.questionType === "ESSAY") && (
-                    <div className="border-t border-gray-100 pt-4">
+                    {/* Info for text-based types */}
+                    {(syncedQuestion.questionType === "SHORT_ANSWER" || syncedQuestion.questionType === "ESSAY") && (
                       <p className="text-xs text-gray-400 bg-gray-50 rounded-lg px-4 py-3 border border-gray-100">
                         {syncedQuestion.questionType === "SHORT_ANSWER"
                           ? "Students type a short text response. No answer options needed."
                           : "Students write an essay response. No answer options needed."}
                       </p>
-                    </div>
-                  )}
+                    )}
 
-                  {/* Delete question */}
-                  <fetcher.Form method="post" className="border-t border-gray-100 pt-3">
-                    <input type="hidden" name="intent" value="delete_question" />
-                    <input type="hidden" name="id" value={syncedQuestion.id} />
-                    <button type="submit" onClick={() => setSelectedQuestion(null)}
-                      className="flex items-center gap-1.5 text-sm text-red-500 hover:text-red-700">
-                      <Trash2 size={13} /> Delete Question
-                    </button>
-                  </fetcher.Form>
-                </div>
+                    {/* Delete */}
+                    <fetcher.Form method="post" className="pt-2">
+                      <input type="hidden" name="intent" value="delete_question" />
+                      <input type="hidden" name="id" value={syncedQuestion.id} />
+                      <button type="submit" onClick={() => setSelectedQuestion(null)}
+                        className="flex items-center gap-1.5 text-xs text-red-400 hover:text-red-600">
+                        <Trash2 size={12} /> Delete Question
+                      </button>
+                    </fetcher.Form>
+                  </div>
+
+                  {/* Right: conditions panel */}
+                  <div className="w-52 shrink-0 border-l border-gray-100 p-4 overflow-y-auto space-y-5">
+                    {/* Question Type badge */}
+                    <div>
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Question Type</p>
+                      {(() => {
+                        const typeDef = QUESTION_TYPE_DEFS.find(t => t.value === syncedQuestion.questionType);
+                        return typeDef ? (
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold ${typeDef.color}`}>
+                            <span>{typeDef.icon}</span> {typeDef.label}
+                          </span>
+                        ) : null;
+                      })()}
+                    </div>
+
+                    {/* Conditions */}
+                    <QuestionConditionsPanel question={syncedQuestion} fetcher={fetcher} />
+                  </div>
+                </>
               ) : (
-                <div className="h-full flex flex-col items-center justify-center text-center text-gray-400">
+                <div className="flex-1 flex flex-col items-center justify-center text-center text-gray-400 p-6">
                   <div className="w-24 h-24 rounded-full bg-gray-100 flex items-center justify-center mb-4">
                     <HelpCircle size={36} className="text-gray-300" />
                   </div>
-                  <p className="font-medium text-gray-500">Enter a quiz question on the left</p>
+                  <p className="font-medium text-gray-500">Create/Select a question to view details</p>
                   <p className="text-xs mt-1">Click + to choose a question type</p>
                 </div>
               )}
@@ -1143,7 +1388,7 @@ function QuizModal({
 
         {activeTab === "settings" && (
           <div className="flex-1 overflow-y-auto min-h-0">
-            <fetcher.Form method="post" className="p-6 space-y-6" onSubmit={() => setTimeout(onClose, 150)}>
+            <fetcher.Form method="post" className="p-6 space-y-6" onSubmit={() => setPendingClose(true)}>
               <input type="hidden" name="intent" value={quiz ? "update_quiz" : "create_quiz"} />
               <input type="hidden" name="moduleId" value={moduleId} />
               {quiz && <input type="hidden" name="quizId" value={quiz.id} />}

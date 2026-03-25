@@ -192,15 +192,19 @@ model Quiz {
 // ─── Question ─────────────────────────────────────────────────────────────────
 
 model Question {
-  id           String   @id @default(uuid())
-  quizId       String
-  quiz         Quiz     @relation(fields: [quizId], references: [id], onDelete: Cascade)
-  questionType String   @default("MULTIPLE_CHOICE")
-  title        String
-  order        Int      @default(0)
-  points       Int      @default(1)
-  createdAt    DateTime @default(now())
-  answers      Answer[]
+  id               String   @id @default(uuid())
+  quizId           String
+  quiz             Quiz     @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  questionType     String   @default("MULTIPLE_CHOICE")
+  title            String
+  description      String?
+  order            Int      @default(0)
+  points           Int      @default(1)
+  answerRequired   Boolean  @default(false)
+  allowMultiple    Boolean  @default(false)
+  randomizeAnswers Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  answers          Answer[]
 }
 
 // ─── Answer ───────────────────────────────────────────────────────────────────
@@ -293,4 +297,22 @@ model Progress {
   updatedAt         DateTime  @updatedAt
 
   @@unique([userId, courseId])
+}
+
+// ─── QuizAttemptAnswer ─────────────────────────────────────────────────────
+
+model QuizAttemptAnswer {
+  id           String   @id @default(uuid())
+  attemptId    String
+  questionId   String
+  answerId     String?
+  answerText   String?
+  isCorrect    Boolean?
+  pointsEarned Int      @default(0)
+  manualScore  Int?
+  gradedAt     DateTime?
+  gradedBy     String?
+
+  @@index([attemptId])
+  @@index([questionId])
 }

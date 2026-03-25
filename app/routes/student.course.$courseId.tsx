@@ -148,16 +148,18 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   `;
 
   const answerRows = await prisma.$queryRaw<any[]>`
-    SELECT id, "questionId", text, "imageUrl", "videoUrl", "matchText"
-    FROM "Answer"
-    WHERE "questionId" IN (
+    SELECT a.id, a."questionId", a.text, a."imageUrl", a."videoUrl", a."matchText",
+      CASE WHEN q."questionType" = 'TRUE_FALSE' THEN a."isCorrect" ELSE NULL END AS "isCorrect"
+    FROM "Answer" a
+    JOIN "Question" q ON a."questionId" = q.id
+    WHERE a."questionId" IN (
       SELECT id FROM "Question"
       WHERE "quizId" IN (
         SELECT id FROM "Quiz"
         WHERE "moduleId" IN (SELECT id FROM "Module" WHERE "courseId" = ${courseId})
       )
     )
-    ORDER BY id
+    ORDER BY a.id
   `;
 
   const quizAttemptRows = await prisma.$queryRaw<any[]>`
@@ -318,37 +320,96 @@ export async function action({ request, params }: ActionFunctionArgs) {
 
     let score = 0;
     let maxScore = 0;
+    const questionResults: any[] = [];
 
     for (const q of questions) {
       const answers = await prisma.$queryRaw<any[]>`SELECT * FROM "Answer" WHERE "questionId" = ${q.id}`;
-      maxScore += Number(q.points);
+      const points = Number(q.points);
+      maxScore += points;
       const type = q.questionType;
 
+      let pointsEarned = 0;
+      let isCorrect: boolean | null = null;
+      let submittedAnswerId: string | null = null;
+      let submittedText: string | null = null;
+
       if (type === "MULTIPLE_CHOICE" || type === "TRUE_FALSE" || type === "IMAGE_ANSWERING" || type === "VIDEO_ANSWERING") {
-        const submitted = formData.get(`answer_${q.id}`) as string;
-        if (submitted && answers.some((a: any) => a.id === submitted && a.isCorrect)) {
-          score += Number(q.points);
-        }
+        submittedAnswerId = (formData.get(`answer_${q.id}`) as string) || null;
+        isCorrect = !!submittedAnswerId && answers.some((a: any) => a.id === submittedAnswerId && a.isCorrect);
+        if (isCorrect) { pointsEarned = points; score += points; }
       } else if (type === "FILL_BLANK") {
-        const submitted = ((formData.get(`answer_${q.id}`) as string) || "").trim().toLowerCase();
+        submittedText = ((formData.get(`answer_${q.id}`) as string) || "").trim().toLowerCase();
         const correctTexts = answers.filter((a: any) => a.isCorrect).map((a: any) => a.text.toLowerCase());
-        if (correctTexts.some((c: string) => c === submitted)) score += Number(q.points);
+        isCorrect = correctTexts.some((c: string) => c === submittedText);
+        if (isCorrect) { pointsEarned = points; score += points; }
+      } else if (type === "ESSAY" || type === "SHORT_ANSWER") {
+        submittedText = (formData.get(`answer_${q.id}`) as string) || null;
+        isCorrect = null; // needs manual grading
+        pointsEarned = 0;
       } else {
-        score += Number(q.points); // ESSAY, SHORT_ANSWER, MATCHING, ORDERING — full credit
+        // MATCHING, ORDERING — full credit
+        pointsEarned = points;
+        score += points;
+        isCorrect = true;
       }
+
+      questionResults.push({
+        id: q.id,
+        title: q.title,
+        questionType: type,
+        points,
+        pointsEarned,
+        isCorrect,
+        submittedAnswerId,
+        submittedText,
+        allAnswers: quiz.feedbackMode === "REVEAL"
+          ? answers.map((a: any) => ({ id: a.id, text: a.text, isCorrect: a.isCorrect, imageUrl: a.imageUrl }))
+          : undefined,
+      });
     }
 
     const passingGrade = Number(quiz.passingGrade);
     const isPassed = maxScore > 0 && (score / maxScore) * 100 >= passingGrade;
     const attemptId = randomUUID();
+
     await prisma.$executeRaw`
       INSERT INTO "QuizAttempt" (id, "userId", "quizId", score, "maxScore", "isPassed", "submittedAt")
       VALUES (${attemptId}, ${user.id}, ${quizId}, ${score}, ${maxScore}, ${isPassed}, NOW())
     `;
-    return data({ ok: true, score, maxScore, isPassed, passingGrade });
+
+    // Store individual answers
+    for (const qr of questionResults) {
+      const aaId = randomUUID();
+      await prisma.$executeRaw`
+        INSERT INTO "QuizAttemptAnswer" (id, "attemptId", "questionId", "answerId", "answerText", "isCorrect", "pointsEarned")
+        VALUES (${aaId}, ${attemptId}, ${qr.id}, ${qr.submittedAnswerId}, ${qr.submittedText}, ${qr.isCorrect}, ${qr.pointsEarned})
+      `;
+    }
+
+    return data({ ok: true, score, maxScore, isPassed, passingGrade, feedbackMode: quiz.feedbackMode, attemptId, questionResults });
   }
 
   return { ok: true };
+}
+
+// ── AnswerVideo ───────────────────────────────────────────────────────────────
+
+function AnswerVideo({ videoUrl }: { videoUrl: string }) {
+  const embed = resolveVideoEmbed(videoUrl);
+  return (
+    <div className="mt-2 rounded-xl overflow-hidden border border-blue-200 shadow-sm">
+      {embed.type === "direct" ? (
+        <video src={embed.src} controls autoPlay className="w-full max-h-56 bg-black" />
+      ) : (
+        <iframe
+          src={`${embed.src}${embed.src.includes("?") ? "&" : "?"}autoplay=1`}
+          className="w-full aspect-video"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+          allowFullScreen
+        />
+      )}
+    </div>
+  );
 }
 
 // ── QuestionBlock ─────────────────────────────────────────────────────────────
@@ -366,6 +427,13 @@ function QuestionBlock({
 }) {
   const type = question.questionType;
   const answers: any[] = question.answers || [];
+  const [tfRevealed, setTfRevealed] = useState(false);
+
+  const handleTfSelect = (answerId: string) => {
+    if (tfRevealed) return;
+    onChange(answerId);
+    setTfRevealed(true);
+  };
 
   return (
     <div className="border border-gray-200 rounded-xl p-5 mb-4 bg-white">
@@ -379,72 +447,119 @@ function QuestionBlock({
         </span>
       </div>
 
-      {(type === "MULTIPLE_CHOICE" || type === "TRUE_FALSE" || type === "IMAGE_ANSWERING") && (
+      {type === "TRUE_FALSE" && (
         <div className="space-y-2 pl-10">
-          {answers.map((a: any) => (
-            <label
-              key={a.id}
-              className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
-                value === a.id
-                  ? "border-blue-500 bg-blue-50"
-                  : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
-              }`}
-            >
-              <div
-                className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
-                  value === a.id ? "border-blue-600 bg-blue-600" : "border-gray-300"
-                }`}
+          {answers.filter((a: any, i: number, arr: any[]) =>
+            arr.findIndex((x: any) => x.text === a.text) === i
+          ).slice(0, 2).map((a: any) => {
+            const isSelected = value === a.id;
+            const isCorrect = a.isCorrect === true;
+            let rowClass = "border-gray-200 hover:border-gray-300 hover:bg-gray-50 cursor-pointer";
+            let radioClass = "border-gray-300";
+            let icon: React.ReactNode = null;
+
+            if (tfRevealed) {
+              if (isSelected && isCorrect) {
+                rowClass = "border-green-500 bg-green-50 cursor-default";
+                radioClass = "border-green-600 bg-green-600";
+                icon = <Check size={15} className="text-green-600 shrink-0" />;
+              } else if (isSelected && !isCorrect) {
+                rowClass = "border-red-400 bg-red-50 cursor-default";
+                radioClass = "border-red-500 bg-red-500";
+                icon = <X size={15} className="text-red-500 shrink-0" />;
+              } else if (!isSelected && isCorrect) {
+                rowClass = "border-green-400 bg-green-50 cursor-default";
+                radioClass = "border-green-500 bg-green-500";
+                icon = <Check size={15} className="text-green-500 shrink-0" />;
+              } else {
+                rowClass = "border-gray-200 bg-gray-50 opacity-60 cursor-default";
+              }
+            } else if (isSelected) {
+              rowClass = "border-blue-500 bg-blue-50 cursor-pointer";
+              radioClass = "border-blue-600 bg-blue-600";
+            }
+
+            return (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => handleTfSelect(a.id)}
+                disabled={tfRevealed}
+                className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all text-left ${rowClass}`}
               >
-                {value === a.id && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${radioClass}`}>
+                  {(isSelected || (tfRevealed && isCorrect)) && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                </div>
+                <input type="radio" name={`answer_${question.id}`} value={a.id} checked={isSelected} onChange={() => handleTfSelect(a.id)} className="sr-only" />
+                <span className="text-sm text-gray-700 flex-1 font-medium">{a.text}</span>
+                {icon}
+              </button>
+            );
+          })}
+          {tfRevealed && (
+            <p className={`text-xs font-semibold pt-1 ${answers.find((a: any) => a.id === value)?.isCorrect ? "text-green-600" : "text-red-500"}`}>
+              {answers.find((a: any) => a.id === value)?.isCorrect
+                ? "Correct!"
+                : "Incorrect — the correct answer is highlighted above."}
+            </p>
+          )}
+          {value && (() => {
+            const sel = answers.find((a: any) => a.id === value);
+            return sel?.videoUrl ? <AnswerVideo videoUrl={sel.videoUrl} /> : null;
+          })()}
+        </div>
+      )}
+
+      {(type === "MULTIPLE_CHOICE" || type === "IMAGE_ANSWERING") && (
+        <div className="space-y-2 pl-10">
+          {answers.map((a: any) => {
+            const isSelected = value === a.id;
+            return (
+              <div key={a.id}>
+                <label
+                  className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                    isSelected ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
+                  }`}
+                >
+                  <div
+                    className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
+                      isSelected ? "border-blue-600 bg-blue-600" : "border-gray-300"
+                    }`}
+                  >
+                    {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                  </div>
+                  <input type="radio" name={`answer_${question.id}`} value={a.id} checked={isSelected} onChange={() => onChange(a.id)} className="sr-only" />
+                  <div className="flex-1">
+                    {type === "IMAGE_ANSWERING" && a.imageUrl && (
+                      <img src={a.imageUrl} alt="" className="w-28 h-20 object-cover rounded mb-2" />
+                    )}
+                    <span className="text-sm text-gray-700">{a.text}</span>
+                  </div>
+                  {a.videoUrl && !isSelected && <Play size={13} className="text-gray-400 shrink-0" />}
+                </label>
+                {isSelected && a.videoUrl && <AnswerVideo videoUrl={a.videoUrl} />}
               </div>
-              <input type="radio" name={`answer_${question.id}`} value={a.id} checked={value === a.id} onChange={() => onChange(a.id)} className="sr-only" />
-              <div className="flex-1">
-                {type === "IMAGE_ANSWERING" && a.imageUrl && (
-                  <img src={a.imageUrl} alt="" className="w-28 h-20 object-cover rounded mb-2" />
-                )}
-                <span className="text-sm text-gray-700">{a.text}</span>
-              </div>
-            </label>
-          ))}
+            );
+          })}
         </div>
       )}
 
       {type === "VIDEO_ANSWERING" && (
-        <div className="space-y-4 pl-10">
+        <div className="space-y-3 pl-10">
           {answers.map((a: any) => {
-            const embed = a.videoUrl ? resolveVideoEmbed(a.videoUrl) : null;
             const isSelected = value === a.id;
+            const embed = isSelected && a.videoUrl ? resolveVideoEmbed(a.videoUrl) : null;
             return (
-              <div
-                key={a.id}
-                onClick={() => onChange(a.id)}
-                className={`rounded-xl border-2 cursor-pointer transition-all overflow-hidden ${
-                  isSelected ? "border-blue-500 shadow-md" : "border-gray-200 hover:border-gray-300"
-                }`}
-              >
-                {embed ? (
-                  embed.type === "direct" ? (
-                    <video
-                      src={embed.src}
-                      controls
-                      className="w-full max-h-48 bg-black"
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  ) : (
-                    <iframe
-                      src={embed.src}
-                      className="w-full aspect-video"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  )
-                ) : (
-                  <div className="w-full h-24 bg-gray-100 flex items-center justify-center text-gray-400 text-sm">
-                    No video
-                  </div>
-                )}
-                <div className={`flex items-center gap-3 p-3 ${isSelected ? "bg-blue-50" : "bg-white"}`}>
+              <div key={a.id}>
+                <button
+                  type="button"
+                  onClick={() => onChange(a.id)}
+                  className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all text-left ${
+                    isSelected
+                      ? "border-blue-500 bg-blue-50"
+                      : "border-gray-200 hover:border-gray-300 hover:bg-gray-50 cursor-pointer"
+                  }`}
+                >
                   <div
                     className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
                       isSelected ? "border-blue-600 bg-blue-600" : "border-gray-300"
@@ -454,7 +569,27 @@ function QuestionBlock({
                   </div>
                   <input type="radio" name={`answer_${question.id}`} value={a.id} checked={isSelected} onChange={() => onChange(a.id)} className="sr-only" />
                   <span className="text-sm text-gray-700 flex-1">{a.text}</span>
-                </div>
+                  {a.videoUrl && !isSelected && <Play size={13} className="text-gray-400 shrink-0" />}
+                </button>
+                {isSelected && embed && (
+                  <div className="mt-2 rounded-xl overflow-hidden border border-blue-200 shadow-sm">
+                    {embed.type === "direct" ? (
+                      <video src={embed.src} controls autoPlay className="w-full max-h-56 bg-black" />
+                    ) : (
+                      <iframe
+                        src={`${embed.src}${embed.src.includes("?") ? "&" : "?"}autoplay=1`}
+                        className="w-full aspect-video"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowFullScreen
+                      />
+                    )}
+                  </div>
+                )}
+                {isSelected && !a.videoUrl && (
+                  <div className="mt-2 rounded-xl border border-blue-200 bg-gray-100 h-24 flex items-center justify-center text-gray-400 text-sm">
+                    No video attached
+                  </div>
+                )}
               </div>
             );
           })}
@@ -527,11 +662,138 @@ function QuestionBlock({
   );
 }
 
+// ── Confetti ──────────────────────────────────────────────────────────────────
+
+const CONFETTI_PIECES = Array.from({ length: 50 }, (_, i) => ({
+  left: `${(i * 37 + 11) % 100}%`,
+  delay: `${((i * 0.13) % 2).toFixed(2)}s`,
+  duration: `${(2.2 + (i * 0.17) % 1.8).toFixed(2)}s`,
+  color: ["#10b981","#3b82f6","#f59e0b","#8b5cf6","#ef4444","#06b6d4","#f472b6"][i % 7],
+  size: `${7 + (i % 5)}px`,
+  shape: i % 3 === 0 ? "50%" : "2px",
+}));
+
+function Confetti() {
+  return (
+    <div className="fixed inset-0 pointer-events-none overflow-hidden z-50">
+      <style>{`
+        @keyframes cf-fall {
+          0%   { transform: translateY(-30px) rotate(0deg); opacity: 1; }
+          80%  { opacity: 1; }
+          100% { transform: translateY(105vh) rotate(540deg); opacity: 0; }
+        }
+      `}</style>
+      {CONFETTI_PIECES.map((p, i) => (
+        <div
+          key={i}
+          style={{
+            position: "absolute",
+            left: p.left,
+            top: 0,
+            width: p.size,
+            height: p.size,
+            background: p.color,
+            borderRadius: p.shape,
+            animation: `cf-fall ${p.duration} ${p.delay} ease-in forwards`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ── ScoreArc ──────────────────────────────────────────────────────────────────
+
+function ScoreArc({ pct, isPassed }: { pct: number; isPassed: boolean }) {
+  const [animPct, setAnimPct] = useState(0);
+  useEffect(() => {
+    const t = setTimeout(() => setAnimPct(pct), 80);
+    return () => clearTimeout(t);
+  }, [pct]);
+
+  const radius = 48;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (animPct / 100) * circumference;
+  const color = isPassed ? "#10b981" : "#ef4444";
+
+  return (
+    <div className="relative w-36 h-36">
+      <svg className="w-36 h-36 -rotate-90" viewBox="0 0 120 120">
+        <circle cx="60" cy="60" r={radius} fill="none" stroke="#e5e7eb" strokeWidth="11" />
+        <circle
+          cx="60" cy="60" r={radius} fill="none"
+          stroke={color}
+          strokeWidth="11"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          style={{ transition: "stroke-dashoffset 1.1s cubic-bezier(.4,0,.2,1)" }}
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="text-3xl font-black text-gray-900">{pct}%</span>
+        <span className="text-[11px] text-gray-400 mt-0.5">Score</span>
+      </div>
+    </div>
+  );
+}
+
+// ── QuestionReviewCard ─────────────────────────────────────────────────────────
+
+function QuestionReviewCard({ qr, idx, feedbackMode }: { qr: any; idx: number; feedbackMode: string }) {
+  const isPending = qr.isCorrect === null;
+  const isCorrect = qr.isCorrect === true;
+
+  let borderCls = "border-gray-200 bg-white";
+  let dotCls = "bg-gray-400";
+  let dotLabel = "?";
+  if (!isPending) {
+    if (isCorrect) { borderCls = "border-green-200 bg-green-50"; dotCls = "bg-green-500"; dotLabel = "✓"; }
+    else           { borderCls = "border-red-200 bg-red-50";    dotCls = "bg-red-500";   dotLabel = "✗"; }
+  }
+
+  return (
+    <div className={`rounded-xl border p-4 ${borderCls}`}>
+      <div className="flex items-start gap-3 mb-2">
+        <div className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-white text-[11px] font-bold mt-0.5 ${dotCls}`}>
+          {dotLabel}
+        </div>
+        <p className="text-sm text-gray-800 flex-1 font-medium">{idx + 1}. {qr.title}</p>
+        <span className="text-xs text-gray-500 shrink-0 font-medium">{qr.pointsEarned}/{qr.points} pt</span>
+      </div>
+
+      {qr.submittedText && (
+        <div className="ml-9 text-xs text-gray-600 bg-white rounded-lg border border-gray-200 px-3 py-2 mb-2">
+          Your answer: <span className="font-medium">{qr.submittedText}</span>
+        </div>
+      )}
+
+      {feedbackMode === "REVEAL" && qr.allAnswers && (
+        <div className="ml-9 space-y-1">
+          {qr.allAnswers.map((a: any) => (
+            <div key={a.id} className={`flex items-center gap-2 text-xs px-2 py-1.5 rounded-lg ${a.isCorrect ? "bg-green-100 text-green-800 font-semibold" : "text-gray-500"}`}>
+              {a.isCorrect
+                ? <Check size={11} className="text-green-600 shrink-0" />
+                : <div className="w-2.5 h-2.5 rounded-full bg-gray-200 shrink-0" />}
+              {a.text}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {isPending && (
+        <p className="ml-9 text-xs text-amber-600 italic mt-1">⏳ Pending instructor review</p>
+      )}
+    </div>
+  );
+}
+
 // ── QuizAttemptForm ───────────────────────────────────────────────────────────
 
 function QuizAttemptForm({ quiz, onRetake }: { quiz: any; onRetake: () => void }) {
   const quizFetcher = useFetcher<{
     ok?: boolean; score?: number; maxScore?: number; isPassed?: boolean; passingGrade?: number;
+    feedbackMode?: string; attemptId?: string; questionResults?: any[];
   }>();
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [timeLeft, setTimeLeft] = useState<number | null>(
@@ -554,30 +816,62 @@ function QuizAttemptForm({ quiz, onRetake }: { quiz: any; onRetake: () => void }
 
   if (submitted && result) {
     const pct = result.maxScore! > 0 ? Math.round((result.score! / result.maxScore!) * 100) : 0;
+    const isPassed = !!result.isPassed;
+    const feedbackMode = result.feedbackMode ?? "DEFAULT";
+    const hasReview = (feedbackMode === "REVEAL" || feedbackMode === "RETRY") && Array.isArray(result.questionResults) && result.questionResults.length > 0;
+
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] p-8 text-center">
-        <div className={`w-24 h-24 rounded-full flex items-center justify-center mb-6 border-4 ${result.isPassed ? "border-green-400 bg-green-50" : "border-red-400 bg-red-50"}`}>
-          {result.isPassed
-            ? <Trophy size={36} className="text-green-500" />
-            : <AlertCircle size={36} className="text-red-500" />}
+      <div className="max-w-2xl mx-auto px-6 py-10">
+        {isPassed && <Confetti />}
+
+        {/* Score Arc */}
+        <div className="flex flex-col items-center mb-8">
+          <ScoreArc pct={pct} isPassed={isPassed} />
+
+          <div className={`mt-5 inline-flex items-center gap-2 px-5 py-2 rounded-full text-sm font-bold border ${
+            isPassed ? "bg-green-50 text-green-700 border-green-200" : "bg-red-50 text-red-600 border-red-200"
+          }`}>
+            {isPassed ? <><Trophy size={14} /> Quiz Passed!</> : <><AlertCircle size={14} /> Quiz Failed</>}
+          </div>
+
+          <p className="text-gray-500 text-sm mt-3">
+            <span className="font-semibold text-gray-800">{result.score} / {result.maxScore}</span> points &nbsp;·&nbsp; Passing grade: {result.passingGrade}%
+          </p>
+
+          {!isPassed && (
+            <p className="text-gray-400 text-xs mt-1">You need {result.passingGrade}% or higher to pass.</p>
+          )}
+
+          {result.questionResults?.some((qr: any) => qr.isCorrect === null) && (
+            <div className="mt-3 flex items-center gap-2 text-amber-600 text-xs bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              <AlertCircle size={12} />
+              Some answers require instructor review. Your score may change.
+            </div>
+          )}
         </div>
-        <h2 className={`text-2xl font-bold mb-2 ${result.isPassed ? "text-green-600" : "text-red-500"}`}>
-          {result.isPassed ? "Quiz Passed!" : "Quiz Failed"}
-        </h2>
-        <p className="text-gray-600 mb-1">
-          You scored <span className="text-gray-900 font-bold">{result.score} / {result.maxScore}</span> points
-        </p>
-        <p className="text-gray-400 text-sm mb-1">{pct}% — passing grade is {result.passingGrade}%</p>
-        {!result.isPassed && (
-          <p className="text-gray-400 text-sm mb-6">You need {result.passingGrade}% or higher to pass.</p>
+
+        {/* Answer Review */}
+        {hasReview && (
+          <div className="mb-8 space-y-3">
+            <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+              <CheckCircle2 size={15} className="text-blue-500" />
+              Answer Review
+            </h3>
+            {result.questionResults!.map((qr: any, idx: number) => (
+              <QuestionReviewCard key={qr.id} qr={qr} idx={idx} feedbackMode={feedbackMode} />
+            ))}
+          </div>
         )}
-        {result.isPassed && <div className="mb-6" />}
-        <button
-          onClick={onRetake}
-          className="flex items-center gap-2 border border-gray-300 hover:border-gray-400 text-gray-700 hover:text-gray-900 bg-white px-6 py-2.5 rounded-xl transition-colors text-sm font-medium shadow-sm"
-        >
-          <RefreshCw size={14} /> Retake Quiz
-        </button>
+
+        {/* Retake */}
+        <div className="flex justify-center">
+          <button
+            onClick={onRetake}
+            className="flex items-center gap-2 border border-gray-300 hover:border-gray-400 text-gray-700 hover:text-gray-900 bg-white px-6 py-2.5 rounded-xl transition-colors text-sm font-medium shadow-sm"
+          >
+            <RefreshCw size={14} /> Retake Quiz
+          </button>
+        </div>
       </div>
     );
   }
