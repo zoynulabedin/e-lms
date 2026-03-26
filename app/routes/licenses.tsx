@@ -262,7 +262,7 @@ export default function LicenseManagement() {
         )}
 
       {/* Filter & Table */}
-      <div className="bg-white shadow-sm border border-gray-200 rounded-lg overflow-hidden">
+      <div className="bg-white shadow-sm border border-gray-200 rounded-lg">
         <div className="p-4 border-b border-gray-200 flex flex-wrap gap-4 items-center justify-between">
           <Form method="get" className="flex items-center gap-2">
             <Filter size={15} className="text-gray-500" />
@@ -359,7 +359,7 @@ export default function LicenseManagement() {
                         <button className="text-gray-400 hover:text-gray-600 p-1.5 rounded hover:bg-gray-100 transition-colors">
                           <MoreVertical size={15} />
                         </button>
-                        <div className="hidden group-hover:block absolute right-0 z-10 w-44 mt-1 origin-top-right bg-white border border-gray-200 divide-y divide-gray-100 rounded-lg shadow-lg">
+                        <div className="hidden group-hover:block absolute right-0 z-50 w-44 mt-1 origin-top-right bg-white border border-gray-200 divide-y divide-gray-100 rounded-lg shadow-lg">
                           <div className="py-1">
                             <ResendEmailButton licenseId={license.id} />
                             <CopyKeyButton licenseKey={license.key} />
