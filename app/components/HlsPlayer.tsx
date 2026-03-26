@@ -1,10 +1,25 @@
+/**
+ * HlsPlayer — SSR-safe, cross-browser HLS video player
+ *
+ * Browser support:
+ *   Chrome / Edge / Firefox / Opera / Android WebView  → hls.js (via /api/video-proxy)
+ *   Safari macOS / iOS / iPadOS                        → native HLS (direct src or proxy)
+ *
+ * SSR safety:
+ *   hls.js is dynamically imported inside useEffect — it never runs on the server.
+ *   The <video> element renders on server with no src so there is no hydration mismatch.
+ *
+ * Proxy:
+ *   Pass a /api/video-proxy?url=… src for cross-origin HLS.
+ *   The resolveVideoEmbed() helper in student.course.$courseId.tsx does this automatically.
+ */
+
 import { useCallback, useEffect, useRef, useState } from "react";
 
-interface HlsPlayerProps {
+export interface HlsPlayerProps {
   src: string;
   poster?: string;
   className?: string;
-  /** autoPlay requires muted=true on most mobile browsers */
   autoPlay?: boolean;
   muted?: boolean;
   onEnded?: () => void;
@@ -12,17 +27,6 @@ interface HlsPlayerProps {
 
 type Status = "loading" | "buffering" | "ready" | "error";
 
-/**
- * HlsPlayer — SSR-safe, cross-browser, mobile-ready HLS video player.
- *
- * Browser support:
- *  Chrome / Edge / Firefox / Opera (desktop + Android)  → hls.js
- *  Safari macOS / iOS / iPadOS                          → native HLS
- *  Samsung Internet / Android WebView                   → hls.js
- *
- * CORS: the media server must respond with
- *   Access-Control-Allow-Origin: https://lms.instructionalgraphics.org
- */
 export function HlsPlayer({
   src,
   poster,
@@ -33,119 +37,135 @@ export function HlsPlayer({
 }: HlsPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<import("hls.js").default | null>(null);
-  const retryCountRef = useRef(0);
+  const retryRef = useRef(0);
   const MAX_RETRIES = 3;
 
   const [status, setStatus] = useState<Status>("loading");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [qualities, setQualities] = useState<{ label: string; index: number }[]>([]);
-  const [currentQuality, setCurrentQuality] = useState<number>(-1); // -1 = auto
+  const [currentQuality, setCurrentQuality] = useState(-1); // -1 = auto
 
-  // ── Destroy helper ──────────────────────────────────────────────────────────
   const destroyHls = useCallback(() => {
     hlsRef.current?.destroy();
     hlsRef.current = null;
   }, []);
 
-  // ── Init ────────────────────────────────────────────────────────────────────
+  // ── Main init effect — runs only in the browser ───────────────────────────
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !src) return;
 
     let cancelled = false;
-    retryCountRef.current = 0;
+
+    // Reset state for each new src
+    retryRef.current = 0;
     setErrorMsg(null);
     setStatus("loading");
     setQualities([]);
     setCurrentQuality(-1);
 
     async function init() {
+      // Dynamic import keeps hls.js out of the SSR bundle entirely
       const { default: Hls } = await import("hls.js");
       if (cancelled || !video) return;
 
-      // ── hls.js path (Chrome / Firefox / Edge / Android) ──────────────────
+      // ── hls.js path (Chrome, Firefox, Edge, Android) ────────────────────
       if (Hls.isSupported()) {
         destroyHls();
 
         const hls = new Hls({
-          enableWorker: false, // worker uses eval() which is blocked by CSP
+          // MUST be false — workers use eval() which is blocked by CSP
+          enableWorker: false,
+
+          // Buffering
           lowLatencyMode: false,
           backBufferLength: 90,
           maxBufferLength: 30,
           maxMaxBufferLength: 60,
-          startLevel: -1,          // auto quality on start
-          abrEwmaDefaultEstimate: 1_000_000,
+
+          // Start with auto quality selection
+          startLevel: -1,
+          abrEwmaDefaultEstimate: 1_500_000,
+
+          // Retry config for unreliable connections
           manifestLoadingMaxRetry: 4,
           levelLoadingMaxRetry: 4,
           fragLoadingMaxRetry: 4,
           manifestLoadingRetryDelay: 1000,
           levelLoadingRetryDelay: 1000,
           fragLoadingRetryDelay: 1000,
-          // Pass credentials-free CORS requests
-          xhrSetup(xhr) {
-            xhr.withCredentials = false;
-          },
         });
 
         hlsRef.current = hls;
 
-        // Quality levels available after manifest parsed
+        // Manifest loaded → video is ready to play
         hls.on(Hls.Events.MANIFEST_PARSED, (_e, data) => {
           if (cancelled) return;
           setStatus("ready");
+
           const levels = data.levels.map((l, i) => ({
             index: i,
             label: l.height ? `${l.height}p` : `Level ${i + 1}`,
           }));
           setQualities(levels.length > 1 ? levels : []);
+
           if (autoPlay) video!.play().catch(() => {});
         });
 
-        // Track current auto-selected level
+        // Track which quality level is active
         hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
-          if (hls.autoLevelEnabled) setCurrentQuality(-1);
-          else setCurrentQuality(data.level);
+          setCurrentQuality(hls.autoLevelEnabled ? -1 : data.level);
         });
 
-        // Error recovery
+        // Error handling with automatic recovery
         hls.on(Hls.Events.ERROR, (_e, data) => {
           if (cancelled || !data.fatal) return;
 
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            if (retryCountRef.current < MAX_RETRIES) {
-              retryCountRef.current += 1;
+            if (retryRef.current < MAX_RETRIES) {
+              retryRef.current += 1;
+              console.warn(
+                `[HlsPlayer] network error — retry ${retryRef.current}/${MAX_RETRIES}`,
+                data.details,
+              );
               setTimeout(() => hls.startLoad(), 1500);
             } else {
               setStatus("error");
-              setErrorMsg("Network error — check your connection and try again.");
+              setErrorMsg(
+                "Could not load video. Check your connection and try again.",
+              );
             }
           } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            console.warn("[HlsPlayer] media error — attempting recovery");
             hls.recoverMediaError();
           } else {
             setStatus("error");
-            setErrorMsg(`Playback error: ${data.details}`);
+            setErrorMsg(`Playback error (${data.details})`);
           }
         });
 
         hls.loadSource(src);
-        hls.attachMedia(video as HTMLMediaElement);
+        hls.attachMedia(video);
 
-      // ── Native HLS path (Safari / iOS / iPadOS) ───────────────────────────
-      } else if ((video as HTMLVideoElement).canPlayType("application/vnd.apple.mpegurl")) {
-        (video as HTMLVideoElement).src = src;
-        (video as HTMLVideoElement).load();
+      // ── Native HLS path (Safari / iOS / iPadOS) ──────────────────────────
+      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = src;
+        video.load();
         setStatus("ready");
-        if (autoPlay) (video as HTMLVideoElement).play().catch(() => {});
+        if (autoPlay) video.play().catch(() => {});
 
-      // ── Unsupported ───────────────────────────────────────────────────────
+      // ── Unsupported browser ───────────────────────────────────────────────
       } else {
         setStatus("error");
-        setErrorMsg("Your browser does not support HLS video. Please try Chrome, Firefox, or Safari.");
+        setErrorMsg(
+          "Your browser does not support HLS video. Please try Chrome, Firefox, or Safari.",
+        );
       }
     }
 
     init().catch((err) => {
       if (!cancelled) {
+        console.error("[HlsPlayer] init error:", err);
         setStatus("error");
         setErrorMsg(String(err));
       }
@@ -157,62 +177,87 @@ export function HlsPlayer({
     };
   }, [src, autoPlay, destroyHls]);
 
-  // ── Retry handler ───────────────────────────────────────────────────────────
+  // ── Retry handler ────────────────────────────────────────────────────────
   function handleRetry() {
     const video = videoRef.current;
     if (!video) return;
+    retryRef.current = 0;
     setStatus("loading");
     setErrorMsg(null);
-    retryCountRef.current = 0;
-    // Re-trigger the effect by resetting src on the hls instance
+
     if (hlsRef.current) {
       hlsRef.current.loadSource(src);
       hlsRef.current.attachMedia(video);
     } else {
-      // Safari path — just reload
       video.load();
       setStatus("ready");
     }
   }
 
-  // ── Quality switcher ────────────────────────────────────────────────────────
+  // ── Quality switcher ─────────────────────────────────────────────────────
   function handleQualityChange(index: number) {
     if (!hlsRef.current) return;
     hlsRef.current.currentLevel = index;
     setCurrentQuality(index);
   }
 
+  // ── Render ───────────────────────────────────────────────────────────────
   return (
-    <div className={`relative w-full aspect-video bg-black overflow-hidden ${className ?? ""}`}>
-
+    <div
+      className={`relative w-full aspect-video bg-black overflow-hidden ${className ?? ""}`}
+    >
       {/* Loading / buffering overlay */}
       {(status === "loading" || status === "buffering") && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 gap-3">
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black/70">
           <svg
             className="w-10 h-10 text-white animate-spin"
             xmlns="http://www.w3.org/2000/svg"
             fill="none"
             viewBox="0 0 24 24"
           >
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+            <circle
+              className="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              strokeWidth="4"
+            />
+            <path
+              className="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+            />
           </svg>
           {status === "buffering" && (
-            <span className="text-white/70 text-xs">Buffering…</span>
+            <span className="text-xs text-white/70">Buffering…</span>
           )}
         </div>
       )}
 
       {/* Error overlay */}
       {status === "error" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 text-white gap-4 p-6 z-10">
-          <svg xmlns="http://www.w3.org/2000/svg" className="w-10 h-10 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-black/80 p-6 text-white">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="w-10 h-10 shrink-0 text-red-400"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={1.5}
+              d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+            />
           </svg>
-          <p className="text-sm text-center text-red-300 max-w-xs">{errorMsg}</p>
+          <p className="max-w-xs text-center text-sm text-red-300">
+            {errorMsg}
+          </p>
           <button
             onClick={handleRetry}
-            className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-sm font-medium transition-colors"
+            className="rounded-lg bg-white/10 px-4 py-2 text-sm font-medium transition-colors hover:bg-white/20"
           >
             Try Again
           </button>
@@ -225,21 +270,24 @@ export function HlsPlayer({
           <select
             value={currentQuality}
             onChange={(e) => handleQualityChange(Number(e.target.value))}
-            className="bg-black/60 text-white text-xs rounded px-2 py-1 border border-white/20 focus:outline-none cursor-pointer"
+            className="cursor-pointer rounded border border-white/20 bg-black/60 px-2 py-1 text-xs text-white focus:outline-none"
           >
             <option value={-1}>Auto</option>
             {qualities.map((q) => (
-              <option key={q.index} value={q.index}>{q.label}</option>
+              <option key={q.index} value={q.index}>
+                {q.label}
+              </option>
             ))}
           </select>
         </div>
       )}
 
       {/*
-        Video element attributes:
-          playsInline       — prevents iOS from forcing fullscreen
-          crossOrigin       — required for CORS HLS segments
-          x-webkit-airplay  — AirPlay on Safari/iOS
+        Notes on <video> attributes:
+          playsInline    — prevents iOS from forcing fullscreen on play
+          preload        — "metadata" loads duration/dimensions without buffering
+          No crossOrigin — src goes through /api/video-proxy (same-origin),
+                           so no CORS attribute is needed or wanted
       */}
       <video
         ref={videoRef}
@@ -248,13 +296,13 @@ export function HlsPlayer({
         playsInline
         muted={muted}
         preload="metadata"
-  
-        x-webkit-airplay="allow"
         onWaiting={() => setStatus("buffering")}
-        onCanPlay={() => { if (status !== "error") setStatus("ready"); }}
+        onCanPlay={() => {
+          if (status !== "error") setStatus("ready");
+        }}
         onPlaying={() => setStatus("ready")}
         onEnded={onEnded}
-        className="w-full h-full"
+        className="h-full w-full"
       />
     </div>
   );
