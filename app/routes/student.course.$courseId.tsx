@@ -66,11 +66,7 @@ function resolveVideoEmbed(raw: string): {
   if (raw.includes("wistia.com"))
     return { type: "iframe", src: raw.replace("/medias/", "/embed/iframe/") };
   if (raw.includes(".m3u8")) {
-    // Proxy cross-origin HLS through the LMS server to avoid CORS issues
-    const proxied = raw.startsWith("http")
-      ? `/api/video-proxy?url=${encodeURIComponent(raw)}`
-      : raw;
-    return { type: "hls", src: proxied };
+    return { type: "hls", src: raw };
   }
   return { type: "direct", src: raw };
 }
