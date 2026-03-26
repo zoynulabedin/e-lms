@@ -248,7 +248,7 @@ export function HlsPlayer({
         playsInline
         muted={muted}
         preload="metadata"
-        crossOrigin="anonymous"
+  
         x-webkit-airplay="allow"
         onWaiting={() => setStatus("buffering")}
         onCanPlay={() => { if (status !== "error") setStatus("ready"); }}
