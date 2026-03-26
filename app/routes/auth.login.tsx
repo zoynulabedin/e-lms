@@ -1,5 +1,5 @@
 import { redirect, data } from "react-router";
-import { Form, Link, useActionData, useLoaderData, useNavigation } from "react-router";
+import { Form, Link, useActionData, useLoaderData } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import {
@@ -78,8 +78,7 @@ export async function action({ request }: ActionFunctionArgs) {
 export default function Login() {
   const loaderData = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
-  const navigation = useNavigation();
-  const isSubmitting = navigation.state === "submitting";
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [showPw, setShowPw] = useState(false);
 
   const passwordReset = loaderData && "passwordReset" in loaderData ? loaderData.passwordReset : false;
@@ -106,7 +105,7 @@ export default function Login() {
               Password updated successfully. Sign in with your new password.
             </div>
           )}
-          <Form method="post" className="space-y-5">
+          <Form method="post" reloadDocument onSubmit={() => setIsSubmitting(true)} className="space-y-5">
             {actionData?.error && (
               <div className="bg-red-500/10 border border-red-500/20 text-red-400 rounded-lg px-4 py-3 text-sm">
                 {actionData.error}

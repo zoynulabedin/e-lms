@@ -1,7 +1,5 @@
-import { redirect } from "react-router";
-import { useLoaderData, useFetcher, Link } from "react-router";
+import { redirect, useLoaderData, useFetcher, Link, data } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { data } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireAdmin } from "../utils/auth.server";
 import { useState } from "react";
@@ -41,10 +39,8 @@ export async function action({ request }: ActionFunctionArgs) {
   if (intent === "create") {
     const title = (formData.get("title") as string)?.trim();
     if (!title) return data({ error: "Title is required." }, { status: 400 });
-    const course = await prisma.course.create({
-      data: { title, status: "DRAFT", isPublic: false },
-    });
-    return redirect(`/courses/${course.id}`);
+    const course = await prisma.course.create({ data: { title } });
+    throw redirect(`/courses/${course.id}`);
   }
 
   if (intent === "delete") {
@@ -97,13 +93,7 @@ function CourseTypeBadge({ type }: { type: string }) {
 
 // ── Quick Create Modal ────────────────────────────────────────────────────────
 
-function QuickCreateModal({
-  onClose,
-  fetcher,
-}: {
-  onClose: () => void;
-  fetcher: any;
-}) {
+function QuickCreateModal({ onClose }: { onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/50 backdrop-blur-sm">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md border border-gray-100">
@@ -119,7 +109,7 @@ function QuickCreateModal({
             <X size={18} />
           </button>
         </div>
-        <fetcher.Form method="post" className="p-6 space-y-4">
+        <form method="post" action="/courses" className="p-6 space-y-4">
           <input type="hidden" name="intent" value="create" />
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
@@ -147,13 +137,12 @@ function QuickCreateModal({
             </button>
             <button
               type="submit"
-              disabled={fetcher.state === "submitting"}
-              className="px-5 py-2 text-sm font-medium text-white bg-[#008060] rounded-lg hover:bg-[#006e52] disabled:opacity-60 shadow-sm"
+              className="px-5 py-2 text-sm font-medium text-white bg-[#008060] rounded-lg hover:bg-[#006e52] shadow-sm"
             >
-              {fetcher.state === "submitting" ? "Creating…" : "Create & Edit"}
+              Create & Edit
             </button>
           </div>
-        </fetcher.Form>
+        </form>
       </div>
     </div>
   );
@@ -345,10 +334,7 @@ export default function CourseManagement() {
       </div>
 
       {isCreateOpen && (
-        <QuickCreateModal
-          fetcher={fetcher}
-          onClose={() => setIsCreateOpen(false)}
-        />
+        <QuickCreateModal onClose={() => setIsCreateOpen(false)} />
       )}
     </div>
   );
