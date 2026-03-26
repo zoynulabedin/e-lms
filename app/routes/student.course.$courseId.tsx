@@ -65,8 +65,13 @@ function resolveVideoEmbed(raw: string): {
     return { type: "vimeo", src: `https://player.vimeo.com/video/${vimeoId}` };
   if (raw.includes("wistia.com"))
     return { type: "iframe", src: raw.replace("/medias/", "/embed/iframe/") };
-  if (raw.includes(".m3u8"))
-    return { type: "hls", src: raw };
+  if (raw.includes(".m3u8")) {
+    // Proxy cross-origin HLS through the LMS server to avoid CORS issues
+    const proxied = raw.startsWith("http")
+      ? `/api/video-proxy?url=${encodeURIComponent(raw)}`
+      : raw;
+    return { type: "hls", src: proxied };
+  }
   return { type: "direct", src: raw };
 }
 

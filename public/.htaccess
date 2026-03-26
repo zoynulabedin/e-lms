@@ -1,0 +1,28 @@
+# ─── CORS for HLS video (all browsers) ───────────────────────────────────────
+<IfModule mod_headers.c>
+    # Allow the LMS origin to load media
+    Header always set Access-Control-Allow-Origin "*"
+    Header always set Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+    Header always set Access-Control-Allow-Headers "Range, Content-Type, Accept-Encoding"
+    Header always set Access-Control-Expose-Headers "Content-Length, Content-Range, Content-Type"
+
+    # Handle OPTIONS preflight
+    RewriteEngine On
+    RewriteCond %{REQUEST_METHOD} OPTIONS
+    RewriteRule ^(.*)$ $1 [R=204,L]
+</IfModule>
+
+# ─── MIME types for HLS ───────────────────────────────────────────────────────
+<IfModule mod_mime.c>
+    AddType application/vnd.apple.mpegurl .m3u8
+    AddType video/mp2t .ts
+    AddType video/mp4 .mp4
+</IfModule>
+
+# ─── Cache control for HLS segments ──────────────────────────────────────────
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType application/vnd.apple.mpegurl "access plus 0 seconds"
+    ExpiresByType video/mp2t "access plus 1 hour"
+    ExpiresByType video/mp4 "access plus 1 hour"
+</IfModule>
