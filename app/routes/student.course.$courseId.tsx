@@ -66,7 +66,10 @@ function resolveVideoEmbed(raw: string): {
   if (raw.includes("wistia.com"))
     return { type: "iframe", src: raw.replace("/medias/", "/embed/iframe/") };
   if (raw.includes(".m3u8")) {
-    return { type: "hls", src: raw };
+    const src = raw.startsWith("http")
+      ? `/api/video-proxy?url=${encodeURIComponent(raw)}`
+      : raw;
+    return { type: "hls", src };
   }
   return { type: "direct", src: raw };
 }
