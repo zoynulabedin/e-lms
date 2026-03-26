@@ -8,4 +8,9 @@ dotenv.config();
 
 export default defineConfig({
   plugins: [tailwindcss(), reactRouter(), tsconfigPaths()],
+  ssr: {
+    // Ensure Node.js built-in modules are never bundled — always resolved at runtime
+    noExternal: [],
+    external: ["node:https", "node:http", "https", "http", "node:buffer", "node:url"],
+  },
 });

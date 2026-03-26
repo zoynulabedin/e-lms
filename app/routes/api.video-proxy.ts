@@ -3,8 +3,8 @@
  * Optimized for React Router v7 & Node.js environments
  */
 import type { LoaderFunctionArgs } from "react-router";
-import https from "https";
-import http from "http";
+import https from "node:https";
+import http from "node:http";
 
 const ALLOWED_HOST = "courses.instructionalgraphics.org";
 const BROWSER_UA =
@@ -19,32 +19,36 @@ interface UpstreamResponse {
 function nodeFetch(url: string, reqHeaders: any): Promise<UpstreamResponse> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
-    const lib = parsed.protocol === "https:" ? https : http;
+    const isHttps = parsed.protocol === "https:";
+    const lib = isHttps ? https : http;
 
-    const options = {
+    // Explicit options — most compatible across all Node.js versions
+    const reqOptions = {
+      hostname: parsed.hostname,
+      port: parsed.port ? parseInt(parsed.port, 10) : (isHttps ? 443 : 80),
+      path: parsed.pathname + parsed.search,
       method: "GET",
       headers: reqHeaders,
-      timeout: 15000,
     };
 
-    const req = lib.get(url, options, (res) => {
+    const req = lib.request(reqOptions, (res) => {
       const chunks: Buffer[] = [];
-      res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => {
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () =>
         resolve({
           status: res.statusCode ?? 200,
           headers: res.headers,
           buffer: Buffer.concat(chunks),
-        });
-      });
-      res.on("error", reject); // needed: response stream can error mid-transfer
+        }),
+      );
+      res.on("error", reject);
     });
 
-    req.on("error", (e) => reject(e));
-    req.on("timeout", () => {
-      req.destroy();
-      reject(new Error("Request Timeout"));
+    req.setTimeout(15000, () => {
+      req.destroy(new Error("Upstream timeout after 15s"));
     });
+    req.on("error", reject);
+    req.end();
   });
 }
 
@@ -59,7 +63,23 @@ function resolveSegmentUrl(path: string, baseUrl: string): string | null {
 
 export async function loader({ request }: LoaderFunctionArgs) {
   try {
-    const url = new URL(request.url).searchParams.get("url");
+    const params = new URL(request.url).searchParams;
+
+    // ?debug=1 → returns environment info to confirm proxy route is reachable
+    if (params.get("debug") === "1") {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          node: process.version,
+          platform: process.platform,
+          allowedHost: ALLOWED_HOST,
+          httpsAvailable: typeof https?.get === "function",
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    const url = params.get("url");
     if (!url) return new Response("Missing URL", { status: 400 });
 
     const targetUrl = new URL(url);
@@ -147,6 +167,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
       headers: resHeaders,
     });
   } catch (err: any) {
-    return new Response(`Proxy Error: ${err.message}`, { status: 500 });
+    const msg = `Proxy Error: ${err?.message ?? String(err)}\nStack: ${err?.stack ?? "none"}`;
+    console.error("[video-proxy]", msg);
+    return new Response(msg, {
+      status: 500,
+      headers: { "Content-Type": "text/plain" },
+    });
   }
 }
