@@ -4,7 +4,6 @@ import {
   Link,
   useLoaderData,
   useActionData,
-  useNavigation,
 } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
@@ -15,6 +14,7 @@ import {
   createSessionCookie,
 } from "../utils/auth.server";
 import { Key, CheckCircle2, AlertCircle, BookOpen } from "lucide-react";
+import { useState } from "react";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url);
@@ -98,7 +98,13 @@ export async function action({ request }: ActionFunctionArgs) {
     data: { status: "ACTIVE", userId, redeemedAt: new Date() },
   });
 
-  // Create initial progress record
+  // Create enrollment + progress records
+  await prisma.enrollment.upsert({
+    where: { userId_courseId: { userId, courseId: license.courseId } },
+    update: {},
+    create: { userId, courseId: license.courseId },
+  });
+
   await prisma.progress.upsert({
     where: { userId_courseId: { userId, courseId: license.courseId } },
     update: {},
@@ -113,8 +119,7 @@ export async function action({ request }: ActionFunctionArgs) {
 export default function Redeem() {
   const { key: paramKey, license, user } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
-  const navigation = useNavigation();
-  const isSubmitting = navigation.state === "submitting";
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-green-950 to-slate-900 flex items-center justify-center p-4">
@@ -185,7 +190,7 @@ export default function Redeem() {
 
               {user ? (
                 // Already logged in → just redeem
-                <Form method="post">
+                <Form method="post" reloadDocument onSubmit={() => setIsSubmitting(true)}>
                   <input type="hidden" name="key" value={paramKey} />
                   <input type="hidden" name="intent" value="redeem_existing" />
                   <button
@@ -198,7 +203,7 @@ export default function Redeem() {
                 </Form>
               ) : (
                 // Create account & redeem
-                <Form method="post" className="space-y-4">
+                <Form method="post" reloadDocument onSubmit={() => setIsSubmitting(true)} className="space-y-4">
                   <input type="hidden" name="key" value={paramKey} />
                   <p className="text-slate-400 text-sm">
                     Create an account to access your course:

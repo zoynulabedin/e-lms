@@ -337,9 +337,22 @@ export default function LicenseManagement() {
                       )}
                     </td>
                     <td className="px-6 py-3 whitespace-nowrap">
-                      <p className="text-gray-900 text-xs font-medium truncate max-w-[180px]">
-                        {license.user?.name || "—"}
-                      </p>
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        <p className="text-gray-900 text-xs font-medium truncate max-w-[160px]">
+                          {license.user?.name || "—"}
+                        </p>
+                        {license.user?.role && (
+                          <span
+                            className={`inline-flex items-center px-1.5 py-0 rounded text-[10px] font-semibold uppercase shrink-0 ${
+                              license.user.role === "ADMIN"
+                                ? "bg-amber-100 text-amber-700"
+                                : "bg-blue-100 text-blue-700"
+                            }`}
+                          >
+                            {license.user.role === "ADMIN" ? "Admin" : "Student"}
+                          </span>
+                        )}
+                      </div>
                       <p className="text-gray-400 text-xs truncate max-w-[180px]">
                         {license.customerEmail}
                       </p>
