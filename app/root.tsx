@@ -11,6 +11,13 @@ import {
 import type { Route } from "./+types/root";
 import "./app.css";
 
+export function headers() {
+  return {
+    "Content-Security-Policy":
+      "default-src 'self'; script-src 'self' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https:; font-src 'self' https: data:; frame-src 'self' https:;",
+  };
+}
+
 export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://fonts.googleapis.com" },
   {
