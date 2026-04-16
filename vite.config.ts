@@ -8,4 +8,13 @@ dotenv.config();
 
 export default defineConfig({
   plugins: [tailwindcss(), reactRouter(), tsconfigPaths()],
+  server: {
+    proxy: {
+      "/wp-content": {
+        target: "https://courses.instructionalgraphics.org",
+        changeOrigin: true,
+        secure: true,
+      },
+    },
+  },
 });

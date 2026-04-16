@@ -50,25 +50,32 @@ function getVimeoId(url: string): string | null {
   return m ? m[1] : null;
 }
 
+const VIDEO_EXTENSIONS = /\.(mp4|webm|ogg|mov|avi|mkv|flv|wmv)(\?.*)?$/i;
+
 function resolveVideoEmbed(raw: string): {
   type: "youtube" | "vimeo" | "iframe" | "hls" | "direct";
   src: string;
 } {
-  const ytId = getYouTubeId(raw);
+  const trimmed = raw.trim();
+  // Highest priority: if admin pasted a full <iframe> tag, extract its src
+  if (trimmed.toLowerCase().startsWith("<iframe")) {
+    const match = trimmed.match(/\bsrc=["']([^"']+)["']/i);
+    if (match) return { type: "iframe", src: match[1] };
+  }
+  const ytId = getYouTubeId(trimmed);
   if (ytId)
-    return {
-      type: "youtube",
-      src: `https://www.youtube.com/embed/${ytId}?rel=0&modestbranding=1`,
-    };
-  const vimeoId = getVimeoId(raw);
+    return { type: "youtube", src: `https://www.youtube.com/embed/${ytId}?rel=0&modestbranding=1` };
+  const vimeoId = getVimeoId(trimmed);
   if (vimeoId)
     return { type: "vimeo", src: `https://player.vimeo.com/video/${vimeoId}` };
-  if (raw.includes("wistia.com"))
-    return { type: "iframe", src: raw.replace("/medias/", "/embed/iframe/") };
-  if (raw.includes(".m3u8")) {
-    return { type: "hls", src: raw };
-  }
-  return { type: "direct", src: raw };
+  if (trimmed.includes("wistia.com"))
+    return { type: "iframe", src: trimmed.replace("/medias/", "/embed/iframe/") };
+  if (trimmed.includes(".m3u8"))
+    return { type: "hls", src: trimmed };
+  if (VIDEO_EXTENSIONS.test(trimmed))
+    return { type: "direct", src: trimmed };
+  // Everything else (HTML pages, relative paths, unknown embeds) → iframe
+  return { type: "iframe", src: trimmed };
 }
 
 function formatDuration(seconds: number): string {
@@ -997,9 +1004,11 @@ export default function CourseViewer() {
   const isStoryline =
     currentLesson?.lessonType === "STORYLINE" ||
     (!hasModules && course.contentType === "STORYLINE");
-  const videoUrl = currentLesson?.videoUrl || (!hasModules ? course.videoUrl : null);
+  // iframeEmbed takes priority over videoUrl when present
+  const iframeEmbed = currentLesson?.iframeEmbed || null;
+  const videoUrl = iframeEmbed ? null : (currentLesson?.videoUrl || (!hasModules ? course.videoUrl : null));
   const embedUrl = currentLesson?.embedUrl || (!hasModules ? course.embedUrl : null);
-  const videoSrc = videoUrl ? resolveVideoEmbed(videoUrl) : null;
+  const videoSrc = iframeEmbed ? resolveVideoEmbed(iframeEmbed) : (videoUrl ? resolveVideoEmbed(videoUrl) : null);
   const isIframeVideo = videoSrc && (videoSrc.type === "youtube" || videoSrc.type === "vimeo" || videoSrc.type === "iframe");
   const isHlsVideo = videoSrc && videoSrc.type === "hls";
   const isDirectVideo = videoSrc && videoSrc.type === "direct";

@@ -312,6 +312,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
     const title = (formData.get("title") as string)?.trim();
     const lessonType = (formData.get("lessonType") as string) || "VIDEO";
     const videoUrl = (formData.get("videoUrl") as string)?.trim() || null;
+    const iframeEmbed = (formData.get("iframeEmbed") as string)?.trim() || null;
     const embedUrl = (formData.get("embedUrl") as string)?.trim() || null;
     const resourceUrl = (formData.get("resourceUrl") as string)?.trim() || null;
     const content = (formData.get("content") as string)?.trim() || null;
@@ -326,12 +327,12 @@ export async function action({ request, params }: ActionFunctionArgs) {
     if (intent === "create_lesson") {
       const count = await prisma.lesson.count({ where: { moduleId } });
       await prisma.lesson.create({
-        data: { moduleId, title, lessonType: lessonType as any, videoUrl, embedUrl, resourceUrl, content, thumbnailUrl, duration, order: count },
+        data: { moduleId, title, lessonType: lessonType as any, videoUrl, iframeEmbed, embedUrl, resourceUrl, content, thumbnailUrl, duration, order: count },
       });
     } else {
       await prisma.lesson.update({
         where: { id: lessonId },
-        data: { title, lessonType: lessonType as any, videoUrl, embedUrl, resourceUrl, content, thumbnailUrl, duration },
+        data: { title, lessonType: lessonType as any, videoUrl, iframeEmbed, embedUrl, resourceUrl, content, thumbnailUrl, duration },
       });
     }
     return data({ success: true });
@@ -340,6 +341,15 @@ export async function action({ request, params }: ActionFunctionArgs) {
   if (intent === "delete_lesson") {
     const id = formData.get("id") as string;
     await prisma.lesson.deleteMany({ where: { id } });
+    return data({ success: true });
+  }
+
+  if (intent === "reorder_lessons") {
+    const itemsJson = formData.get("items") as string;
+    const items: { id: string; order: number }[] = JSON.parse(itemsJson);
+    await Promise.all(
+      items.map(({ id, order }) => prisma.lesson.update({ where: { id }, data: { order } }))
+    );
     return data({ success: true });
   }
 
@@ -688,18 +698,33 @@ function LessonModal({
 
             {/* Video */}
             {(lessonType === "VIDEO") && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-1.5">
-                  <Play size={13} /> Video
-                </label>
-                <input
-                  type="url"
-                  name="videoUrl"
-                  defaultValue={lesson?.videoUrl || ""}
-                  placeholder="YouTube, Vimeo, or .mp4 URL"
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-                />
-                <p className="text-[11px] text-gray-400 mt-1">MP4, and WebM formats</p>
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-1.5">
+                    <Play size={13} /> Video URL
+                  </label>
+                  <input
+                    type="text"
+                    name="videoUrl"
+                    defaultValue={lesson?.videoUrl || ""}
+                    placeholder="YouTube, Vimeo, or .mp4 URL"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+                  />
+                  <p className="text-[11px] text-gray-400 mt-1">YouTube, Vimeo, MP4, WebM</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-1.5">
+                    <Globe size={13} /> iFrame Embed <span className="text-[10px] font-normal text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded ml-1">overrides Video URL</span>
+                  </label>
+                  <textarea
+                    name="iframeEmbed"
+                    defaultValue={lesson?.iframeEmbed || ""}
+                    rows={3}
+                    placeholder={'<iframe src="/wp-content/..." width="100%" height="100%"></iframe>'}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 font-mono resize-none"
+                  />
+                  <p className="text-[11px] text-gray-400 mt-1">Paste a full &lt;iframe&gt; tag — takes priority over Video URL above</p>
+                </div>
               </div>
             )}
 
@@ -1738,6 +1763,60 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
   const [quizModal, setQuizModal] = useState<{ moduleId: string; moduleName: string; quiz?: any } | null>(null);
   const [expandAll, setExpandAll] = useState(true);
 
+  // Local modules state for optimistic drag-and-drop reordering
+  const [localModules, setLocalModules] = useState<any[]>(course.modules);
+  useEffect(() => { setLocalModules(course.modules); }, [course.modules]);
+
+  // Drag state
+  const dragLesson = useRef<{ id: string; moduleId: string } | null>(null);
+  const [dragOverLessonId, setDragOverLessonId] = useState<string | null>(null);
+
+  const handleLessonDragStart = (lessonId: string, moduleId: string) => {
+    dragLesson.current = { id: lessonId, moduleId };
+  };
+
+  const handleLessonDragOver = (e: React.DragEvent, lessonId: string) => {
+    e.preventDefault();
+    if (dragLesson.current && dragLesson.current.id !== lessonId) {
+      setDragOverLessonId(lessonId);
+    }
+  };
+
+  const handleLessonDrop = (e: React.DragEvent, targetLessonId: string, moduleId: string) => {
+    e.preventDefault();
+    setDragOverLessonId(null);
+    if (!dragLesson.current || dragLesson.current.id === targetLessonId || dragLesson.current.moduleId !== moduleId) return;
+
+    const draggedId = dragLesson.current.id;
+    dragLesson.current = null;
+
+    setLocalModules((prev) =>
+      prev.map((m) => {
+        if (m.id !== moduleId) return m;
+        const lessons = [...m.lessons];
+        const fromIdx = lessons.findIndex((l: any) => l.id === draggedId);
+        const toIdx = lessons.findIndex((l: any) => l.id === targetLessonId);
+        if (fromIdx === -1 || toIdx === -1) return m;
+        const [moved] = lessons.splice(fromIdx, 1);
+        lessons.splice(toIdx, 0, moved);
+        const reordered = lessons.map((l: any, i: number) => ({ ...l, order: i }));
+
+        // Submit new order to server
+        const fd = new FormData();
+        fd.append("intent", "reorder_lessons");
+        fd.append("items", JSON.stringify(reordered.map((l: any) => ({ id: l.id, order: l.order }))));
+        fetcher.submit(fd, { method: "post" });
+
+        return { ...m, lessons: reordered };
+      })
+    );
+  };
+
+  const handleLessonDragEnd = () => {
+    dragLesson.current = null;
+    setDragOverLessonId(null);
+  };
+
   const totalLessons = course.modules.reduce((sum: number, m: any) => sum + m.lessons.length + m.quizzes.length, 0);
 
   const toggleModule = (id: string) => {
@@ -1752,7 +1831,7 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
     if (expandAll) {
       setExpandedModules(new Set());
     } else {
-      setExpandedModules(new Set(course.modules.map((m: any) => m.id)));
+      setExpandedModules(new Set(localModules.map((m: any) => m.id)));
     }
     setExpandAll((v) => !v);
   };
@@ -1762,7 +1841,7 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-gray-900">Curriculum</h2>
-        {course.modules.length > 0 && (
+        {localModules.length > 0 && (
           <button onClick={handleExpandAll} className="text-sm text-blue-600 hover:text-blue-800 font-medium">
             {expandAll ? "Collapse All" : "Expand All"}
           </button>
@@ -1771,7 +1850,7 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
 
       {/* Module list */}
       <div className="space-y-3">
-        {course.modules.map((module: any) => {
+        {localModules.map((module: any) => {
           const isExpanded = expandedModules.has(module.id);
           const isEditing = editingModuleId === module.id;
           const itemCount = module.lessons.length + module.quizzes.length;
@@ -1818,9 +1897,22 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
                     {module.lessons.map((lesson: any, idx: number) => {
                       const cfg = lessonTypeConfig[lesson.lessonType] || lessonTypeConfig.VIDEO;
                       const Icon = cfg.icon;
+                      const isDragOver = dragOverLessonId === lesson.id;
+                      const isDragging = dragLesson.current?.id === lesson.id;
                       return (
-                        <div key={lesson.id} className="flex items-center gap-3 px-5 py-3 hover:bg-gray-50 group">
-                          <GripVertical size={14} className="text-gray-200 shrink-0 cursor-grab" />
+                        <div
+                          key={lesson.id}
+                          draggable
+                          onDragStart={() => handleLessonDragStart(lesson.id, module.id)}
+                          onDragOver={(e) => handleLessonDragOver(e, lesson.id)}
+                          onDrop={(e) => handleLessonDrop(e, lesson.id, module.id)}
+                          onDragEnd={handleLessonDragEnd}
+                          className={`flex items-center gap-3 px-5 py-3 group transition-colors select-none
+                            ${isDragging ? "opacity-40 bg-gray-50" : "hover:bg-gray-50"}
+                            ${isDragOver ? "border-t-2 border-blue-500" : ""}
+                          `}
+                        >
+                          <GripVertical size={14} className="text-gray-400 shrink-0 cursor-grab active:cursor-grabbing" />
                           <span className="text-xs text-gray-300 w-5 text-right shrink-0">{idx + 1}</span>
                           <div className={`shrink-0 w-6 h-6 rounded flex items-center justify-center text-[10px] ${cfg.color}`}>
                             <Icon size={12} />
@@ -1907,7 +1999,7 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
         </div>
 
         {/* Empty state */}
-        {course.modules.length === 0 && !showAddModule && (
+        {localModules.length === 0 && !showAddModule && (
           <div className="text-center py-16 text-gray-400">
             <div className="w-32 h-32 mx-auto mb-4 opacity-60">
               <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">

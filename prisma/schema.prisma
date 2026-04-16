@@ -154,6 +154,7 @@ model Lesson {
   order          Int              @default(0)
   content        String? // Rich text / markdown for TEXT lessons
   videoUrl       String? // YouTube, Vimeo, or .mp4 for VIDEO lessons
+  iframeEmbed    String? // Full <iframe> tag — overrides videoUrl when present
   embedUrl       String? // Articulate Storyline URL for STORYLINE lessons
   resourceUrl    String? // Download link for DOWNLOAD lessons
   thumbnailUrl   String? // Lesson thumbnail image URL
