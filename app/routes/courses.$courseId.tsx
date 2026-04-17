@@ -353,6 +353,15 @@ export async function action({ request, params }: ActionFunctionArgs) {
     return data({ success: true });
   }
 
+  if (intent === "reorder_modules") {
+    const itemsJson = formData.get("items") as string;
+    const items: { id: string; order: number }[] = JSON.parse(itemsJson);
+    await Promise.all(
+      items.map(({ id, order }) => prisma.module.update({ where: { id }, data: { order } }))
+    );
+    return data({ success: true });
+  }
+
   // ── Quizzes ───────────────────────────────────────────────────────────────
   if (intent === "create_quiz" || intent === "update_quiz") {
     const moduleId = formData.get("moduleId") as string;
@@ -1767,9 +1776,13 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
   const [localModules, setLocalModules] = useState<any[]>(course.modules);
   useEffect(() => { setLocalModules(course.modules); }, [course.modules]);
 
-  // Drag state
+  // Lesson drag state
   const dragLesson = useRef<{ id: string; moduleId: string } | null>(null);
   const [dragOverLessonId, setDragOverLessonId] = useState<string | null>(null);
+
+  // Module drag state
+  const dragModule = useRef<string | null>(null);
+  const [dragOverModuleId, setDragOverModuleId] = useState<string | null>(null);
 
   const handleLessonDragStart = (lessonId: string, moduleId: string) => {
     dragLesson.current = { id: lessonId, moduleId };
@@ -1817,6 +1830,48 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
     setDragOverLessonId(null);
   };
 
+  const handleModuleDragStart = (moduleId: string) => {
+    dragModule.current = moduleId;
+  };
+
+  const handleModuleDragOver = (e: React.DragEvent, moduleId: string) => {
+    e.preventDefault();
+    if (dragModule.current && dragModule.current !== moduleId) {
+      setDragOverModuleId(moduleId);
+    }
+  };
+
+  const handleModuleDrop = (e: React.DragEvent, targetModuleId: string) => {
+    e.preventDefault();
+    setDragOverModuleId(null);
+    if (!dragModule.current || dragModule.current === targetModuleId) return;
+
+    const draggedId = dragModule.current;
+    dragModule.current = null;
+
+    setLocalModules((prev) => {
+      const modules = [...prev];
+      const fromIdx = modules.findIndex((m) => m.id === draggedId);
+      const toIdx = modules.findIndex((m) => m.id === targetModuleId);
+      if (fromIdx === -1 || toIdx === -1) return prev;
+      const [moved] = modules.splice(fromIdx, 1);
+      modules.splice(toIdx, 0, moved);
+      const reordered = modules.map((m, i) => ({ ...m, order: i }));
+
+      const fd = new FormData();
+      fd.append("intent", "reorder_modules");
+      fd.append("items", JSON.stringify(reordered.map((m) => ({ id: m.id, order: m.order }))));
+      fetcher.submit(fd, { method: "post" });
+
+      return reordered;
+    });
+  };
+
+  const handleModuleDragEnd = () => {
+    dragModule.current = null;
+    setDragOverModuleId(null);
+  };
+
   const totalLessons = course.modules.reduce((sum: number, m: any) => sum + m.lessons.length + m.quizzes.length, 0);
 
   const toggleModule = (id: string) => {
@@ -1855,11 +1910,25 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
           const isEditing = editingModuleId === module.id;
           const itemCount = module.lessons.length + module.quizzes.length;
 
+          const isModuleDragOver = dragOverModuleId === module.id;
+          const isModuleDragging = dragModule.current === module.id;
+
           return (
-            <div key={module.id} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+            <div
+              key={module.id}
+              draggable={!isEditing}
+              onDragStart={(e) => { if (isEditing) { e.preventDefault(); return; } handleModuleDragStart(module.id); }}
+              onDragOver={(e) => handleModuleDragOver(e, module.id)}
+              onDrop={(e) => handleModuleDrop(e, module.id)}
+              onDragEnd={handleModuleDragEnd}
+              className={`rounded-xl border shadow-sm overflow-hidden transition-all select-none
+                ${isModuleDragging ? "opacity-40 bg-gray-50 border-gray-200" : "bg-white border-gray-200"}
+                ${isModuleDragOver ? "border-t-2 border-t-blue-500" : ""}
+              `}
+            >
               {/* Module header */}
               <div className="flex items-center gap-2 px-4 py-3 bg-gray-50/80">
-                <GripVertical size={16} className="text-gray-300 shrink-0 cursor-grab" />
+                <GripVertical size={16} className="text-gray-400 shrink-0 cursor-grab active:cursor-grabbing" />
                 <button onClick={() => toggleModule(module.id)} className="text-gray-400 hover:text-gray-600 shrink-0">
                   {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                 </button>
