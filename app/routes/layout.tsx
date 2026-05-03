@@ -59,7 +59,7 @@ function NavItem({
       className={({ isActive }) =>
         `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
           isActive
-            ? "bg-[#f1f8f5] text-[#008060] shadow-sm"
+            ? "bg-brand-navy/10 text-brand-navy shadow-sm"
             : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
         }`
       }
@@ -75,7 +75,7 @@ export default function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
-    <div className="flex h-screen bg-[#f6f6f7] overflow-hidden">
+    <div className="flex h-screen bg-brand-beige overflow-hidden">
       {/* Mobile overlay */}
       {mobileOpen && (
         <div
@@ -93,7 +93,7 @@ export default function Layout() {
         {/* Logo */}
         <div className="p-5 border-b border-gray-200 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-[#008060] flex items-center justify-center shadow-sm">
+            <div className="w-8 h-8 rounded-lg bg-brand-navy flex items-center justify-center shadow-sm">
               <Store className="text-white w-4 h-4" />
             </div>
             <div>
@@ -127,7 +127,7 @@ export default function Layout() {
         {/* User footer */}
         <div className="p-4 border-t border-gray-200">
           <div className="flex items-center gap-3 mb-3">
-            <div className="w-8 h-8 rounded-full bg-[#008060] text-white flex items-center justify-center font-bold text-xs shrink-0">
+            <div className="w-8 h-8 rounded-full bg-brand-navy text-white flex items-center justify-center font-bold text-xs shrink-0">
               {user.name.charAt(0).toUpperCase()}
             </div>
             <div className="min-w-0">
@@ -162,7 +162,7 @@ export default function Layout() {
           </div>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-green-50 border border-green-200">
-              <div className="w-2 h-2 rounded-full bg-[#008060] animate-pulse" />
+              <div className="w-2 h-2 rounded-full bg-brand-navy animate-pulse" />
               <span className="text-xs font-medium text-green-800">
                 Store Active
               </span>
@@ -174,7 +174,7 @@ export default function Layout() {
         </header>
 
         {/* Page */}
-        <main className="flex-1 overflow-y-auto bg-[#f6f6f7] p-6">
+        <main className="flex-1 overflow-y-auto bg-brand-beige p-6">
           <Outlet />
         </main>
       </div>

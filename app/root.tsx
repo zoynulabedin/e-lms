@@ -92,7 +92,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   const statusColor = statusColors[status] || "text-red-400";
 
   return (
-    <main className="min-h-screen bg-linear-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-6">
+    <main className="min-h-screen bg-linear-to-br from-brand-navy-dark via-brand-navy to-brand-navy-dark flex items-center justify-center p-6">
       <div className="w-full max-w-lg text-center">
         {/* Status code */}
         <p className={`text-8xl font-black mb-4 ${statusColor}`}>{status}</p>
@@ -113,7 +113,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
           </button>
           <button
             onClick={() => navigate("/")}
-            className="px-5 py-2.5 rounded-lg bg-polaris-green text-white text-sm font-medium hover:bg-[#006e52] transition-colors"
+            className="px-5 py-2.5 rounded-lg bg-brand-navy text-white text-sm font-medium hover:bg-brand-navy-dark transition-colors"
           >
             Go to dashboard
           </button>

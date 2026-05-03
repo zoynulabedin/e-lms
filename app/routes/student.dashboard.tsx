@@ -86,13 +86,13 @@ export default function StudentDashboard() {
   ).length;
 
   return (
-    <div className="min-h-screen bg-slate-950">
+    <div className="min-h-screen bg-brand-navy-dark">
       <Toast />
       {/* Header */}
-      <header className="bg-slate-900/80 backdrop-blur border-b border-slate-800 sticky top-0 z-30">
+      <header className="bg-brand-navy-dark/80 backdrop-blur border-b border-slate-800 sticky top-0 z-30">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-[#008060] flex items-center justify-center shadow-lg shadow-green-900/30">
+            <div className="w-9 h-9 rounded-xl bg-brand-navy flex items-center justify-center shadow-lg shadow-brand-navy-dark/30">
               <BookOpen className="text-white w-4 h-4" />
             </div>
             <span className="font-bold text-white text-lg">
@@ -102,13 +102,13 @@ export default function StudentDashboard() {
           <div className="flex items-center gap-4">
             <Link
               to="/student/quiz-history"
-              className="flex items-center gap-1.5 text-slate-400 hover:text-[#00c896] transition-colors text-sm"
+              className="flex items-center gap-1.5 text-slate-400 hover:text-brand-mustard transition-colors text-sm"
             >
               <Award size={15} /> Quiz History
             </Link>
             <Link
               to="/catalog"
-              className="flex items-center gap-1.5 text-slate-400 hover:text-[#00c896] transition-colors text-sm"
+              className="flex items-center gap-1.5 text-slate-400 hover:text-brand-mustard transition-colors text-sm"
             >
               <Search size={15} /> Browse Courses
             </Link>
@@ -178,7 +178,7 @@ export default function StudentDashboard() {
             myCourses.find((c) => !c.isCompleted && c.completionPercent === 0);
           if (!resume) return null;
           return (
-            <div className="mb-10 rounded-2xl overflow-hidden border border-slate-700 bg-slate-900 shadow-xl relative">
+            <div className="mb-10 rounded-2xl overflow-hidden border border-slate-700 bg-brand-navy-dark shadow-xl relative">
               {/* Background thumbnail blur */}
               {resume.course?.thumbnailUrl && (
                 <div
@@ -188,7 +188,7 @@ export default function StudentDashboard() {
               )}
               <div className="relative flex flex-col sm:flex-row items-start sm:items-center gap-6 p-7">
                 {/* Thumbnail */}
-                <div className="w-24 h-24 sm:w-28 sm:h-28 flex-shrink-0 rounded-xl overflow-hidden bg-slate-800 border border-slate-700">
+                <div className="w-24 h-24 sm:w-28 sm:h-28 flex-shrink-0 rounded-xl overflow-hidden bg-brand-navy border border-slate-700">
                   {resume.course?.thumbnailUrl ? (
                     <img
                       src={resume.course.thumbnailUrl}
@@ -203,7 +203,7 @@ export default function StudentDashboard() {
                 </div>
                 {/* Info */}
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold uppercase tracking-widest text-[#00c896] mb-1">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-brand-mustard mb-1">
                     {resume.completionPercent > 0 ? "Continue Learning" : "Up Next"}
                   </p>
                   <h2 className="text-xl font-bold text-white leading-snug line-clamp-2 mb-3">
@@ -212,7 +212,7 @@ export default function StudentDashboard() {
                   <div className="flex items-center gap-3 mb-4">
                     <div className="flex-1 max-w-xs h-2 rounded-full bg-slate-700 overflow-hidden">
                       <div
-                        className="h-full rounded-full bg-[#008060] transition-all"
+                        className="h-full rounded-full bg-brand-navy transition-all"
                         style={{ width: `${resume.completionPercent}%` }}
                       />
                     </div>
@@ -222,7 +222,7 @@ export default function StudentDashboard() {
                   </div>
                   <Link
                     to={`/student/course/${resume.courseId}`}
-                    className="inline-flex items-center gap-2 bg-[#008060] hover:bg-[#006e52] text-white font-semibold px-6 py-2.5 rounded-xl transition-colors shadow-lg shadow-green-900/30 text-sm"
+                    className="inline-flex items-center gap-2 bg-brand-navy hover:bg-brand-navy-dark text-white font-semibold px-6 py-2.5 rounded-xl transition-colors shadow-lg shadow-brand-navy-dark/30 text-sm"
                   >
                     <Play size={15} />
                     {resume.completionPercent > 0 ? "Continue Learning" : "Start Course"}
@@ -239,7 +239,7 @@ export default function StudentDashboard() {
             <h2 className="text-xl font-semibold text-white">My Courses</h2>
             <Link
               to="/catalog"
-              className="flex items-center gap-2 text-sm text-[#00c896] hover:text-[#00e6ac] transition-colors font-medium"
+              className="flex items-center gap-2 text-sm text-brand-mustard hover:text-brand-mustard transition-colors font-medium"
             >
               <Gift size={14} /> Browse Free Courses
             </Link>
@@ -256,7 +256,7 @@ export default function StudentDashboard() {
               <div className="flex items-center justify-center gap-3 mt-4">
                 <Link
                   to="/catalog"
-                  className="inline-flex items-center gap-2 bg-[#008060] hover:bg-[#006e52] text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-colors"
+                  className="inline-flex items-center gap-2 bg-brand-navy hover:bg-brand-navy-dark text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-colors"
                 >
                   <Gift size={14} /> Browse Courses
                 </Link>
@@ -273,9 +273,9 @@ export default function StudentDashboard() {
               {myCourses.map((c) => (
                 <div
                   key={c.courseId}
-                  className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden hover:border-slate-600 transition-colors group"
+                  className="bg-brand-navy-dark border border-slate-800 rounded-xl overflow-hidden hover:border-slate-600 transition-colors group"
                 >
-                  <div className="h-36 bg-gradient-to-br from-slate-800 to-slate-900 flex items-center justify-center relative overflow-hidden">
+                  <div className="h-36 bg-gradient-to-br from-brand-navy to-brand-navy-dark flex items-center justify-center relative overflow-hidden">
                     {c.course?.thumbnailUrl ? (
                       <img
                         src={c.course.thumbnailUrl}
@@ -298,16 +298,16 @@ export default function StudentDashboard() {
                     )}
                     {/* FREE badge */}
                     {c.course?.courseType === "FREE" && (
-                      <div className="absolute top-3 left-3 bg-emerald-500/20 border border-emerald-500/30 rounded-full px-2 py-0.5 flex items-center gap-1">
-                        <Gift size={10} className="text-emerald-400" />
-                        <span className="text-emerald-400 text-[10px] font-semibold uppercase">
+                      <div className="absolute top-3 left-3 bg-brand-green/20 border border-brand-green/30 rounded-full px-2 py-0.5 flex items-center gap-1">
+                        <Gift size={10} className="text-brand-green" />
+                        <span className="text-brand-green text-[10px] font-semibold uppercase">
                           Free
                         </span>
                       </div>
                     )}
                   </div>
                   <div className="p-5">
-                    <h3 className="font-semibold text-white leading-snug line-clamp-2 mb-3 group-hover:text-[#00c896] transition-colors">
+                    <h3 className="font-semibold text-white leading-snug line-clamp-2 mb-3 group-hover:text-brand-mustard transition-colors">
                       {c.course?.title}
                     </h3>
                     {/* Progress bar */}
@@ -318,7 +318,7 @@ export default function StudentDashboard() {
                       </div>
                       <div className="h-1.5 rounded-full bg-slate-700 overflow-hidden">
                         <div
-                          className="h-full rounded-full bg-[#008060] transition-all"
+                          className="h-full rounded-full bg-brand-navy transition-all"
                           style={{ width: `${c.completionPercent}%` }}
                         />
                       </div>
@@ -326,7 +326,7 @@ export default function StudentDashboard() {
                     <div className="flex items-center justify-between">
                       <Link
                         to={`/student/course/${c.courseId}`}
-                        className="flex items-center gap-1.5 bg-[#008060] hover:bg-[#006e52] text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+                        className="flex items-center gap-1.5 bg-brand-navy hover:bg-brand-navy-dark text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
                       >
                         <Play size={13} />{" "}
                         {c.completionPercent > 0 ? "Continue" : "Start"}
@@ -351,21 +351,21 @@ export default function StudentDashboard() {
 
         {/* Action cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-10">
-          <div className="bg-gradient-to-br from-emerald-900/30 to-slate-900 border border-emerald-800/30 rounded-xl p-6">
-            <Gift className="text-emerald-400 w-8 h-8 mb-3" />
+          <div className="bg-gradient-to-br from-brand-green-dark/30 to-brand-navy-dark border border-brand-green-dark/30 rounded-xl p-6">
+            <Gift className="text-brand-green w-8 h-8 mb-3" />
             <h3 className="text-white font-semibold mb-1">Free Courses</h3>
             <p className="text-slate-400 text-sm mb-4">
               Browse our library of free courses and start learning immediately.
             </p>
             <Link
               to="/catalog"
-              className="inline-flex items-center gap-2 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 text-sm font-medium px-4 py-2 rounded-lg border border-emerald-500/30 transition-colors"
+              className="inline-flex items-center gap-2 bg-brand-green/20 hover:bg-brand-green/30 text-brand-green/40 text-sm font-medium px-4 py-2 rounded-lg border border-brand-green/30 transition-colors"
             >
               Browse Catalog
             </Link>
           </div>
 
-          <div className="bg-gradient-to-br from-amber-900/20 to-slate-900 border border-amber-800/20 rounded-xl p-6">
+          <div className="bg-gradient-to-br from-brand-mustard/20 to-brand-navy-dark border border-brand-mustard/20 rounded-xl p-6">
             <Key className="text-amber-400 w-8 h-8 mb-3" />
             <h3 className="text-white font-semibold mb-1">
               Have a License Key?

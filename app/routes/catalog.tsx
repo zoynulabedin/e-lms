@@ -154,12 +154,12 @@ export default function Catalog() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950">
+    <div className="min-h-screen bg-brand-navy-dark">
       {/* Header */}
-      <header className="bg-slate-900/80 backdrop-blur border-b border-slate-800 sticky top-0 z-30">
+      <header className="bg-brand-navy-dark/80 backdrop-blur border-b border-slate-800 sticky top-0 z-30">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-[#008060] flex items-center justify-center shadow-lg shadow-green-900/30">
+            <div className="w-9 h-9 rounded-xl bg-brand-navy flex items-center justify-center shadow-lg shadow-brand-navy-dark/30">
               <BookOpen className="text-white w-4 h-4" />
             </div>
             <span className="font-bold text-white text-lg hidden sm:block">
@@ -180,7 +180,7 @@ export default function Catalog() {
                 onChange={(e) => setSearchVal(e.target.value)}
                 type="text"
                 placeholder="Search courses…"
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-8 pr-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#008060]"
+                className="w-full bg-brand-navy border border-slate-700 rounded-lg pl-8 pr-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-brand-navy"
               />
             </div>
           </Form>
@@ -213,7 +213,7 @@ export default function Catalog() {
                 </Link>
                 <Link
                   to="/auth/register"
-                  className="bg-[#008060] hover:bg-[#006e52] text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
+                  className="bg-brand-navy hover:bg-brand-navy-dark text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
                 >
                   Sign up
                 </Link>
@@ -224,7 +224,7 @@ export default function Catalog() {
       </header>
 
       {/* Hero */}
-      <div className="bg-gradient-to-b from-slate-900 to-slate-950 border-b border-slate-800 py-16">
+      <div className="bg-gradient-to-b from-brand-navy-dark to-brand-navy-dark border-b border-slate-800 py-16">
         <div className="max-w-6xl mx-auto px-6 text-center">
           <h1 className="text-4xl font-bold text-white mb-3">
             Learn at Your Own Pace
@@ -238,14 +238,14 @@ export default function Catalog() {
 
       {/* Category filter pills */}
       {categories.length > 0 && (
-        <div className="bg-slate-950 border-b border-slate-800/60">
+        <div className="bg-brand-navy-dark border-b border-slate-800/60">
           <div className="max-w-6xl mx-auto px-6 py-4 flex items-center gap-2 overflow-x-auto scrollbar-none">
             <a
               href={categoryPillHref("")}
               className={`flex-shrink-0 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-colors whitespace-nowrap ${
                 !categoryFilter
-                  ? "bg-[#008060] border-[#008060] text-white"
-                  : "bg-slate-800 border-slate-700 text-slate-400 hover:text-white hover:border-slate-500"
+                  ? "bg-brand-navy border-brand-navy text-white"
+                  : "bg-brand-navy border-slate-700 text-slate-400 hover:text-white hover:border-slate-500"
               }`}
             >
               All
@@ -259,8 +259,8 @@ export default function Catalog() {
                 href={categoryPillHref(name)}
                 className={`flex-shrink-0 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-colors whitespace-nowrap ${
                   categoryFilter === name
-                    ? "bg-[#008060] border-[#008060] text-white"
-                    : "bg-slate-800 border-slate-700 text-slate-400 hover:text-white hover:border-slate-500"
+                    ? "bg-brand-navy border-brand-navy text-white"
+                    : "bg-brand-navy border-slate-700 text-slate-400 hover:text-white hover:border-slate-500"
                 }`}
               >
                 {name}
@@ -290,9 +290,9 @@ export default function Catalog() {
         {freeCourses.length > 0 && (
           <section>
             <div className="flex items-center gap-3 mb-6">
-              <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 rounded-full px-3 py-1">
-                <Gift size={14} className="text-emerald-400" />
-                <span className="text-emerald-400 text-sm font-semibold">
+              <div className="flex items-center gap-2 bg-brand-green/10 border border-brand-green/20 rounded-full px-3 py-1">
+                <Gift size={14} className="text-brand-green" />
+                <span className="text-brand-green text-sm font-semibold">
                   Free Courses
                 </span>
               </div>
@@ -363,13 +363,13 @@ function CourseCard({
   const isStoryline = course.contentType === "STORYLINE";
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden hover:border-slate-600 transition-colors group flex flex-col">
+    <div className="bg-brand-navy-dark border border-slate-800 rounded-xl overflow-hidden hover:border-slate-600 transition-colors group flex flex-col">
       {/* Thumbnail */}
       <div
         className={`h-40 flex items-center justify-center relative overflow-hidden ${
           isStoryline
-            ? "bg-gradient-to-br from-purple-900/30 to-slate-800"
-            : "bg-gradient-to-br from-blue-900/30 to-slate-800"
+            ? "bg-gradient-to-br from-purple-900/30 to-brand-navy"
+            : "bg-gradient-to-br from-blue-900/30 to-brand-navy"
         }`}
       >
         {course.thumbnailUrl ? (
@@ -391,7 +391,7 @@ function CourseCard({
         <div
           className={`absolute top-3 left-3 flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold ${
             isFree
-              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+              ? "bg-brand-green/20 text-brand-green/40 border border-brand-green/30"
               : "bg-amber-500/20 text-amber-300 border border-amber-500/30"
           }`}
         >
@@ -402,7 +402,7 @@ function CourseCard({
 
       {/* Body */}
       <div className="p-5 flex-1 flex flex-col">
-        <h3 className="font-semibold text-white leading-snug line-clamp-2 mb-2 group-hover:text-[#00c896] transition-colors">
+        <h3 className="font-semibold text-white leading-snug line-clamp-2 mb-2 group-hover:text-brand-mustard transition-colors">
           {course.title}
         </h3>
         {course.description && (
@@ -422,7 +422,7 @@ function CourseCard({
           {isEnrolled ? (
             <Link
               to={`/student/course/${course.id}`}
-              className="w-full flex items-center justify-center gap-2 bg-[#008060] hover:bg-[#006e52] text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
+              className="w-full flex items-center justify-center gap-2 bg-brand-navy hover:bg-brand-navy-dark text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
             >
               <Play size={14} /> Continue Learning
             </Link>
@@ -433,7 +433,7 @@ function CourseCard({
                 <input type="hidden" name="intent" value="enroll" />
                 <button
                   type="submit"
-                  className="w-full flex items-center justify-center gap-2 bg-[#008060] hover:bg-[#006e52] text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
+                  className="w-full flex items-center justify-center gap-2 bg-brand-navy hover:bg-brand-navy-dark text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
                 >
                   <Gift size={14} /> Enroll for Free
                 </button>
@@ -441,7 +441,7 @@ function CourseCard({
             ) : (
               <Link
                 to="/auth/login?redirect=/catalog"
-                className="w-full flex items-center justify-center gap-2 bg-[#008060] hover:bg-[#006e52] text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
+                className="w-full flex items-center justify-center gap-2 bg-brand-navy hover:bg-brand-navy-dark text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
               >
                 Sign in to Enroll
               </Link>

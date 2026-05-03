@@ -136,7 +136,7 @@ export default function StudentQuizHistory() {
   const total = attempts.length;
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-brand-beige">
       <div className="max-w-3xl mx-auto px-4 py-10">
         {/* Header */}
         <div className="mb-8">

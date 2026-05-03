@@ -455,7 +455,7 @@ function QuestionBlock({
           {index + 1}
         </span>
         <p className="text-gray-800 text-sm leading-relaxed flex-1">{question.title}</p>
-        <span className="shrink-0 text-[10px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
+        <span className="shrink-0 text-[12px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
           {Number(question.points)} pt{Number(question.points) !== 1 ? "s" : ""}
         </span>
       </div>
@@ -745,7 +745,7 @@ function ScoreArc({ pct, isPassed }: { pct: number; isPassed: boolean }) {
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
         <span className="text-3xl font-black text-gray-900">{pct}%</span>
-        <span className="text-[11px] text-gray-400 mt-0.5">Score</span>
+        <span className="text-[13px] text-gray-400 mt-0.5">Score</span>
       </div>
     </div>
   );
@@ -768,7 +768,7 @@ function QuestionReviewCard({ qr, idx, feedbackMode }: { qr: any; idx: number; f
   return (
     <div className={`rounded-xl border p-4 ${borderCls}`}>
       <div className="flex items-start gap-3 mb-2">
-        <div className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-white text-[11px] font-bold mt-0.5 ${dotCls}`}>
+        <div className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-white text-[13px] font-bold mt-0.5 ${dotCls}`}>
           {dotLabel}
         </div>
         <p className="text-sm text-gray-800 flex-1 font-medium">{idx + 1}. {qr.title}</p>
@@ -947,7 +947,7 @@ function QuizAttemptForm({ quiz, onRetake }: { quiz: any; onRetake: () => void }
             <button
               type="submit"
               disabled={quizFetcher.state !== "idle"}
-              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold px-8 py-3 rounded-xl transition-colors shadow-md"
+              className="flex items-center gap-2 bg-brand-navy hover:bg-brand-navy-dark disabled:opacity-60 text-white font-semibold px-8 py-3 rounded-xl transition-colors shadow-md"
             >
               {quizFetcher.state !== "idle" ? (
                 <><RefreshCw size={15} className="animate-spin" /> Submitting...</>
@@ -1093,13 +1093,13 @@ export default function CourseViewer() {
   const isLessonDone = currentLesson ? completedSet.has(currentLesson.id) : false;
 
   return (
-    <div className="h-screen flex overflow-hidden bg-[#1c2535]">
+    <div className="h-screen flex overflow-hidden bg-brand-navy-dark">
 
       {/* ── Sidebar ────────────────────────────────────────────────────────────── */}
       {hasModules && (
         <aside
           className="w-[360px] shrink-0 flex flex-col overflow-hidden"
-          style={{ background: "#1c2535" }}
+          style={{ background: "var(--color-brand-navy-dark)" }}
         >
           {/* Module list */}
           <div
@@ -1127,16 +1127,16 @@ export default function CourseViewer() {
                   <button
                     onClick={() => toggleModule(module.id)}
                     className="w-full flex items-center gap-3 px-4 py-3.5 text-left transition-colors"
-                    style={{ background: "#252f42" }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = "#2a3450")}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "#252f42")}
+                    style={{ background: "var(--color-brand-navy)" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "#2c4a78")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-brand-navy)")}
                   >
                     <Lock size={17} className="text-blue-400 shrink-0" />
                     <div className="flex-1 min-w-0">
-                      <p className="font-bold text-white text-[13px] leading-snug">
+                      <p className="font-bold text-white text-[15px] leading-snug">
                         {module.title}
                       </p>
-                      <p className="text-slate-400 text-[11px] mt-0.5">
+                      <p className="text-slate-400 text-[13px] mt-0.5">
                         {totalInModule} episode{totalInModule !== 1 ? "s" : ""}
                       </p>
                     </div>
@@ -1191,15 +1191,15 @@ export default function CourseViewer() {
 
                               {/* Number badge */}
                               <div
-                                className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold"
-                                style={{ background: "#2a3447", color: "#94a3b8" }}
+                                className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[12px] font-semibold"
+                                style={{ background: "#1a2a40", color: "#94a3b8" }}
                               >
                                 {itemNum}
                               </div>
 
                               {/* Title */}
                               <p
-                                className="flex-1 text-[13px] leading-snug min-w-0"
+                                className="flex-1 text-[15px] leading-snug min-w-0"
                                 style={{ color: isActive ? "#ffffff" : "rgba(255,255,255,0.75)" }}
                               >
                                 {lesson.title}
@@ -1208,8 +1208,8 @@ export default function CourseViewer() {
                               {/* Duration badge */}
                               {lesson.duration ? (
                                 <span
-                                  className="shrink-0 text-[11px] tabular-nums px-2 py-0.5 rounded font-mono"
-                                  style={{ background: "#2a3447", color: "#94a3b8" }}
+                                  className="shrink-0 text-[13px] tabular-nums px-2 py-0.5 rounded font-mono"
+                                  style={{ background: "#1a2a40", color: "#94a3b8" }}
                                 >
                                   {formatDuration(lesson.duration)}
                                 </span>
@@ -1260,8 +1260,8 @@ export default function CourseViewer() {
 
                             {/* Number badge */}
                             <div
-                              className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold"
-                              style={{ background: "#2a3447", color: "#94a3b8" }}
+                              className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[12px] font-semibold"
+                              style={{ background: "#1a2a40", color: "#94a3b8" }}
                             >
                               {itemNum}
                             </div>
@@ -1269,14 +1269,14 @@ export default function CourseViewer() {
                             {/* Title + attempt */}
                             <div className="flex-1 min-w-0">
                               <p
-                                className="text-[13px] leading-snug"
+                                className="text-[15px] leading-snug"
                                 style={{ color: isActive ? "#e9d5ff" : "rgba(255,255,255,0.75)" }}
                               >
                                 {quiz.title}
                               </p>
                               {attempt && (
                                 <span
-                                  className="text-[10px] font-medium"
+                                  className="text-[12px] font-medium"
                                   style={{ color: attempt.isPassed ? "#4ade80" : "#f87171" }}
                                 >
                                   {attempt.isPassed ? "Passed" : "Failed"} ·{" "}
@@ -1289,7 +1289,7 @@ export default function CourseViewer() {
 
                             {/* Quiz badge */}
                             <span
-                              className="shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded"
+                              className="shrink-0 text-[12px] font-semibold px-2 py-0.5 rounded"
                               style={{ background: "rgba(168,85,247,0.2)", color: "#c084fc" }}
                             >
                               Quiz
@@ -1307,10 +1307,10 @@ export default function CourseViewer() {
       )}
 
       {/* ── Main content ──────────────────────────────────────────────────────── */}
-      <div className="flex-1 flex flex-col overflow-hidden bg-[#0f1215]">
+      <div className="flex-1 flex flex-col overflow-hidden bg-brand-navy-dark">
 
         {/* ── Blue top bar ─────────────────────────────────────────────────────── */}
-        <header className="shrink-0 bg-[#1565d8] flex items-center px-4 h-14 gap-3 z-20">
+        <header className="shrink-0 bg-brand-navy flex items-center px-4 h-14 gap-3 z-20">
           {/* Back */}
           <Link
             to="/student"
@@ -1496,8 +1496,8 @@ export default function CourseViewer() {
             {currentLesson?.lessonType === "DOWNLOAD" && (
               <div className="absolute inset-0 bg-gray-50 flex items-center justify-center">
                 <div className="text-center max-w-md mx-auto px-6">
-                  <div className="w-20 h-20 rounded-2xl bg-amber-100 border border-amber-200 flex items-center justify-center mx-auto mb-5">
-                    <Download size={32} className="text-amber-500" />
+                  <div className="w-20 h-20 rounded-2xl bg-brand-mustard/20 border border-brand-mustard/30 flex items-center justify-center mx-auto mb-5">
+                    <Download size={32} className="text-brand-mustard" />
                   </div>
                   <h2 className="text-gray-900 font-bold text-xl mb-2">{currentLesson.title}</h2>
                   <p className="text-gray-500 text-sm mb-6 leading-relaxed">Download this resource to continue learning.</p>
@@ -1507,7 +1507,7 @@ export default function CourseViewer() {
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={() => !completedSet.has(currentLesson.id) && markLessonComplete(currentLesson.id)}
-                      className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold px-7 py-3 rounded-xl transition-colors shadow-md"
+                      className="inline-flex items-center gap-2 bg-brand-navy hover:bg-brand-navy-dark text-white font-semibold px-7 py-3 rounded-xl transition-colors shadow-md"
                     >
                       <Download size={16} /> Download Resource
                     </a>
@@ -1534,7 +1534,7 @@ export default function CourseViewer() {
                     <div className="mt-10">
                       <button
                         onClick={() => markLessonComplete(currentLesson.id)}
-                        className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-xl transition-colors"
+                        className="flex items-center gap-2 bg-brand-navy hover:bg-brand-navy-dark text-white font-semibold px-6 py-3 rounded-xl transition-colors"
                       >
                         <CheckCircle2 size={16} /> Mark as Complete
                       </button>
@@ -1560,7 +1560,7 @@ export default function CourseViewer() {
 
           {/* ── Bottom nav bar ───────────────────────────────────────────────── */}
           {activeItem && (
-            <div className="shrink-0 border-t" style={{ background: "#1c2535", borderColor: "rgba(255,255,255,0.06)" }}>
+            <div className="shrink-0 border-t" style={{ background: "var(--color-brand-navy-dark)", borderColor: "rgba(255,255,255,0.06)" }}>
               {/* Description strip */}
               {((currentLesson?.content && currentLesson.lessonType !== "TEXT") ||
                 (course.description && !currentLesson)) && (
@@ -1587,7 +1587,7 @@ export default function CourseViewer() {
                         <ChevronLeft size={16} style={{ color: "rgba(255,255,255,0.5)" }} />
                       </div>
                       <div className="hidden sm:block min-w-0">
-                        <p className="text-[10px] uppercase tracking-wider" style={{ color: "rgba(255,255,255,0.3)" }}>Previous</p>
+                        <p className="text-[12px] uppercase tracking-wider" style={{ color: "rgba(255,255,255,0.3)" }}>Previous</p>
                         <p className="text-xs truncate max-w-[160px]" style={{ color: "rgba(255,255,255,0.6)" }}>
                           {prevItem.item.title}
                         </p>
@@ -1607,7 +1607,7 @@ export default function CourseViewer() {
                   </span>
                   {currentQuiz && (
                     <span
-                      className="flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-lg"
+                      className="flex items-center gap-1 text-[13px] font-semibold px-2.5 py-1 rounded-lg"
                       style={{ background: "rgba(168,85,247,0.2)", color: "#c084fc" }}
                     >
                       <HelpCircle size={11} /> Quiz
@@ -1626,12 +1626,12 @@ export default function CourseViewer() {
                       className="flex items-center gap-2 group max-w-xs"
                     >
                       <div className="hidden sm:block min-w-0 text-right">
-                        <p className="text-[10px] uppercase tracking-wider" style={{ color: "rgba(255,255,255,0.3)" }}>Next</p>
+                        <p className="text-[12px] uppercase tracking-wider" style={{ color: "rgba(255,255,255,0.3)" }}>Next</p>
                         <p className="text-xs truncate max-w-[160px]" style={{ color: "rgba(255,255,255,0.6)" }}>
                           {nextItem.item.title}
                         </p>
                       </div>
-                      <div className="w-8 h-8 rounded-lg bg-blue-600 hover:bg-blue-700 flex items-center justify-center transition-colors shrink-0 shadow-lg">
+                      <div className="w-8 h-8 rounded-lg bg-brand-navy hover:bg-brand-navy-dark flex items-center justify-center transition-colors shrink-0 shadow-lg">
                         <ChevronLeft size={16} className="text-white rotate-180" />
                       </div>
                     </Link>

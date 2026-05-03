@@ -47,15 +47,15 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     body { font-family: 'Inter', sans-serif; background: #f9fafb; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 40px; }
     .cert { background: #fff; border: 2px solid #e5e7eb; border-radius: 16px; padding: 64px 72px; max-width: 780px; width: 100%; text-align: center; position: relative; overflow: hidden; }
     .cert::before { content: ''; position: absolute; inset: 12px; border: 1.5px dashed #d1fae5; border-radius: 10px; pointer-events: none; }
-    .badge { display: inline-flex; align-items: center; justify-content: center; width: 72px; height: 72px; background: linear-gradient(135deg, #008060, #00c896); border-radius: 50%; margin-bottom: 28px; }
+    .badge { display: inline-flex; align-items: center; justify-content: center; width: 72px; height: 72px; background: linear-gradient(135deg, #1D375F, #C69445); border-radius: 50%; margin-bottom: 28px; }
     .badge svg { width: 36px; height: 36px; fill: none; stroke: white; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
     .org { font-size: 13px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: #6b7280; margin-bottom: 8px; }
     h1 { font-family: 'Playfair Display', serif; font-size: 42px; color: #111827; margin-bottom: 20px; }
     .sub { font-size: 16px; color: #374151; margin-bottom: 8px; }
-    .name { font-size: 32px; font-weight: 700; color: #008060; margin-bottom: 8px; }
+    .name { font-size: 32px; font-weight: 700; color: #1D375F; margin-bottom: 8px; }
     .course { font-size: 20px; font-weight: 600; color: #111827; margin: 24px auto; max-width: 480px; line-height: 1.4; }
     .date { font-size: 14px; color: #9ca3af; margin-top: 32px; }
-    .divider { width: 80px; height: 3px; background: linear-gradient(90deg, #008060, #00c896); border-radius: 2px; margin: 28px auto; }
+    .divider { width: 80px; height: 3px; background: linear-gradient(90deg, #1D375F, #C69445); border-radius: 2px; margin: 28px auto; }
     @media print { body { background: white; padding: 0; } .cert { border: none; border-radius: 0; padding: 48px 56px; } .no-print { display: none; } }
   </style>
 </head>
@@ -73,7 +73,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     <p class="course">${progress.course.title}</p>
     <p class="date">Completed on ${completedDate}</p>
     <div style="margin-top:40px;">
-      <button onclick="window.print()" class="no-print" style="background:#008060;color:#fff;border:none;padding:10px 28px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;font-family:Inter,sans-serif;">
+      <button onclick="window.print()" class="no-print" style="background:#1D375F;color:#fff;border:none;padding:10px 28px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;font-family:Inter,sans-serif;">
         Download / Print Certificate
       </button>
     </div>

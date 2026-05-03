@@ -234,7 +234,7 @@ export default function LicenseManagement() {
         </h1>
         <button
           onClick={() => setIsModalOpen(true)}
-          className="flex items-center gap-2 bg-[#008060] text-white px-4 py-2 rounded-md font-medium text-sm hover:bg-[#006e52] transition-colors shadow-sm"
+          className="flex items-center gap-2 bg-brand-navy text-white px-4 py-2 rounded-md font-medium text-sm hover:bg-brand-navy-dark transition-colors shadow-sm"
         >
           <Plus size={16} /> Generate Bulk Keys
         </button>
@@ -270,7 +270,7 @@ export default function LicenseManagement() {
               name="status"
               defaultValue={statusFilter}
               onChange={(e) => e.target.form?.submit()}
-              className="text-sm border-gray-300 rounded-md shadow-sm focus:border-[#008060] focus:ring-[#008060] py-1.5 pl-3 pr-8"
+              className="text-sm border-gray-300 rounded-md shadow-sm focus:border-brand-navy focus:ring-brand-navy py-1.5 pl-3 pr-8"
             >
               <option value="ALL">All Status</option>
               <option value="ACTIVE">Active</option>
@@ -453,7 +453,7 @@ export default function LicenseManagement() {
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
               <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
-                <Key size={16} className="text-[#008060]" /> Generate Bulk
+                <Key size={16} className="text-brand-navy" /> Generate Bulk
                 License Keys
               </h3>
               <button
@@ -490,7 +490,7 @@ export default function LicenseManagement() {
                     name="courseId"
                     required
                     defaultValue=""
-                    className="w-full border border-gray-300 rounded-lg shadow-sm focus:border-[#008060] focus:ring-[#008060] py-2 pl-3 pr-8 text-sm"
+                    className="w-full border border-gray-300 rounded-lg shadow-sm focus:border-brand-navy focus:ring-brand-navy py-2 pl-3 pr-8 text-sm"
                   >
                     <option value="" disabled>
                       Select a course…
@@ -513,7 +513,7 @@ export default function LicenseManagement() {
                   type="email"
                   name="customerEmail"
                   placeholder="customer@example.com"
-                  className="w-full border border-gray-300 rounded-lg shadow-sm focus:border-[#008060] focus:ring-[#008060] py-2 px-3 text-sm"
+                  className="w-full border border-gray-300 rounded-lg shadow-sm focus:border-brand-navy focus:ring-brand-navy py-2 px-3 text-sm"
                 />
                 <p className="text-xs text-gray-400 mt-1">
                   Leave blank for unassigned bulk keys.
@@ -531,7 +531,7 @@ export default function LicenseManagement() {
                   min={1}
                   max={200}
                   required
-                  className="w-full border border-gray-300 rounded-lg shadow-sm focus:border-[#008060] focus:ring-[#008060] py-2 px-3 text-sm"
+                  className="w-full border border-gray-300 rounded-lg shadow-sm focus:border-brand-navy focus:ring-brand-navy py-2 px-3 text-sm"
                 />
                 <p className="text-xs text-gray-400 mt-1">
                   Min 1, max 200 keys per batch.
@@ -549,7 +549,7 @@ export default function LicenseManagement() {
                 <button
                   type="submit"
                   disabled={isSubmitting || courses.length === 0}
-                  className="px-4 py-2 text-sm font-medium text-white bg-[#008060] rounded-lg hover:bg-[#006e52] transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-4 py-2 text-sm font-medium text-white bg-brand-navy rounded-lg hover:bg-brand-navy-dark transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {isSubmitting ? "Generating…" : "Generate Keys"}
                 </button>

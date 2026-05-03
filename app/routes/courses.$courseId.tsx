@@ -2206,7 +2206,7 @@ export default function CourseBuilder() {
   ] as const;
 
   return (
-    <div className="min-h-screen bg-[#f6f6f7] -m-6 flex flex-col">
+    <div className="min-h-screen bg-brand-beige -m-6 flex flex-col">
       {/* ── Top bar ──────────────────────────────────────────────────────────── */}
       <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center gap-4 shrink-0 sticky top-0 z-20">
         <Link to="/courses" className="text-gray-400 hover:text-gray-600 transition-colors">

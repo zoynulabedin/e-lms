@@ -83,7 +83,7 @@ function CourseTypeBadge({ type }: { type: string }) {
   return (
     <span
       className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide
-        ${isFree ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}
+        ${isFree ? "bg-brand-green/10 text-brand-green-dark" : "bg-amber-100 text-amber-700"}`}
     >
       {isFree ? <Gift size={10} /> : <DollarSign size={10} />}
       {isFree ? "Free" : "Paid"}
@@ -99,7 +99,7 @@ function QuickCreateModal({ onClose }: { onClose: () => void }) {
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md border border-gray-100">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
-            <BookOpen size={16} className="text-[#008060]" />
+            <BookOpen size={16} className="text-brand-navy" />
             New Course
           </h3>
           <button
@@ -121,7 +121,7 @@ function QuickCreateModal({ onClose }: { onClose: () => void }) {
               autoFocus
               required
               placeholder="e.g. Advanced Onboarding Training"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#008060] focus:ring-1 focus:ring-[#008060]"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-navy focus:ring-1 focus:ring-brand-navy"
             />
             <p className="text-xs text-gray-400 mt-1.5">
               You can fill in all other details in the course builder.
@@ -137,7 +137,7 @@ function QuickCreateModal({ onClose }: { onClose: () => void }) {
             </button>
             <button
               type="submit"
-              className="px-5 py-2 text-sm font-medium text-white bg-[#008060] rounded-lg hover:bg-[#006e52] shadow-sm"
+              className="px-5 py-2 text-sm font-medium text-white bg-brand-navy rounded-lg hover:bg-brand-navy-dark shadow-sm"
             >
               Create & Edit
             </button>
@@ -163,7 +163,7 @@ export default function CourseManagement() {
         <h1 className="text-2xl font-semibold text-gray-900">Course Library</h1>
         <button
           onClick={() => setIsCreateOpen(true)}
-          className="flex items-center gap-2 bg-[#008060] text-white px-4 py-2 rounded-lg font-medium text-sm hover:bg-[#006e52] transition-colors shadow-sm"
+          className="flex items-center gap-2 bg-brand-navy text-white px-4 py-2 rounded-lg font-medium text-sm hover:bg-brand-navy-dark transition-colors shadow-sm"
         >
           <Plus size={16} /> Add Course
         </button>
@@ -263,7 +263,7 @@ export default function CourseManagement() {
                 <div className="mt-auto flex flex-wrap gap-1.5 border-t border-gray-100 pt-3">
                   <Link
                     to={`/courses/${course.id}`}
-                    className="flex items-center gap-1 text-[#008060] hover:text-[#006e52] hover:bg-green-50 px-2 py-1 rounded-lg text-xs font-medium transition-colors border border-transparent hover:border-green-200"
+                    className="flex items-center gap-1 text-brand-navy hover:text-brand-navy-dark hover:bg-green-50 px-2 py-1 rounded-lg text-xs font-medium transition-colors border border-transparent hover:border-green-200"
                   >
                     <Edit3 size={12} /> Edit Course
                   </Link>
@@ -276,7 +276,7 @@ export default function CourseManagement() {
                       className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors border ${
                         isPublished
                           ? "text-gray-400 hover:text-gray-600 hover:bg-gray-50 border-transparent hover:border-gray-200"
-                          : "text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 border-transparent hover:border-emerald-200"
+                          : "text-brand-green hover:text-brand-green-dark hover:bg-brand-green/10 border-transparent hover:border-brand-green/20"
                       }`}
                     >
                       {isPublished ? (
@@ -325,7 +325,7 @@ export default function CourseManagement() {
             </p>
             <button
               onClick={() => setIsCreateOpen(true)}
-              className="inline-flex items-center gap-2 bg-[#008060] text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-[#006e52] shadow-sm"
+              className="inline-flex items-center gap-2 bg-brand-navy text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-navy-dark shadow-sm"
             >
               <Plus size={15} /> Add Course
             </button>

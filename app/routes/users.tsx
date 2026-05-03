@@ -242,7 +242,7 @@ function CreateUserModal({ onClose, fetcher }: { onClose: () => void; fetcher: a
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md border border-gray-100 overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gray-50/60">
           <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
-            <UserPlus size={16} className="text-[#008060]" /> Create New User
+            <UserPlus size={16} className="text-brand-navy" /> Create New User
           </h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition-colors">
             <X size={18} />
@@ -263,7 +263,7 @@ function CreateUserModal({ onClose, fetcher }: { onClose: () => void; fetcher: a
               Full Name <span className="text-red-500">*</span>
             </label>
             <input name="name" type="text" required autoFocus placeholder="Jane Smith"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#008060] focus:ring-1 focus:ring-[#008060]" />
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-navy focus:ring-1 focus:ring-brand-navy" />
           </div>
 
           <div>
@@ -271,7 +271,7 @@ function CreateUserModal({ onClose, fetcher }: { onClose: () => void; fetcher: a
               Email Address <span className="text-red-500">*</span>
             </label>
             <input name="email" type="email" required placeholder="jane@example.com"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#008060] focus:ring-1 focus:ring-[#008060]" />
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-navy focus:ring-1 focus:ring-brand-navy" />
           </div>
 
           <div>
@@ -280,7 +280,7 @@ function CreateUserModal({ onClose, fetcher }: { onClose: () => void; fetcher: a
             </label>
             <div className="relative">
               <input name="password" type={showPw ? "text" : "password"} required minLength={8} placeholder="Min. 8 characters"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-9 text-sm focus:outline-none focus:border-[#008060] focus:ring-1 focus:ring-[#008060]" />
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-9 text-sm focus:outline-none focus:border-brand-navy focus:ring-1 focus:ring-brand-navy" />
               <button type="button" onClick={() => setShowPw(v => !v)}
                 className="absolute inset-y-0 right-2.5 flex items-center text-gray-400 hover:text-gray-600">
                 {showPw ? <EyeOff size={15} /> : <Eye size={15} />}
@@ -291,7 +291,7 @@ function CreateUserModal({ onClose, fetcher }: { onClose: () => void; fetcher: a
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">Role</label>
             <select name="role" defaultValue="STUDENT"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#008060]">
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-navy">
               <option value="STUDENT">Student</option>
               <option value="ADMIN">Admin</option>
               <option value="CORPORATE">Corporate</option>
@@ -304,7 +304,7 @@ function CreateUserModal({ onClose, fetcher }: { onClose: () => void; fetcher: a
               Cancel
             </button>
             <button type="submit" disabled={isSubmitting}
-              className="px-5 py-2 text-sm font-medium text-white bg-[#008060] rounded-lg hover:bg-[#006e52] disabled:opacity-60 shadow-sm">
+              className="px-5 py-2 text-sm font-medium text-white bg-brand-navy rounded-lg hover:bg-brand-navy-dark disabled:opacity-60 shadow-sm">
               {isSubmitting ? "Creating…" : "Create User"}
             </button>
           </div>
@@ -393,7 +393,7 @@ function EditUserModal({ user, onClose, fetcher }: { user: any; onClose: () => v
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md border border-gray-100 overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gray-50/60">
           <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
-            <Pencil size={15} className="text-[#008060]" /> Edit User
+            <Pencil size={15} className="text-brand-navy" /> Edit User
           </h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition-colors">
             <X size={18} />
@@ -413,13 +413,13 @@ function EditUserModal({ user, onClose, fetcher }: { user: any; onClose: () => v
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">Full Name <span className="text-red-500">*</span></label>
             <input name="name" type="text" required defaultValue={user.name} placeholder="Jane Smith"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#008060] focus:ring-1 focus:ring-[#008060]" />
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-navy focus:ring-1 focus:ring-brand-navy" />
           </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">Email Address <span className="text-red-500">*</span></label>
             <input name="email" type="email" required defaultValue={user.email}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#008060] focus:ring-1 focus:ring-[#008060]" />
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-navy focus:ring-1 focus:ring-brand-navy" />
           </div>
 
           <div>
@@ -428,7 +428,7 @@ function EditUserModal({ user, onClose, fetcher }: { user: any; onClose: () => v
             </label>
             <div className="relative">
               <input name="password" type={showPw ? "text" : "password"} placeholder="Min. 8 characters"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-9 text-sm focus:outline-none focus:border-[#008060] focus:ring-1 focus:ring-[#008060]" />
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-9 text-sm focus:outline-none focus:border-brand-navy focus:ring-1 focus:ring-brand-navy" />
               <button type="button" onClick={() => setShowPw(v => !v)}
                 className="absolute inset-y-0 right-2.5 flex items-center text-gray-400 hover:text-gray-600">
                 {showPw ? <EyeOff size={15} /> : <Eye size={15} />}
@@ -439,7 +439,7 @@ function EditUserModal({ user, onClose, fetcher }: { user: any; onClose: () => v
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">Role</label>
             <select name="role" defaultValue={user.role}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#008060]">
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-navy">
               <option value="STUDENT">Student</option>
               <option value="ADMIN">Admin</option>
               <option value="CORPORATE">Corporate</option>
@@ -452,7 +452,7 @@ function EditUserModal({ user, onClose, fetcher }: { user: any; onClose: () => v
               Cancel
             </button>
             <button type="submit" disabled={isSubmitting}
-              className="px-5 py-2 text-sm font-medium text-white bg-[#008060] rounded-lg hover:bg-[#006e52] disabled:opacity-60 shadow-sm">
+              className="px-5 py-2 text-sm font-medium text-white bg-brand-navy rounded-lg hover:bg-brand-navy-dark disabled:opacity-60 shadow-sm">
               {isSubmitting ? "Saving…" : "Save Changes"}
             </button>
           </div>
@@ -500,7 +500,7 @@ export default function UsersPage() {
           <p className="text-sm text-gray-500 mt-0.5">{total} total users</p>
         </div>
         <button onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 bg-[#008060] text-white px-4 py-2 rounded-lg font-medium text-sm hover:bg-[#006e52] transition-colors shadow-sm">
+          className="flex items-center gap-2 bg-brand-navy text-white px-4 py-2 rounded-lg font-medium text-sm hover:bg-brand-navy-dark transition-colors shadow-sm">
           <UserPlus size={15} /> Create User
         </button>
       </div>
@@ -522,16 +522,16 @@ export default function UsersPage() {
         <div className="relative flex-1 min-w-[200px]">
           <Search size={14} className="absolute left-3 inset-y-0 my-auto text-gray-400" />
           <input name="q" defaultValue={q} type="text" placeholder="Search name or email…"
-            className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#008060] focus:border-transparent" />
+            className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-navy focus:border-transparent" />
         </div>
         <select name="role" defaultValue={roleFilter}
-          className="text-sm border-gray-300 rounded-md shadow-sm focus:border-[#008060] py-1.5 pl-3 pr-8">
+          className="text-sm border-gray-300 rounded-md shadow-sm focus:border-brand-navy py-1.5 pl-3 pr-8">
           <option value="ALL">All Roles</option>
           <option value="ADMIN">Admin</option>
           <option value="STUDENT">Student</option>
           <option value="CORPORATE">Corporate</option>
         </select>
-        <button type="submit" className="bg-[#008060] text-white px-4 py-1.5 rounded-md text-sm font-medium hover:bg-[#006e52] transition-colors">
+        <button type="submit" className="bg-brand-navy text-white px-4 py-1.5 rounded-md text-sm font-medium hover:bg-brand-navy-dark transition-colors">
           Search
         </button>
       </Form>
@@ -569,7 +569,7 @@ export default function UsersPage() {
                         {/* User */}
                         <td className="px-5 py-3 whitespace-nowrap">
                           <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-[#008060]/10 text-[#008060] flex items-center justify-center font-bold text-sm shrink-0">
+                            <div className="w-8 h-8 rounded-full bg-brand-navy/10 text-brand-navy flex items-center justify-center font-bold text-sm shrink-0">
                               {user.name.charAt(0).toUpperCase()}
                             </div>
                             <div>
@@ -633,7 +633,7 @@ export default function UsersPage() {
                               defaultValue={maxDevices}
                               min={0}
                               title="0 = unlimited"
-                              className="w-16 text-sm border-gray-300 rounded shadow-sm focus:border-[#008060] py-1 px-2 text-center"
+                              className="w-16 text-sm border-gray-300 rounded shadow-sm focus:border-brand-navy py-1 px-2 text-center"
                               onBlur={(e) => { if (e.target.value !== String(maxDevices)) fetcher.submit(e.target.form!); }}
                               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } }}
                             />
@@ -654,7 +654,7 @@ export default function UsersPage() {
                               <input type="hidden" name="userId" value={user.id} />
                               <select name="role" defaultValue={user.role}
                                 onChange={(e) => fetcher.submit(e.target.form!)}
-                                className="text-xs border-gray-300 rounded shadow-sm focus:border-[#008060] py-1 pl-2 pr-6">
+                                className="text-xs border-gray-300 rounded shadow-sm focus:border-brand-navy py-1 pl-2 pr-6">
                                 <option value="ADMIN">Admin</option>
                                 <option value="STUDENT">Student</option>
                                 <option value="CORPORATE">Corporate</option>
@@ -694,7 +694,7 @@ export default function UsersPage() {
                               type="button"
                               title="Edit user"
                               onClick={() => setEditUser(user)}
-                              className="text-gray-400 hover:text-[#008060] p-1.5 rounded hover:bg-green-50 transition-colors"
+                              className="text-gray-400 hover:text-brand-navy p-1.5 rounded hover:bg-green-50 transition-colors"
                             >
                               <Pencil size={13} />
                             </button>

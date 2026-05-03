@@ -39,10 +39,10 @@ export default function ForgotPassword() {
   const isSubmitting = navigation.state === "submitting";
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-green-950 to-slate-900 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-brand-navy-dark via-brand-green-dark to-brand-navy-dark flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 bg-[#008060] rounded-2xl mb-4 shadow-lg shadow-green-900/50">
+          <div className="inline-flex items-center justify-center w-14 h-14 bg-brand-navy rounded-2xl mb-4 shadow-lg shadow-brand-navy-dark/50">
             <Store className="text-white w-7 h-7" />
           </div>
           <h1 className="text-2xl font-bold text-white">Forgot password?</h1>
@@ -64,7 +64,7 @@ export default function ForgotPassword() {
               </p>
               <Link
                 to="/auth/login"
-                className="inline-block text-[#00c896] hover:text-[#00e6ac] text-sm font-medium mt-2 transition-colors"
+                className="inline-block text-brand-mustard hover:text-brand-mustard text-sm font-medium mt-2 transition-colors"
               >
                 Back to sign in
               </Link>
@@ -88,21 +88,21 @@ export default function ForgotPassword() {
                   name="email"
                   type="email"
                   required
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-[#008060] text-sm transition"
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-navy text-sm transition"
                   placeholder="you@example.com"
                 />
               </div>
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="w-full bg-[#008060] hover:bg-[#006e52] disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg transition-colors text-sm"
+                className="w-full bg-brand-navy hover:bg-brand-navy-dark disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg transition-colors text-sm"
               >
                 {isSubmitting ? "Sending…" : "Send reset link"}
               </button>
               <p className="text-center text-sm text-slate-500">
                 <Link
                   to="/auth/login"
-                  className="text-[#00c896] hover:text-[#00e6ac] font-medium transition-colors"
+                  className="text-brand-mustard hover:text-brand-mustard font-medium transition-colors"
                 >
                   Back to sign in
                 </Link>

@@ -31,7 +31,7 @@ export async function sendLicenseEmail({
       <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;">
 
         <!-- Header -->
-        <tr><td style="background:#008060;border-radius:12px 12px 0 0;padding:32px 40px;text-align:center;">
+        <tr><td style="background:#1D375F;border-radius:12px 12px 0 0;padding:32px 40px;text-align:center;">
           <p style="margin:0 0 8px;font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#a7f3d0;">Order Confirmed</p>
           <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;">Your Course Access is Ready</h1>
         </td></tr>
@@ -52,7 +52,7 @@ export async function sendLicenseEmail({
           <!-- License key -->
           <p style="margin:0 0 10px;font-size:14px;font-weight:600;color:#374151;">Your License Key</p>
           <div style="background:#f9fafb;border:2px dashed #d1fae5;border-radius:8px;padding:20px;text-align:center;margin-bottom:28px;">
-            <code style="font-size:24px;font-weight:700;letter-spacing:.2em;color:#008060;">${licenseKey}</code>
+            <code style="font-size:24px;font-weight:700;letter-spacing:.2em;color:#1D375F;">${licenseKey}</code>
           </div>
 
           <!-- Steps -->
@@ -60,7 +60,7 @@ export async function sendLicenseEmail({
           <table cellpadding="0" cellspacing="0" width="100%" style="margin-bottom:28px;">
             <tr>
               <td style="width:28px;vertical-align:top;padding-top:2px;">
-                <div style="width:22px;height:22px;background:#008060;border-radius:50%;text-align:center;line-height:22px;font-size:12px;font-weight:700;color:#fff;">1</div>
+                <div style="width:22px;height:22px;background:#1D375F;border-radius:50%;text-align:center;line-height:22px;font-size:12px;font-weight:700;color:#fff;">1</div>
               </td>
               <td style="padding-left:10px;font-size:14px;color:#374151;line-height:1.5;">
                 Click the button below to go to <strong>${APP_URL}</strong>
@@ -69,7 +69,7 @@ export async function sendLicenseEmail({
             <tr><td colspan="2" style="height:10px;"></td></tr>
             <tr>
               <td style="width:28px;vertical-align:top;padding-top:2px;">
-                <div style="width:22px;height:22px;background:#008060;border-radius:50%;text-align:center;line-height:22px;font-size:12px;font-weight:700;color:#fff;">2</div>
+                <div style="width:22px;height:22px;background:#1D375F;border-radius:50%;text-align:center;line-height:22px;font-size:12px;font-weight:700;color:#fff;">2</div>
               </td>
               <td style="padding-left:10px;font-size:14px;color:#374151;line-height:1.5;">
                 Enter your license key and create your account
@@ -78,7 +78,7 @@ export async function sendLicenseEmail({
             <tr><td colspan="2" style="height:10px;"></td></tr>
             <tr>
               <td style="width:28px;vertical-align:top;padding-top:2px;">
-                <div style="width:22px;height:22px;background:#008060;border-radius:50%;text-align:center;line-height:22px;font-size:12px;font-weight:700;color:#fff;">3</div>
+                <div style="width:22px;height:22px;background:#1D375F;border-radius:50%;text-align:center;line-height:22px;font-size:12px;font-weight:700;color:#fff;">3</div>
               </td>
               <td style="padding-left:10px;font-size:14px;color:#374151;line-height:1.5;">
                 Start learning immediately!
@@ -88,7 +88,7 @@ export async function sendLicenseEmail({
 
           <!-- CTA button -->
           <div style="text-align:center;margin-bottom:28px;">
-            <a href="${redeemUrl}" style="display:inline-block;background:#008060;color:#ffffff;text-decoration:none;padding:14px 36px;border-radius:8px;font-weight:700;font-size:16px;">
+            <a href="${redeemUrl}" style="display:inline-block;background:#1D375F;color:#ffffff;text-decoration:none;padding:14px 36px;border-radius:8px;font-weight:700;font-size:16px;">
               Activate Your Course &rarr;
             </a>
           </div>
@@ -96,7 +96,7 @@ export async function sendLicenseEmail({
           <!-- Fallback link -->
           <div style="background:#f9fafb;border-radius:6px;padding:14px 16px;margin-bottom:8px;">
             <p style="margin:0 0 4px;font-size:12px;color:#6b7280;">Or copy and paste this link into your browser:</p>
-            <a href="${redeemUrl}" style="font-size:13px;color:#008060;word-break:break-all;">${redeemUrl}</a>
+            <a href="${redeemUrl}" style="font-size:13px;color:#1D375F;word-break:break-all;">${redeemUrl}</a>
           </div>
 
         </td></tr>
@@ -104,7 +104,7 @@ export async function sendLicenseEmail({
         <!-- Footer -->
         <tr><td style="background:#f9fafb;border-radius:0 0 12px 12px;padding:20px 40px;text-align:center;border-top:1px solid #e5e7eb;">
           <p style="margin:0 0 4px;font-size:12px;color:#9ca3af;">
-            Questions? Reply to this email or visit <a href="${APP_URL}" style="color:#008060;">${APP_URL}</a>
+            Questions? Reply to this email or visit <a href="${APP_URL}" style="color:#1D375F;">${APP_URL}</a>
           </p>
           <p style="margin:0;font-size:12px;color:#d1d5db;">
             If you did not purchase this course, please ignore this email.
@@ -143,7 +143,7 @@ export async function sendAdminOrderNotification({
   const licenseRows = licenses
     .map(
       (l) =>
-        `<tr><td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;">${l.courseTitle}</td><td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;font-family:monospace;color:#008060;">${l.key}</td></tr>`,
+        `<tr><td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;">${l.courseTitle}</td><td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;font-family:monospace;color:#1D375F;">${l.key}</td></tr>`,
     )
     .join("");
 
@@ -164,7 +164,7 @@ export async function sendAdminOrderNotification({
           </thead>
           <tbody>${licenseRows}</tbody>
         </table>
-        <a href="${APP_URL}/licenses" style="display:inline-block;background:#008060;color:#fff;text-decoration:none;padding:10px 22px;border-radius:8px;font-weight:600;font-size:14px;">View in Dashboard &rarr;</a>
+        <a href="${APP_URL}/licenses" style="display:inline-block;background:#1D375F;color:#fff;text-decoration:none;padding:10px 22px;border-radius:8px;font-weight:600;font-size:14px;">View in Dashboard &rarr;</a>
       </div>
     `,
   });
@@ -195,8 +195,8 @@ export async function sendPasswordResetEmail({
       <div style="font-family:Inter,sans-serif;max-width:580px;margin:0 auto;padding:32px 24px;background:#fff;border-radius:12px;border:1px solid #e5e7eb;">
         <h1 style="font-size:22px;font-weight:700;color:#111827;margin-bottom:8px;">Password Reset</h1>
         <p style="color:#6b7280;margin-bottom:24px;">We received a request to reset your password. Click the button below to choose a new one. This link expires in 1 hour.</p>
-        <a href="${resetUrl}" style="display:inline-block;background:#008060;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px;">Reset Password &rarr;</a>
-        <p style="color:#9ca3af;font-size:13px;">Or paste this link in your browser:<br/><a href="${resetUrl}" style="color:#008060;">${resetUrl}</a></p>
+        <a href="${resetUrl}" style="display:inline-block;background:#1D375F;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px;">Reset Password &rarr;</a>
+        <p style="color:#9ca3af;font-size:13px;">Or paste this link in your browser:<br/><a href="${resetUrl}" style="color:#1D375F;">${resetUrl}</a></p>
         <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;"/>
         <p style="color:#9ca3af;font-size:12px;">If you did not request a password reset, you can safely ignore this email.</p>
       </div>

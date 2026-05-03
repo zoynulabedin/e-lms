@@ -122,10 +122,10 @@ export default function Redeem() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-green-950 to-slate-900 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-brand-navy-dark via-brand-green-dark to-brand-navy-dark flex items-center justify-center p-4">
       <div className="w-full max-w-lg">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 bg-[#008060] rounded-2xl mb-4 shadow-lg shadow-green-900/50">
+          <div className="inline-flex items-center justify-center w-14 h-14 bg-brand-navy rounded-2xl mb-4 shadow-lg shadow-brand-navy-dark/50">
             <Key className="text-white w-7 h-7" />
           </div>
           <h1 className="text-2xl font-bold text-white">Redeem Your License</h1>
@@ -157,13 +157,13 @@ export default function Redeem() {
                   name="key"
                   type="text"
                   required
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-[#008060] text-sm transition uppercase tracking-widest font-mono"
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-navy text-sm transition uppercase tracking-widest font-mono"
                   placeholder="LIC-XXXX-XXXX-XXXX"
                 />
               </div>
               <button
                 type="submit"
-                className="w-full bg-[#008060] hover:bg-[#006e52] text-white font-semibold py-2.5 rounded-lg transition-colors text-sm"
+                className="w-full bg-brand-navy hover:bg-brand-navy-dark text-white font-semibold py-2.5 rounded-lg transition-colors text-sm"
               >
                 Look up key
               </button>
@@ -196,7 +196,7 @@ export default function Redeem() {
                   <button
                     type="submit"
                     disabled={isSubmitting}
-                    className="w-full bg-[#008060] hover:bg-[#006e52] disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg transition-colors text-sm"
+                    className="w-full bg-brand-navy hover:bg-brand-navy-dark disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg transition-colors text-sm"
                   >
                     {isSubmitting ? "Activating…" : `Activate as ${user.email}`}
                   </button>
@@ -216,7 +216,7 @@ export default function Redeem() {
                       name="name"
                       type="text"
                       required
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-[#008060] text-sm"
+                      className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-navy text-sm"
                       placeholder="Jane Smith"
                     />
                   </div>
@@ -233,7 +233,7 @@ export default function Redeem() {
                           : ""
                       }
                       required
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-[#008060] text-sm"
+                      className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-navy text-sm"
                       placeholder="you@example.com"
                     />
                   </div>
@@ -246,14 +246,14 @@ export default function Redeem() {
                       type="password"
                       required
                       minLength={8}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-[#008060] text-sm"
+                      className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-navy text-sm"
                       placeholder="Min. 8 characters"
                     />
                   </div>
                   <button
                     type="submit"
                     disabled={isSubmitting}
-                    className="w-full bg-[#008060] hover:bg-[#006e52] disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg transition-colors text-sm"
+                    className="w-full bg-brand-navy hover:bg-brand-navy-dark disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg transition-colors text-sm"
                   >
                     {isSubmitting
                       ? "Activating…"
@@ -263,7 +263,7 @@ export default function Redeem() {
                     Already have an account?{" "}
                     <Link
                       to={`/auth/login?redirect=/redeem?key=${paramKey}`}
-                      className="text-[#00c896] hover:text-[#00e6ac]"
+                      className="text-brand-mustard hover:text-brand-mustard"
                     >
                       Sign in
                     </Link>
@@ -283,7 +283,7 @@ export default function Redeem() {
               </p>
               <Link
                 to="/auth/login"
-                className="inline-block text-[#00c896] hover:text-[#00e6ac] text-sm font-medium"
+                className="inline-block text-brand-mustard hover:text-brand-mustard text-sm font-medium"
               >
                 Sign into your account →
               </Link>
