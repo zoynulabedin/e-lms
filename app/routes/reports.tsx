@@ -90,7 +90,7 @@ export default function Reports() {
         </h1>
         <a
           href="/reports/export"
-          className="flex items-center gap-2 text-sm text-[#008060] border border-[#008060]/30 hover:bg-[#008060]/5 px-4 py-2 rounded-lg transition-colors font-medium"
+          className="flex items-center gap-2 text-sm text-[#2C795A] border border-[#2C795A]/30 hover:bg-[#2C795A]/5 px-4 py-2 rounded-lg transition-colors font-medium"
         >
           <Download size={15} /> Export CSV
         </a>
@@ -207,7 +207,7 @@ export default function Reports() {
                   {d.count}
                 </span>
                 <div
-                  className="w-full rounded-t-md bg-[#008060] hover:bg-[#006e52] transition-colors"
+                  className="w-full rounded-t-md bg-[#2C795A] hover:bg-[#225A43] transition-colors"
                   style={{
                     height: `${(d.count / maxCount) * 130}px`,
                     minHeight: d.count > 0 ? 4 : 2,

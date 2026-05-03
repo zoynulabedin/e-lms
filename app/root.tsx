@@ -113,7 +113,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
           </button>
           <button
             onClick={() => navigate("/")}
-            className="px-5 py-2.5 rounded-lg bg-polaris-green text-white text-sm font-medium hover:bg-[#006e52] transition-colors"
+            className="px-5 py-2.5 rounded-lg bg-brand-green text-white text-sm font-medium hover:bg-brand-green-dark transition-colors"
           >
             Go to dashboard
           </button>

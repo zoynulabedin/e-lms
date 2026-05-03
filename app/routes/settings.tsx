@@ -90,7 +90,7 @@ export default function Settings() {
       <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-200 bg-gray-50/50">
           <h2 className="text-base font-semibold text-gray-900 flex items-center gap-2">
-            <ShoppingBag size={16} className="text-[#008060]" /> Shopify
+            <ShoppingBag size={16} className="text-[#2C795A]" /> Shopify
             Integration
           </h2>
         </div>
@@ -124,7 +124,7 @@ export default function Settings() {
             </code>
             <button
               onClick={() => navigator.clipboard.writeText(webhookUrl)}
-              className="shrink-0 text-xs text-[#008060] border border-[#008060]/30 hover:bg-[#008060]/5 px-3 py-2.5 rounded-lg transition-colors font-medium whitespace-nowrap"
+              className="shrink-0 text-xs text-[#2C795A] border border-[#2C795A]/30 hover:bg-[#2C795A]/5 px-3 py-2.5 rounded-lg transition-colors font-medium whitespace-nowrap"
             >
               Copy
             </button>
@@ -135,7 +135,7 @@ export default function Settings() {
               href={`https://${shopifyDomain}/admin/settings/notifications`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[#008060] hover:underline inline-flex items-center gap-0.5"
+              className="text-[#2C795A] hover:underline inline-flex items-center gap-0.5"
             >
               Settings → Notifications <ExternalLink size={11} />
             </a>{" "}
@@ -148,7 +148,7 @@ export default function Settings() {
       <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-200 bg-gray-50/50">
           <h2 className="text-base font-semibold text-gray-900 flex items-center gap-2">
-            <Mail size={16} className="text-[#008060]" /> Email (Resend)
+            <Mail size={16} className="text-[#2C795A]" /> Email (Resend)
           </h2>
         </div>
         <div className="px-6">

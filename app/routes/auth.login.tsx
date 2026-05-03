@@ -88,7 +88,7 @@ export default function Login() {
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 bg-[#008060] rounded-2xl mb-4 shadow-lg shadow-green-900/50">
+          <div className="inline-flex items-center justify-center w-14 h-14 bg-[#2C795A] rounded-2xl mb-4 shadow-lg shadow-green-900/50">
             <Store className="text-white w-7 h-7" />
           </div>
           <h1 className="text-2xl font-bold text-white">Welcome back</h1>
@@ -125,7 +125,7 @@ export default function Login() {
                 type="email"
                 autoComplete="email"
                 required
-                className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-[#008060] focus:border-transparent text-sm transition"
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-[#2C795A] focus:border-transparent text-sm transition"
                 placeholder="you@example.com"
               />
             </div>
@@ -140,7 +140,7 @@ export default function Login() {
                 </label>
                 <Link
                   to="/auth/forgot-password"
-                  className="text-xs text-[#00c896] hover:text-[#00e6ac] transition-colors"
+                  className="text-xs text-[#C69445] hover:text-[#C69445] transition-colors"
                 >
                   Forgot password?
                 </Link>
@@ -152,7 +152,7 @@ export default function Login() {
                   type={showPw ? "text" : "password"}
                   autoComplete="current-password"
                   required
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 pr-10 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-[#008060] focus:border-transparent text-sm transition"
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 pr-10 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-[#2C795A] focus:border-transparent text-sm transition"
                   placeholder="••••••••"
                 />
                 <button
@@ -169,7 +169,7 @@ export default function Login() {
               id="login-submit"
               type="submit"
               disabled={isSubmitting}
-              className="w-full bg-[#008060] hover:bg-[#006e52] disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg transition-colors shadow-lg shadow-green-900/30 text-sm"
+              className="w-full bg-[#2C795A] hover:bg-[#225A43] disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg transition-colors shadow-lg shadow-green-900/30 text-sm"
             >
               {isSubmitting ? "Signing in…" : "Sign in"}
             </button>
@@ -179,7 +179,7 @@ export default function Login() {
             Don't have an account?{" "}
             <Link
               to="/auth/register"
-              className="text-[#00c896] hover:text-[#00e6ac] font-medium transition-colors"
+              className="text-[#C69445] hover:text-[#C69445] font-medium transition-colors"
             >
               Register
             </Link>

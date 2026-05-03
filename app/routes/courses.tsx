@@ -99,7 +99,7 @@ function QuickCreateModal({ onClose }: { onClose: () => void }) {
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md border border-gray-100">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
-            <BookOpen size={16} className="text-[#008060]" />
+            <BookOpen size={16} className="text-[#2C795A]" />
             New Course
           </h3>
           <button
@@ -121,7 +121,7 @@ function QuickCreateModal({ onClose }: { onClose: () => void }) {
               autoFocus
               required
               placeholder="e.g. Advanced Onboarding Training"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#008060] focus:ring-1 focus:ring-[#008060]"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#2C795A] focus:ring-1 focus:ring-[#2C795A]"
             />
             <p className="text-xs text-gray-400 mt-1.5">
               You can fill in all other details in the course builder.
@@ -137,7 +137,7 @@ function QuickCreateModal({ onClose }: { onClose: () => void }) {
             </button>
             <button
               type="submit"
-              className="px-5 py-2 text-sm font-medium text-white bg-[#008060] rounded-lg hover:bg-[#006e52] shadow-sm"
+              className="px-5 py-2 text-sm font-medium text-white bg-[#2C795A] rounded-lg hover:bg-[#225A43] shadow-sm"
             >
               Create & Edit
             </button>
@@ -163,7 +163,7 @@ export default function CourseManagement() {
         <h1 className="text-2xl font-semibold text-gray-900">Course Library</h1>
         <button
           onClick={() => setIsCreateOpen(true)}
-          className="flex items-center gap-2 bg-[#008060] text-white px-4 py-2 rounded-lg font-medium text-sm hover:bg-[#006e52] transition-colors shadow-sm"
+          className="flex items-center gap-2 bg-[#2C795A] text-white px-4 py-2 rounded-lg font-medium text-sm hover:bg-[#225A43] transition-colors shadow-sm"
         >
           <Plus size={16} /> Add Course
         </button>
@@ -263,7 +263,7 @@ export default function CourseManagement() {
                 <div className="mt-auto flex flex-wrap gap-1.5 border-t border-gray-100 pt-3">
                   <Link
                     to={`/courses/${course.id}`}
-                    className="flex items-center gap-1 text-[#008060] hover:text-[#006e52] hover:bg-green-50 px-2 py-1 rounded-lg text-xs font-medium transition-colors border border-transparent hover:border-green-200"
+                    className="flex items-center gap-1 text-[#2C795A] hover:text-[#225A43] hover:bg-green-50 px-2 py-1 rounded-lg text-xs font-medium transition-colors border border-transparent hover:border-green-200"
                   >
                     <Edit3 size={12} /> Edit Course
                   </Link>
@@ -325,7 +325,7 @@ export default function CourseManagement() {
             </p>
             <button
               onClick={() => setIsCreateOpen(true)}
-              className="inline-flex items-center gap-2 bg-[#008060] text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-[#006e52] shadow-sm"
+              className="inline-flex items-center gap-2 bg-[#2C795A] text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-[#225A43] shadow-sm"
             >
               <Plus size={15} /> Add Course
             </button>

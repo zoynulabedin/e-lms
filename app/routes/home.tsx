@@ -197,7 +197,7 @@ export default function Dashboard() {
           </Link>
           <a
             href="/reports/export"
-            className="flex items-center gap-2 text-sm font-medium text-white bg-[#008060] hover:bg-[#006e52] px-4 py-2 rounded-lg transition-colors shadow-sm"
+            className="flex items-center gap-2 text-sm font-medium text-white bg-[#2C795A] hover:bg-[#225A43] px-4 py-2 rounded-lg transition-colors shadow-sm"
           >
             <BarChart2 size={15} /> Export Report
           </a>
@@ -272,7 +272,7 @@ export default function Dashboard() {
           </div>
           <Link
             to="/courses"
-            className="shrink-0 flex items-center gap-1 text-xs text-[#008060] font-semibold hover:text-[#006e52] transition-colors"
+            className="shrink-0 flex items-center gap-1 text-xs text-[#2C795A] font-semibold hover:text-[#225A43] transition-colors"
           >
             Manage <ArrowRight size={12} />
           </Link>
@@ -295,7 +295,7 @@ export default function Dashboard() {
           </div>
           <Link
             to="/licenses"
-            className="shrink-0 flex items-center gap-1 text-xs text-[#008060] font-semibold hover:text-[#006e52] transition-colors"
+            className="shrink-0 flex items-center gap-1 text-xs text-[#2C795A] font-semibold hover:text-[#225A43] transition-colors"
           >
             View all <ArrowRight size={12} />
           </Link>
@@ -313,7 +313,7 @@ export default function Dashboard() {
               </h2>
               <p className="text-xs text-gray-400 mt-0.5">Last 14 days</p>
             </div>
-            <span className="text-sm font-bold text-[#008060]">
+            <span className="text-sm font-bold text-[#2C795A]">
               {totalTrend} total
             </span>
           </div>
@@ -331,14 +331,14 @@ export default function Dashboard() {
                   className="flex-1 flex flex-col items-center gap-1 group"
                 >
                   {d.count > 0 && (
-                    <span className="text-[10px] text-[#008060] font-semibold opacity-0 group-hover:opacity-100 transition-opacity">
+                    <span className="text-[10px] text-[#2C795A] font-semibold opacity-0 group-hover:opacity-100 transition-opacity">
                       {d.count}
                     </span>
                   )}
                   <div
                     className={`w-full rounded-t-sm transition-colors ${
                       d.count > 0
-                        ? "bg-[#008060]/80 group-hover:bg-[#008060]"
+                        ? "bg-[#2C795A]/80 group-hover:bg-[#2C795A]"
                         : "bg-gray-100"
                     }`}
                     style={{
@@ -368,7 +368,7 @@ export default function Dashboard() {
             </h2>
             <Link
               to="/courses"
-              className="text-xs text-[#008060] hover:text-[#006e52] font-medium transition-colors"
+              className="text-xs text-[#2C795A] hover:text-[#225A43] font-medium transition-colors"
             >
               View all
             </Link>
@@ -395,7 +395,7 @@ export default function Dashboard() {
                     </p>
                     <div className="mt-1.5 h-1.5 rounded-full bg-gray-100 overflow-hidden">
                       <div
-                        className="h-full rounded-full bg-[#008060]"
+                        className="h-full rounded-full bg-[#2C795A]"
                         style={{
                           width: `${
                             (topCourses[0] as any)._count.licenses > 0
@@ -422,12 +422,12 @@ export default function Dashboard() {
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
           <h2 className="text-base font-semibold text-gray-900 flex items-center gap-2">
-            <Activity size={16} className="text-[#008060]" />
+            <Activity size={16} className="text-[#2C795A]" />
             Recent Redemptions
           </h2>
           <Link
             to="/licenses"
-            className="text-xs text-[#008060] hover:text-[#006e52] font-medium transition-colors flex items-center gap-1"
+            className="text-xs text-[#2C795A] hover:text-[#225A43] font-medium transition-colors flex items-center gap-1"
           >
             All licenses <ArrowRight size={11} />
           </Link>
@@ -445,7 +445,7 @@ export default function Dashboard() {
                 key={a.id}
                 className="flex items-center gap-4 px-6 py-3 hover:bg-gray-50/60 transition-colors"
               >
-                <div className="shrink-0 w-8 h-8 rounded-full bg-[#008060]/10 text-[#008060] flex items-center justify-center font-bold text-xs">
+                <div className="shrink-0 w-8 h-8 rounded-full bg-[#2C795A]/10 text-[#2C795A] flex items-center justify-center font-bold text-xs">
                   {(a.user?.name ?? a.customerEmail).charAt(0).toUpperCase()}
                 </div>
 

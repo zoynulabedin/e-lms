@@ -189,7 +189,7 @@ export default function SessionsManagement() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900 flex items-center gap-2">
-            <Shield size={22} className="text-[#008060]" />
+            <Shield size={22} className="text-[#2C795A]" />
             Login Sessions
           </h1>
           <p className="text-sm text-gray-500 mt-0.5">
@@ -283,7 +283,7 @@ export default function SessionsManagement() {
                 onChange={(e) => setSearchVal(e.target.value)}
                 type="text"
                 placeholder="Search user…"
-                className="pl-8 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-[#008060] w-48"
+                className="pl-8 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-[#2C795A] w-48"
               />
             </div>
           </form>

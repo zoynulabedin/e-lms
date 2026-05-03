@@ -159,7 +159,7 @@ export default function Catalog() {
       <header className="bg-slate-900/80 backdrop-blur border-b border-slate-800 sticky top-0 z-30">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-[#008060] flex items-center justify-center shadow-lg shadow-green-900/30">
+            <div className="w-9 h-9 rounded-xl bg-[#2C795A] flex items-center justify-center shadow-lg shadow-green-900/30">
               <BookOpen className="text-white w-4 h-4" />
             </div>
             <span className="font-bold text-white text-lg hidden sm:block">
@@ -180,7 +180,7 @@ export default function Catalog() {
                 onChange={(e) => setSearchVal(e.target.value)}
                 type="text"
                 placeholder="Search courses…"
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-8 pr-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#008060]"
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-8 pr-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#2C795A]"
               />
             </div>
           </Form>
@@ -213,7 +213,7 @@ export default function Catalog() {
                 </Link>
                 <Link
                   to="/auth/register"
-                  className="bg-[#008060] hover:bg-[#006e52] text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
+                  className="bg-[#2C795A] hover:bg-[#225A43] text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
                 >
                   Sign up
                 </Link>
@@ -244,7 +244,7 @@ export default function Catalog() {
               href={categoryPillHref("")}
               className={`flex-shrink-0 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-colors whitespace-nowrap ${
                 !categoryFilter
-                  ? "bg-[#008060] border-[#008060] text-white"
+                  ? "bg-[#2C795A] border-[#2C795A] text-white"
                   : "bg-slate-800 border-slate-700 text-slate-400 hover:text-white hover:border-slate-500"
               }`}
             >
@@ -259,7 +259,7 @@ export default function Catalog() {
                 href={categoryPillHref(name)}
                 className={`flex-shrink-0 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-colors whitespace-nowrap ${
                   categoryFilter === name
-                    ? "bg-[#008060] border-[#008060] text-white"
+                    ? "bg-[#2C795A] border-[#2C795A] text-white"
                     : "bg-slate-800 border-slate-700 text-slate-400 hover:text-white hover:border-slate-500"
                 }`}
               >
@@ -402,7 +402,7 @@ function CourseCard({
 
       {/* Body */}
       <div className="p-5 flex-1 flex flex-col">
-        <h3 className="font-semibold text-white leading-snug line-clamp-2 mb-2 group-hover:text-[#00c896] transition-colors">
+        <h3 className="font-semibold text-white leading-snug line-clamp-2 mb-2 group-hover:text-[#C69445] transition-colors">
           {course.title}
         </h3>
         {course.description && (
@@ -422,7 +422,7 @@ function CourseCard({
           {isEnrolled ? (
             <Link
               to={`/student/course/${course.id}`}
-              className="w-full flex items-center justify-center gap-2 bg-[#008060] hover:bg-[#006e52] text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
+              className="w-full flex items-center justify-center gap-2 bg-[#2C795A] hover:bg-[#225A43] text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
             >
               <Play size={14} /> Continue Learning
             </Link>
@@ -433,7 +433,7 @@ function CourseCard({
                 <input type="hidden" name="intent" value="enroll" />
                 <button
                   type="submit"
-                  className="w-full flex items-center justify-center gap-2 bg-[#008060] hover:bg-[#006e52] text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
+                  className="w-full flex items-center justify-center gap-2 bg-[#2C795A] hover:bg-[#225A43] text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
                 >
                   <Gift size={14} /> Enroll for Free
                 </button>
@@ -441,7 +441,7 @@ function CourseCard({
             ) : (
               <Link
                 to="/auth/login?redirect=/catalog"
-                className="w-full flex items-center justify-center gap-2 bg-[#008060] hover:bg-[#006e52] text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
+                className="w-full flex items-center justify-center gap-2 bg-[#2C795A] hover:bg-[#225A43] text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
               >
                 Sign in to Enroll
               </Link>

@@ -66,7 +66,7 @@ export default function ResetPassword() {
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-green-950 to-slate-900 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 bg-[#008060] rounded-2xl mb-4 shadow-lg shadow-green-900/50">
+          <div className="inline-flex items-center justify-center w-14 h-14 bg-[#2C795A] rounded-2xl mb-4 shadow-lg shadow-green-900/50">
             <Store className="text-white w-7 h-7" />
           </div>
           <h1 className="text-2xl font-bold text-white">Set new password</h1>
@@ -80,7 +80,7 @@ export default function ResetPassword() {
               </p>
               <Link
                 to="/auth/forgot-password"
-                className="inline-block text-[#00c896] hover:text-[#00e6ac] text-sm font-medium transition-colors"
+                className="inline-block text-[#C69445] hover:text-[#C69445] text-sm font-medium transition-colors"
               >
                 Request a new link
               </Link>
@@ -107,7 +107,7 @@ export default function ResetPassword() {
                     type={showPw ? "text" : "password"}
                     required
                     minLength={8}
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 pr-10 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-[#008060] text-sm transition"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 pr-10 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-[#2C795A] text-sm transition"
                     placeholder="Min. 8 characters"
                   />
                   <button
@@ -122,7 +122,7 @@ export default function ResetPassword() {
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="w-full bg-[#008060] hover:bg-[#006e52] disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg transition-colors text-sm"
+                className="w-full bg-[#2C795A] hover:bg-[#225A43] disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg transition-colors text-sm"
               >
                 {isSubmitting ? "Updating…" : "Update password"}
               </button>

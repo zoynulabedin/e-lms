@@ -92,7 +92,7 @@ export default function StudentDashboard() {
       <header className="bg-slate-900/80 backdrop-blur border-b border-slate-800 sticky top-0 z-30">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-[#008060] flex items-center justify-center shadow-lg shadow-green-900/30">
+            <div className="w-9 h-9 rounded-xl bg-[#2C795A] flex items-center justify-center shadow-lg shadow-green-900/30">
               <BookOpen className="text-white w-4 h-4" />
             </div>
             <span className="font-bold text-white text-lg">
@@ -102,13 +102,13 @@ export default function StudentDashboard() {
           <div className="flex items-center gap-4">
             <Link
               to="/student/quiz-history"
-              className="flex items-center gap-1.5 text-slate-400 hover:text-[#00c896] transition-colors text-sm"
+              className="flex items-center gap-1.5 text-slate-400 hover:text-[#C69445] transition-colors text-sm"
             >
               <Award size={15} /> Quiz History
             </Link>
             <Link
               to="/catalog"
-              className="flex items-center gap-1.5 text-slate-400 hover:text-[#00c896] transition-colors text-sm"
+              className="flex items-center gap-1.5 text-slate-400 hover:text-[#C69445] transition-colors text-sm"
             >
               <Search size={15} /> Browse Courses
             </Link>
@@ -203,7 +203,7 @@ export default function StudentDashboard() {
                 </div>
                 {/* Info */}
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold uppercase tracking-widest text-[#00c896] mb-1">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-[#C69445] mb-1">
                     {resume.completionPercent > 0 ? "Continue Learning" : "Up Next"}
                   </p>
                   <h2 className="text-xl font-bold text-white leading-snug line-clamp-2 mb-3">
@@ -212,7 +212,7 @@ export default function StudentDashboard() {
                   <div className="flex items-center gap-3 mb-4">
                     <div className="flex-1 max-w-xs h-2 rounded-full bg-slate-700 overflow-hidden">
                       <div
-                        className="h-full rounded-full bg-[#008060] transition-all"
+                        className="h-full rounded-full bg-[#2C795A] transition-all"
                         style={{ width: `${resume.completionPercent}%` }}
                       />
                     </div>
@@ -222,7 +222,7 @@ export default function StudentDashboard() {
                   </div>
                   <Link
                     to={`/student/course/${resume.courseId}`}
-                    className="inline-flex items-center gap-2 bg-[#008060] hover:bg-[#006e52] text-white font-semibold px-6 py-2.5 rounded-xl transition-colors shadow-lg shadow-green-900/30 text-sm"
+                    className="inline-flex items-center gap-2 bg-[#2C795A] hover:bg-[#225A43] text-white font-semibold px-6 py-2.5 rounded-xl transition-colors shadow-lg shadow-green-900/30 text-sm"
                   >
                     <Play size={15} />
                     {resume.completionPercent > 0 ? "Continue Learning" : "Start Course"}
@@ -239,7 +239,7 @@ export default function StudentDashboard() {
             <h2 className="text-xl font-semibold text-white">My Courses</h2>
             <Link
               to="/catalog"
-              className="flex items-center gap-2 text-sm text-[#00c896] hover:text-[#00e6ac] transition-colors font-medium"
+              className="flex items-center gap-2 text-sm text-[#C69445] hover:text-[#C69445] transition-colors font-medium"
             >
               <Gift size={14} /> Browse Free Courses
             </Link>
@@ -256,7 +256,7 @@ export default function StudentDashboard() {
               <div className="flex items-center justify-center gap-3 mt-4">
                 <Link
                   to="/catalog"
-                  className="inline-flex items-center gap-2 bg-[#008060] hover:bg-[#006e52] text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-colors"
+                  className="inline-flex items-center gap-2 bg-[#2C795A] hover:bg-[#225A43] text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-colors"
                 >
                   <Gift size={14} /> Browse Courses
                 </Link>
@@ -307,7 +307,7 @@ export default function StudentDashboard() {
                     )}
                   </div>
                   <div className="p-5">
-                    <h3 className="font-semibold text-white leading-snug line-clamp-2 mb-3 group-hover:text-[#00c896] transition-colors">
+                    <h3 className="font-semibold text-white leading-snug line-clamp-2 mb-3 group-hover:text-[#C69445] transition-colors">
                       {c.course?.title}
                     </h3>
                     {/* Progress bar */}
@@ -318,7 +318,7 @@ export default function StudentDashboard() {
                       </div>
                       <div className="h-1.5 rounded-full bg-slate-700 overflow-hidden">
                         <div
-                          className="h-full rounded-full bg-[#008060] transition-all"
+                          className="h-full rounded-full bg-[#2C795A] transition-all"
                           style={{ width: `${c.completionPercent}%` }}
                         />
                       </div>
@@ -326,7 +326,7 @@ export default function StudentDashboard() {
                     <div className="flex items-center justify-between">
                       <Link
                         to={`/student/course/${c.courseId}`}
-                        className="flex items-center gap-1.5 bg-[#008060] hover:bg-[#006e52] text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+                        className="flex items-center gap-1.5 bg-[#2C795A] hover:bg-[#225A43] text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
                       >
                         <Play size={13} />{" "}
                         {c.completionPercent > 0 ? "Continue" : "Start"}

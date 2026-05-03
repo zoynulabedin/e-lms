@@ -1,8 +1,18 @@
 @import "tailwindcss";
 
 @theme {
-  --color-polaris-green: #008060;
-  --color-polaris-bg: #f6f6f7;
+  --color-brand-navy: #1d375f;
+  --color-brand-navy-dark: #162a46;
+  --color-brand-green: #2c795a;
+  --color-brand-green-dark: #225a43;
+  --color-brand-mustard: #c69445;
+  --color-brand-beige: #f4ede8;
+  --color-brand-beige-dark: #d5cfca;
+
+  /* Legacy aliases — kept so existing `polaris-*` utilities map to the brand palette */
+  --color-polaris-green: var(--color-brand-green);
+  --color-polaris-bg: var(--color-brand-beige);
+
   --font-sans:
     "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
     "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
@@ -10,7 +20,7 @@
 
 html,
 body {
-  @apply bg-[var(--color-polaris-bg)] text-gray-900 antialiased;
+  @apply bg-[var(--color-brand-beige)] text-gray-900 antialiased;
 
   @media (prefers-color-scheme: dark) {
     color-scheme: dark;
