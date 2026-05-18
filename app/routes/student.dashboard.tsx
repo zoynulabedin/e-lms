@@ -1,19 +1,22 @@
 import { redirect } from "react-router";
-import { Link, useLoaderData, Form } from "react-router";
+import { Link, useLoaderData } from "react-router";
 import { Toast } from "../components/Toast";
-import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
+import { StudentSidebar, StudentMobileTopbar } from "../components/StudentSidebar";
+import type { LoaderFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireUser } from "../utils/auth.server";
 import {
   BookOpen,
-  Clock,
   CheckCircle2,
   Award,
   Play,
-  LogOut,
-  Search,
   Gift,
   Key,
+  Sparkles,
+  Calendar,
+  Hammer,
+  ArrowRight,
+  Youtube,
 } from "lucide-react";
 
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -74,314 +77,433 @@ export async function loader({ request }: LoaderFunctionArgs) {
     return bTime - aTime;
   });
 
-  return { user, myCourses };
+  const hasCertificates = myCourses.some((c) => c.isCompleted);
+
+  return { user, myCourses, hasCertificates };
 }
 
-export default function StudentDashboard() {
-  const { user, myCourses } = useLoaderData<typeof loader>();
+// ── Component ─────────────────────────────────────────────────────────────────
 
+export default function StudentDashboard() {
+  const { user, myCourses, hasCertificates } = useLoaderData<typeof loader>();
+
+  const enrolled = myCourses.length;
   const completed = myCourses.filter((p) => p.isCompleted).length;
-  const inProgress = myCourses.filter(
+  const active = myCourses.filter(
     (p) => !p.isCompleted && p.completionPercent > 0,
   ).length;
 
+  const resume =
+    myCourses.find((c) => !c.isCompleted && c.completionPercent > 0) ||
+    myCourses.find((c) => !c.isCompleted && c.completionPercent === 0) ||
+    null;
+
+  const firstName = user.name.split(" ")[0];
+
   return (
-    <div className="min-h-screen bg-brand-navy-dark">
+    <div className="min-h-screen bg-brand-beige">
       <Toast />
-      {/* Header */}
-      <header className="bg-brand-navy-dark/80 backdrop-blur border-b border-slate-800 sticky top-0 z-30">
-        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-brand-navy flex items-center justify-center shadow-lg shadow-brand-navy-dark/30">
-              <BookOpen className="text-white w-4 h-4" />
-            </div>
-            <span className="font-bold text-white text-lg">
-              InstructionalGraphics
-            </span>
-          </div>
-          <div className="flex items-center gap-4">
-            <Link
-              to="/student/quiz-history"
-              className="flex items-center gap-1.5 text-slate-400 hover:text-brand-mustard transition-colors text-sm"
-            >
-              <Award size={15} /> Quiz History
-            </Link>
-            <Link
-              to="/catalog"
-              className="flex items-center gap-1.5 text-slate-400 hover:text-brand-mustard transition-colors text-sm"
-            >
-              <Search size={15} /> Browse Courses
-            </Link>
-            <span className="text-slate-400 text-sm hidden sm:block">
-              {user.email}
-            </span>
-            <Form method="post" action="/auth/logout">
-              <button
-                type="submit"
-                className="flex items-center gap-1.5 text-slate-400 hover:text-white transition-colors text-sm"
-              >
-                <LogOut size={16} /> Sign out
-              </button>
-            </Form>
-          </div>
-        </div>
-      </header>
 
-      <main className="max-w-5xl mx-auto px-6 py-10">
-        {/* Welcome */}
-        <div className="mb-10">
-          <h1 className="text-3xl font-bold text-white">
-            Welcome back, {user.name.split(" ")[0]}!
-          </h1>
-          <p className="text-slate-400 mt-1">
-            Continue learning where you left off.
-          </p>
-        </div>
+      <div className="flex">
+        <StudentSidebar
+          user={user}
+          active="dashboard"
+          certificatesEnabled={hasCertificates}
+        />
 
-        {/* Stats */}
-        <div className="grid grid-cols-3 gap-4 mb-10">
-          {[
-            {
-              label: "Enrolled",
-              value: myCourses.length,
-              icon: BookOpen,
-              color: "text-blue-400",
-              bg: "bg-blue-500/10 border-blue-500/20",
-            },
-            {
-              label: "Completed",
-              value: completed,
-              icon: CheckCircle2,
-              color: "text-green-400",
-              bg: "bg-green-500/10 border-green-500/20",
-            },
-            {
-              label: "In Progress",
-              value: inProgress,
-              icon: Clock,
-              color: "text-amber-400",
-              bg: "bg-amber-500/10 border-amber-500/20",
-            },
-          ].map((s) => (
-            <div key={s.label} className={`rounded-xl border p-5 ${s.bg}`}>
-              <s.icon className={`${s.color} w-6 h-6 mb-2`} />
-              <p className="text-2xl font-bold text-white">{s.value}</p>
-              <p className="text-slate-400 text-sm">{s.label}</p>
-            </div>
-          ))}
-        </div>
+        {/* ── Main content ─────────────────────────────────────────────────── */}
+        <main className="flex-1 min-w-0">
+          <StudentMobileTopbar />
 
-        {/* Continue Learning Hero */}
-        {(() => {
-          const resume =
-            myCourses.find((c) => !c.isCompleted && c.completionPercent > 0) ||
-            myCourses.find((c) => !c.isCompleted && c.completionPercent === 0);
-          if (!resume) return null;
-          return (
-            <div className="mb-10 rounded-2xl overflow-hidden border border-slate-700 bg-brand-navy-dark shadow-xl relative">
-              {/* Background thumbnail blur */}
-              {resume.course?.thumbnailUrl && (
-                <div
-                  className="absolute inset-0 bg-cover bg-center opacity-10 scale-105"
-                  style={{ backgroundImage: `url(${resume.course.thumbnailUrl})` }}
-                />
-              )}
-              <div className="relative flex flex-col sm:flex-row items-start sm:items-center gap-6 p-7">
-                {/* Thumbnail */}
-                <div className="w-24 h-24 sm:w-28 sm:h-28 flex-shrink-0 rounded-xl overflow-hidden bg-brand-navy border border-slate-700">
-                  {resume.course?.thumbnailUrl ? (
-                    <img
-                      src={resume.course.thumbnailUrl}
-                      alt={resume.course?.title}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <BookOpen className="text-slate-600 w-8 h-8" />
-                    </div>
-                  )}
-                </div>
-                {/* Info */}
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold uppercase tracking-widest text-brand-mustard mb-1">
-                    {resume.completionPercent > 0 ? "Continue Learning" : "Up Next"}
-                  </p>
-                  <h2 className="text-xl font-bold text-white leading-snug line-clamp-2 mb-3">
-                    {resume.course?.title}
-                  </h2>
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="flex-1 max-w-xs h-2 rounded-full bg-slate-700 overflow-hidden">
-                      <div
-                        className="h-full rounded-full bg-brand-navy transition-all"
-                        style={{ width: `${resume.completionPercent}%` }}
-                      />
-                    </div>
-                    <span className="text-slate-400 text-xs font-medium whitespace-nowrap">
-                      {resume.completionPercent}% complete
-                    </span>
-                  </div>
-                  <Link
-                    to={`/student/course/${resume.courseId}`}
-                    className="inline-flex items-center gap-2 bg-brand-navy hover:bg-brand-navy-dark text-white font-semibold px-6 py-2.5 rounded-xl transition-colors shadow-lg shadow-brand-navy-dark/30 text-sm"
-                  >
-                    <Play size={15} />
-                    {resume.completionPercent > 0 ? "Continue Learning" : "Start Course"}
-                  </Link>
-                </div>
-              </div>
-            </div>
-          );
-        })()}
-
-        {/* My Courses */}
-        <div>
-          <div className="flex items-center justify-between mb-5">
-            <h2 className="text-xl font-semibold text-white">My Courses</h2>
-            <Link
-              to="/catalog"
-              className="flex items-center gap-2 text-sm text-brand-mustard hover:text-brand-mustard transition-colors font-medium"
-            >
-              <Gift size={14} /> Browse Free Courses
-            </Link>
-          </div>
-
-          {myCourses.length === 0 ? (
-            <div className="text-center py-16 border-2 border-dashed border-slate-800 rounded-2xl">
-              <BookOpen className="mx-auto text-slate-600 w-12 h-12 mb-3" />
-              <p className="text-slate-400 font-medium">No courses yet</p>
-              <p className="text-slate-600 text-sm mt-1">
-                Browse free courses or use a license key to unlock a paid
-                course.
+          <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8 lg:py-10">
+            {/* Welcome */}
+            <div className="mb-8">
+              <h1 className="font-display text-4xl sm:text-5xl text-brand-navy">
+                Welcome back, {firstName}!
+              </h1>
+              <p className="text-brand-navy/60 mt-2">
+                Continue learning where you left off.
               </p>
-              <div className="flex items-center justify-center gap-3 mt-4">
-                <Link
-                  to="/catalog"
-                  className="inline-flex items-center gap-2 bg-brand-navy hover:bg-brand-navy-dark text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-colors"
-                >
-                  <Gift size={14} /> Browse Courses
-                </Link>
-                <Link
-                  to="/redeem"
-                  className="inline-flex items-center gap-2 border border-slate-700 hover:border-slate-500 text-slate-400 hover:text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
-                >
-                  <Key size={14} /> Redeem Key
-                </Link>
-              </div>
             </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-              {myCourses.map((c) => (
-                <div
-                  key={c.courseId}
-                  className="bg-brand-navy-dark border border-slate-800 rounded-xl overflow-hidden hover:border-slate-600 transition-colors group"
-                >
-                  <div className="h-36 bg-gradient-to-br from-brand-navy to-brand-navy-dark flex items-center justify-center relative overflow-hidden">
-                    {c.course?.thumbnailUrl ? (
+
+            {/* Stats */}
+            <div className="grid grid-cols-3 gap-3 sm:gap-5 mb-10">
+              <StatCard
+                value={enrolled}
+                label="Enrolled"
+                sublabel="Courses"
+                icon={BookOpen}
+                tone="navy"
+              />
+              <StatCard
+                value={completed}
+                label="Completed"
+                sublabel="Courses"
+                icon={CheckCircle2}
+                tone="green"
+              />
+              <StatCard
+                value={active}
+                label="Active"
+                sublabel="Courses"
+                icon={Play}
+                tone="mustard"
+              />
+            </div>
+
+            {/* Pick up where you left off */}
+            {resume && (
+              <div className="mb-10 rounded-2xl overflow-hidden bg-brand-navy shadow-lg relative">
+                {resume.course?.thumbnailUrl && (
+                  <div
+                    className="absolute inset-0 bg-cover bg-center opacity-20"
+                    style={{
+                      backgroundImage: `url(${resume.course.thumbnailUrl})`,
+                    }}
+                  />
+                )}
+                <div className="relative p-6 sm:p-8 flex flex-col sm:flex-row gap-6 items-start sm:items-center">
+                  <div className="w-24 h-24 sm:w-28 sm:h-28 shrink-0 rounded-xl overflow-hidden bg-brand-navy-dark border border-white/10">
+                    {resume.course?.thumbnailUrl ? (
                       <img
-                        src={c.course.thumbnailUrl}
-                        alt={c.course?.title}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).style.display = "none";
-                        }}
+                        src={resume.course.thumbnailUrl}
+                        alt={resume.course?.title}
+                        className="w-full h-full object-cover"
                       />
                     ) : (
-                      <BookOpen className="text-slate-600 w-10 h-10" />
-                    )}
-                    {c.isCompleted && (
-                      <div className="absolute top-3 right-3 bg-green-500/20 border border-green-500/30 rounded-full px-2 py-0.5 flex items-center gap-1">
-                        <CheckCircle2 size={11} className="text-green-400" />
-                        <span className="text-green-400 text-xs font-medium">
-                          Done
-                        </span>
-                      </div>
-                    )}
-                    {/* FREE badge */}
-                    {c.course?.courseType === "FREE" && (
-                      <div className="absolute top-3 left-3 bg-brand-green/20 border border-brand-green/30 rounded-full px-2 py-0.5 flex items-center gap-1">
-                        <Gift size={10} className="text-brand-green" />
-                        <span className="text-brand-green text-[10px] font-semibold uppercase">
-                          Free
-                        </span>
+                      <div className="w-full h-full flex items-center justify-center">
+                        <BookOpen className="text-white/40 w-8 h-8" />
                       </div>
                     )}
                   </div>
-                  <div className="p-5">
-                    <h3 className="font-semibold text-white leading-snug line-clamp-2 mb-3 group-hover:text-brand-mustard transition-colors">
-                      {c.course?.title}
-                    </h3>
-                    {/* Progress bar */}
-                    <div className="mb-4">
-                      <div className="flex justify-between text-xs text-slate-500 mb-1">
-                        <span>Progress</span>
-                        <span>{c.completionPercent}%</span>
-                      </div>
-                      <div className="h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold tracking-[0.18em] text-brand-mustard mb-2">
+                      PICK UP WHERE YOU LEFT OFF
+                    </p>
+                    <h2 className="font-display text-2xl sm:text-3xl text-white leading-snug line-clamp-2 mb-4">
+                      {resume.course?.title}
+                    </h2>
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="flex-1 max-w-xs h-2 rounded-full bg-white/15 overflow-hidden">
                         <div
-                          className="h-full rounded-full bg-brand-navy transition-all"
-                          style={{ width: `${c.completionPercent}%` }}
+                          className="h-full rounded-full bg-brand-mustard transition-all"
+                          style={{ width: `${resume.completionPercent}%` }}
                         />
                       </div>
+                      <span className="text-white/70 text-xs font-medium whitespace-nowrap">
+                        {resume.completionPercent}% complete
+                      </span>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <Link
-                        to={`/student/course/${c.courseId}`}
-                        className="flex items-center gap-1.5 bg-brand-navy hover:bg-brand-navy-dark text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
-                      >
-                        <Play size={13} />{" "}
-                        {c.completionPercent > 0 ? "Continue" : "Start"}
-                      </Link>
-                      {c.isCompleted && (
-                        <a
-                          href={`/certificate/${c.courseId}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-1 text-amber-400 hover:text-amber-300 text-xs font-medium transition-colors"
-                        >
-                          <Award size={13} /> Certificate
-                        </a>
-                      )}
-                    </div>
+                    <Link
+                      to={`/student/course/${resume.courseId}`}
+                      className="inline-flex items-center gap-2 bg-brand-mustard hover:bg-brand-mustard/90 text-white font-semibold px-6 py-2.5 rounded-xl transition-colors text-sm"
+                    >
+                      <Play size={15} />
+                      {resume.completionPercent > 0
+                        ? "Continue Learning"
+                        : "Start Course"}
+                    </Link>
                   </div>
                 </div>
-              ))}
-            </div>
+              </div>
+            )}
+
+            {/* My Courses */}
+            <section className="mb-10">
+              <div className="mb-5">
+                <h2 className="font-display text-2xl text-brand-navy">My Courses</h2>
+              </div>
+
+              {myCourses.length === 0 ? (
+                <div className="text-center py-16 border-2 border-dashed border-brand-beige-dark rounded-2xl bg-white">
+                  <BookOpen className="mx-auto text-brand-navy/30 w-12 h-12 mb-3" />
+                  <p className="text-brand-navy font-medium">No courses yet</p>
+                  <p className="text-brand-navy/60 text-sm mt-1">
+                    Browse free courses or use a license key to unlock a paid
+                    course.
+                  </p>
+                  <div className="flex items-center justify-center gap-3 mt-4">
+                    <Link
+                      to="/catalog"
+                      className="inline-flex items-center gap-2 bg-brand-navy hover:bg-brand-navy-dark text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-colors"
+                    >
+                      <Gift size={14} /> Browse Courses
+                    </Link>
+                    <Link
+                      to="/redeem"
+                      className="inline-flex items-center gap-2 border border-brand-beige-dark hover:border-brand-navy text-brand-navy text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
+                    >
+                      <Key size={14} /> Redeem Key
+                    </Link>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                  {myCourses.map((c) => (
+                    <CourseCard key={c.courseId} c={c} />
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {/* Making Money & Markets Make Sense — YouTube CTA */}
+            <section className="mb-10">
+              <div className="rounded-2xl overflow-hidden bg-brand-green-dark shadow-lg relative">
+                <div className="absolute -top-12 -right-12 w-48 h-48 rounded-full bg-brand-mustard/20 blur-3xl" />
+                <div className="relative p-6 sm:p-8 flex flex-col sm:flex-row gap-6 items-start sm:items-center">
+                  <div className="shrink-0 w-16 h-16 rounded-2xl bg-white/15 border border-white/20 flex items-center justify-center">
+                    <Youtube className="text-white w-8 h-8" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h2 className="font-display text-2xl sm:text-3xl text-white leading-tight mb-2">
+                      Making Money &amp; Markets Make Sense
+                    </h2>
+                    <p className="text-white/85 text-sm sm:text-base leading-relaxed mb-4 max-w-2xl">
+                      Fast, simple videos that turn confusing money topics into
+                      &ldquo;Ohhh&hellip; now I get it.&rdquo;
+                    </p>
+                    <a
+                      href="https://www.youtube.com/@TeachMeLikeATot"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 bg-brand-mustard hover:bg-brand-mustard/90 text-white font-semibold px-6 py-2.5 rounded-xl transition-colors text-sm"
+                    >
+                      <Youtube size={16} />
+                      Watch on YouTube
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* What's New */}
+            <section>
+              <h2 className="font-display text-2xl text-brand-navy mb-5">
+                What's New
+              </h2>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <WhatsNewCard
+                  icon={Sparkles}
+                  eyebrow="New Lesson Available"
+                  cta="Watch Latest Lesson"
+                  to={
+                    resume
+                      ? `/student/course/${resume.courseId}`
+                      : "/catalog"
+                  }
+                  tone="green"
+                />
+                <WhatsNewCard
+                  icon={Calendar}
+                  eyebrow="Coming Next"
+                  cta="Preview What's Coming"
+                  to="/catalog"
+                  tone="navy"
+                />
+                <WhatsNewCard
+                  icon={Hammer}
+                  eyebrow="In Development"
+                  cta="Stay Tuned"
+                  to={undefined}
+                  tone="mustard"
+                />
+              </div>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+// ── Stat card ─────────────────────────────────────────────────────────────────
+
+function StatCard({
+  value,
+  label,
+  sublabel,
+  icon: Icon,
+  tone,
+}: {
+  value: number;
+  label: string;
+  sublabel: string;
+  icon: React.ElementType;
+  tone: "navy" | "green" | "mustard";
+}) {
+  const tones: Record<typeof tone, { iconBg: string; iconColor: string }> = {
+    navy: { iconBg: "bg-brand-navy/10", iconColor: "text-brand-navy" },
+    green: {
+      iconBg: "bg-brand-green/10",
+      iconColor: "text-brand-green-dark",
+    },
+    mustard: {
+      iconBg: "bg-brand-mustard/15",
+      iconColor: "text-brand-mustard",
+    },
+  };
+  const t = tones[tone];
+  return (
+    <div className="bg-white rounded-2xl border border-brand-beige-dark p-5 sm:p-6">
+      <div
+        className={`w-10 h-10 rounded-lg ${t.iconBg} flex items-center justify-center mb-3`}
+      >
+        <Icon className={`${t.iconColor} w-5 h-5`} />
+      </div>
+      <p className="text-3xl sm:text-4xl font-bold text-brand-navy leading-none">
+        {value}
+      </p>
+      <p className="text-sm font-semibold text-brand-navy mt-2 leading-tight">
+        {label}
+      </p>
+      <p className="text-xs text-brand-navy/60 leading-tight">{sublabel}</p>
+    </div>
+  );
+}
+
+// ── Course card ───────────────────────────────────────────────────────────────
+
+function CourseCard({ c }: { c: any }) {
+  return (
+    <div className="bg-white rounded-2xl border border-brand-beige-dark overflow-hidden hover:border-brand-navy/30 transition-colors group">
+      <div className="h-36 bg-brand-beige-dark relative overflow-hidden">
+        {c.course?.thumbnailUrl ? (
+          <img
+            src={c.course.thumbnailUrl}
+            alt={c.course?.title}
+            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = "none";
+            }}
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <BookOpen className="text-brand-navy/30 w-10 h-10" />
+          </div>
+        )}
+        {c.isCompleted && (
+          <div className="absolute top-3 right-3 bg-brand-green text-white rounded-full px-2.5 py-1 flex items-center gap-1 shadow-sm">
+            <CheckCircle2 size={11} />
+            <span className="text-[10px] font-semibold uppercase tracking-wider">
+              Done
+            </span>
+          </div>
+        )}
+        {c.course?.courseType === "FREE" && (
+          <div className="absolute top-3 left-3 bg-brand-green-dark text-white rounded-full px-2.5 py-1 flex items-center gap-1 shadow-sm">
+            <Gift size={10} />
+            <span className="text-[10px] font-semibold uppercase tracking-wider">
+              Free
+            </span>
+          </div>
+        )}
+      </div>
+      <div className="p-5">
+        <h3 className="font-bold text-brand-navy leading-snug line-clamp-2 mb-3 group-hover:text-brand-mustard transition-colors">
+          {c.course?.title}
+        </h3>
+        <div className="mb-4">
+          <div className="flex justify-between text-xs text-brand-navy/60 mb-1.5">
+            <span className="font-medium">Progress</span>
+            <span className="font-semibold">{c.completionPercent}%</span>
+          </div>
+          <div className="h-1.5 rounded-full bg-brand-beige-dark overflow-hidden">
+            <div
+              className="h-full rounded-full bg-brand-navy transition-all"
+              style={{ width: `${c.completionPercent}%` }}
+            />
+          </div>
+        </div>
+        <div className="flex items-center justify-between">
+          <Link
+            to={`/student/course/${c.courseId}`}
+            className="flex items-center gap-1.5 bg-brand-navy hover:bg-brand-navy-dark text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+          >
+            <Play size={13} />{" "}
+            {c.completionPercent > 0 ? "Continue" : "Start"}
+          </Link>
+          {c.isCompleted && (
+            <a
+              href={`/certificate/${c.courseId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1 text-brand-mustard hover:text-brand-mustard/80 text-xs font-semibold transition-colors"
+            >
+              <Award size={13} /> Certificate
+            </a>
           )}
         </div>
-
-        {/* Action cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-10">
-          <div className="bg-gradient-to-br from-brand-green-dark/30 to-brand-navy-dark border border-brand-green-dark/30 rounded-xl p-6">
-            <Gift className="text-brand-green w-8 h-8 mb-3" />
-            <h3 className="text-white font-semibold mb-1">Free Courses</h3>
-            <p className="text-slate-400 text-sm mb-4">
-              Browse our library of free courses and start learning immediately.
-            </p>
-            <Link
-              to="/catalog"
-              className="inline-flex items-center gap-2 bg-brand-green/20 hover:bg-brand-green/30 text-brand-green/40 text-sm font-medium px-4 py-2 rounded-lg border border-brand-green/30 transition-colors"
-            >
-              Browse Catalog
-            </Link>
-          </div>
-
-          <div className="bg-gradient-to-br from-brand-mustard/20 to-brand-navy-dark border border-brand-mustard/20 rounded-xl p-6">
-            <Key className="text-amber-400 w-8 h-8 mb-3" />
-            <h3 className="text-white font-semibold mb-1">
-              Have a License Key?
-            </h3>
-            <p className="text-slate-400 text-sm mb-4">
-              Redeem your license key to unlock a paid course instantly.
-            </p>
-            <Link
-              to="/redeem"
-              className="inline-flex items-center gap-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-sm font-medium px-4 py-2 rounded-lg border border-amber-500/30 transition-colors"
-            >
-              Redeem Key
-            </Link>
-          </div>
-        </div>
-      </main>
+      </div>
     </div>
+  );
+}
+
+// ── What's New card ──────────────────────────────────────────────────────────
+
+function WhatsNewCard({
+  icon: Icon,
+  eyebrow,
+  cta,
+  to,
+  tone,
+}: {
+  icon: React.ElementType;
+  eyebrow: string;
+  cta: string;
+  to?: string;
+  tone: "navy" | "green" | "mustard";
+}) {
+  const tones: Record<typeof tone, { bg: string; iconBg: string; iconColor: string }> = {
+    navy: {
+      bg: "bg-white border-brand-beige-dark hover:border-brand-navy/40",
+      iconBg: "bg-brand-navy/10",
+      iconColor: "text-brand-navy",
+    },
+    green: {
+      bg: "bg-white border-brand-beige-dark hover:border-brand-green/50",
+      iconBg: "bg-brand-green/10",
+      iconColor: "text-brand-green-dark",
+    },
+    mustard: {
+      bg: "bg-white border-brand-beige-dark hover:border-brand-mustard/50",
+      iconBg: "bg-brand-mustard/15",
+      iconColor: "text-brand-mustard",
+    },
+  };
+  const t = tones[tone];
+
+  const inner = (
+    <>
+      <div
+        className={`w-10 h-10 rounded-lg ${t.iconBg} flex items-center justify-center mb-4`}
+      >
+        <Icon className={`${t.iconColor} w-5 h-5`} />
+      </div>
+      <p className="text-xs font-bold tracking-[0.14em] text-brand-navy/50 mb-1 uppercase">
+        {eyebrow}
+      </p>
+      <p
+        className={`text-sm font-semibold ${
+          to ? "text-brand-navy" : "text-brand-navy/50"
+        } flex items-center gap-1.5`}
+      >
+        {cta}
+        {to && <ArrowRight size={13} className="text-brand-mustard" />}
+      </p>
+    </>
+  );
+
+  if (!to) {
+    return (
+      <div className={`rounded-2xl border p-5 ${t.bg} cursor-not-allowed`}>
+        {inner}
+      </div>
+    );
+  }
+
+  return (
+    <Link to={to} className={`rounded-2xl border p-5 ${t.bg} transition-colors block`}>
+      {inner}
+    </Link>
   );
 }

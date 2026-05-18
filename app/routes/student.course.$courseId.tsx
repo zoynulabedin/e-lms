@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { HlsPlayer } from "../components/HlsPlayer";
+import { StorylinePlayer } from "../components/StorylinePlayer";
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
 
@@ -253,6 +254,11 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   const prevItem = currentIdx > 0 ? allItems[currentIdx - 1] : null;
   const nextItem = currentIdx < allItems.length - 1 ? allItems[currentIdx + 1] : null;
 
+  // Next item of type "lesson" only — used by Storyline auto-advance so we
+  // don't push the learner straight into a quiz without explicit consent.
+  const nextLessonItem =
+    allItems.slice(currentIdx + 1).find((i) => i.type === "lesson") ?? null;
+
   const lessonItems = allItems.filter((i) => i.type === "lesson");
   const totalDuration = lessonItems.reduce((sum, { item }) => sum + (item.duration ?? 0), 0);
   const totalLessons = lessonItems.length;
@@ -266,6 +272,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     userId: user.id,
     prevItem,
     nextItem,
+    nextLessonItem,
     totalLessons,
     totalItems: allItems.length,
     currentItemNumber: currentIdx + 1,
@@ -978,6 +985,7 @@ export default function CourseViewer() {
     completedLessonIds,
     prevItem,
     nextItem,
+    nextLessonItem,
     totalLessons,
     totalItems,
     currentItemNumber,
@@ -1473,13 +1481,24 @@ export default function CourseViewer() {
             {(currentLesson?.lessonType === "STORYLINE" || (!hasModules && isStoryline)) && (
               <div className="absolute inset-0 bg-black">
                 {embedUrl ? (
-                  <iframe
+                  <StorylinePlayer
                     ref={iframeRef}
                     src={embedUrl}
                     title={currentLesson?.title || course.title}
                     allow="fullscreen; autoplay"
                     className="absolute inset-0 w-full h-full border-0"
                     sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
+                    lessonId={currentLesson?.id ?? course.id}
+                    nextLessonUrl={
+                      currentLesson && nextLessonItem
+                        ? itemNavUrl(nextLessonItem)
+                        : null
+                    }
+                    onComplete={(id) => {
+                      if (currentLesson && !completedSet.has(id)) {
+                        markLessonComplete(id);
+                      }
+                    }}
                   />
                 ) : (
                   <div className="absolute inset-0 flex items-center justify-center">

@@ -3,6 +3,7 @@
 @theme {
   --color-brand-navy: #1d375f;
   --color-brand-navy-dark: #162a46;
+  --color-brand-navy-deeper: #001a38;
   --color-brand-green: #2c795a;
   --color-brand-green-dark: #225a43;
   --color-brand-mustard: #c69445;
@@ -12,6 +13,8 @@
   --font-sans:
     "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
     "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-display:
+    "ADLaM Display", "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 
 html,
@@ -21,4 +24,19 @@ body {
   @media (prefers-color-scheme: dark) {
     color-scheme: dark;
   }
+}
+
+@keyframes slide-in {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out;
 }

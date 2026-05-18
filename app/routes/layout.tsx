@@ -93,15 +93,19 @@ export default function Layout() {
         {/* Logo */}
         <div className="p-5 border-b border-gray-200 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-brand-navy flex items-center justify-center shadow-sm">
-              <Store className="text-white w-4 h-4" />
+            <div className="w-10 h-10 rounded-lg bg-brand-navy flex items-center justify-center shadow-sm p-1.5">
+              <img
+                src="/White_center.avif"
+                alt="Teach Me Like a Tot"
+                className="w-full h-full object-contain"
+              />
             </div>
             <div>
               <p className="text-sm font-bold text-gray-900 leading-none">
                 E-Course Admin
               </p>
               <p className="text-xs text-gray-400 mt-0.5">
-                InstructionalGraphics
+                Teach Me Like a Tot
               </p>
             </div>
           </div>

@@ -1,9 +1,20 @@
-import { useLoaderData, Link } from "react-router";
+import { useLoaderData } from "react-router";
 import type { LoaderFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireUser } from "../utils/auth.server";
-import { Trophy, AlertCircle, ChevronDown, ChevronUp, CheckCircle2, X, HelpCircle, BookOpen, Clock } from "lucide-react";
+import {
+  Trophy,
+  AlertCircle,
+  ChevronDown,
+  ChevronUp,
+  BookOpen,
+} from "lucide-react";
 import { useState } from "react";
+import {
+  StudentSidebar,
+  StudentMobileTopbar,
+} from "../components/StudentSidebar";
+import { Toast } from "../components/Toast";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const user = await requireUser(request);
@@ -29,7 +40,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
     LIMIT 100
   `;
 
-  const answerRows = attempts.length > 0 ? await prisma.$queryRaw<any[]>`
+  const answerRows =
+    attempts.length > 0
+      ? await prisma.$queryRaw<any[]>`
     SELECT
       qaa.id,
       qaa."attemptId",
@@ -46,7 +59,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
       SELECT id FROM "QuizAttempt" WHERE "userId" = ${user.id}
     )
     ORDER BY qaa."attemptId", q."order"
-  ` : [];
+  `
+      : [];
 
   const answersMap: Record<string, any[]> = {};
   for (const a of answerRows) {
@@ -54,7 +68,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
     answersMap[a.attemptId].push(a);
   }
 
+  const completedCount = await prisma.progress.count({
+    where: { userId: user.id, isCompleted: true },
+  });
+
   return {
+    user,
+    hasCertificates: completedCount > 0,
     attempts: attempts.map((a: any) => ({
       ...a,
       answers: answersMap[a.attemptId] || [],
@@ -62,125 +82,279 @@ export async function loader({ request }: LoaderFunctionArgs) {
   };
 }
 
-function AttemptRow({ attempt }: { attempt: any }) {
-  const [open, setOpen] = useState(false);
-  const pct = attempt.maxScore > 0 ? Math.round((attempt.score / attempt.maxScore) * 100) : 0;
-  const date = new Date(attempt.submittedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-  const hasAnswers = attempt.answers.length > 0;
+export default function StudentQuizHistory() {
+  const { user, hasCertificates, attempts } = useLoaderData<typeof loader>();
+
+  const passed = attempts.filter((a: any) => a.isPassed).length;
+  const total = attempts.length;
+  const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+    <div className="min-h-screen bg-brand-beige">
+      <Toast />
+
+      <div className="flex">
+        <StudentSidebar
+          user={user}
+          active="quiz-history"
+          certificatesEnabled={hasCertificates}
+        />
+
+        <main className="flex-1 min-w-0">
+          <StudentMobileTopbar />
+
+          <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8 lg:py-10">
+            {/* Hero */}
+            <div className="mb-8">
+              <div className="flex items-center gap-2 text-brand-mustard text-xs font-bold tracking-[0.18em] uppercase mb-2">
+                <Trophy size={14} />
+                Quiz History
+              </div>
+              <h1 className="font-display text-4xl sm:text-5xl text-brand-navy">
+                Your Attempts
+              </h1>
+              <p className="text-brand-navy/60 mt-2 max-w-2xl">
+                Every quiz you've taken, with scores and answer breakdowns.
+              </p>
+            </div>
+
+            {/* Stats */}
+            {total > 0 && (
+              <div className="grid grid-cols-3 gap-3 sm:gap-5 mb-10">
+                <StatCard
+                  value={total}
+                  label="Total"
+                  sublabel="Attempts"
+                  tone="navy"
+                />
+                <StatCard
+                  value={passed}
+                  label="Passed"
+                  sublabel="Quizzes"
+                  tone="green"
+                />
+                <StatCard
+                  value={`${passRate}%`}
+                  label="Pass"
+                  sublabel="Rate"
+                  tone="mustard"
+                />
+              </div>
+            )}
+
+            {/* Attempts list */}
+            {attempts.length === 0 ? (
+              <div className="text-center py-20 border-2 border-dashed border-brand-beige-dark rounded-2xl bg-white">
+                <div className="w-14 h-14 rounded-full bg-brand-mustard/15 flex items-center justify-center mx-auto mb-4">
+                  <BookOpen className="text-brand-mustard w-7 h-7" />
+                </div>
+                <p className="font-display text-2xl text-brand-navy mb-1">
+                  No quiz attempts yet
+                </p>
+                <p className="text-brand-navy/60 text-sm max-w-md mx-auto">
+                  Take a quiz in any course and your attempt history will appear
+                  here.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {attempts.map((attempt: any) => (
+                  <AttemptRow key={attempt.attemptId} attempt={attempt} />
+                ))}
+              </div>
+            )}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+// ── Stat card ─────────────────────────────────────────────────────────────────
+
+function StatCard({
+  value,
+  label,
+  sublabel,
+  tone,
+}: {
+  value: number | string;
+  label: string;
+  sublabel: string;
+  tone: "navy" | "green" | "mustard";
+}) {
+  const tones: Record<
+    typeof tone,
+    { iconBg: string; iconColor: string; valueColor: string }
+  > = {
+    navy: {
+      iconBg: "bg-brand-navy/10",
+      iconColor: "text-brand-navy",
+      valueColor: "text-brand-navy",
+    },
+    green: {
+      iconBg: "bg-brand-green/10",
+      iconColor: "text-brand-green-dark",
+      valueColor: "text-brand-green-dark",
+    },
+    mustard: {
+      iconBg: "bg-brand-mustard/15",
+      iconColor: "text-brand-mustard",
+      valueColor: "text-brand-mustard",
+    },
+  };
+  const t = tones[tone];
+  return (
+    <div className="bg-white rounded-2xl border border-brand-beige-dark p-5 sm:p-6">
+      <div
+        className={`w-10 h-10 rounded-lg ${t.iconBg} flex items-center justify-center mb-3`}
+      >
+        <Trophy className={`${t.iconColor} w-5 h-5`} />
+      </div>
+      <p
+        className={`text-3xl sm:text-4xl font-bold ${t.valueColor} leading-none`}
+      >
+        {value}
+      </p>
+      <p className="text-sm font-semibold text-brand-navy mt-2 leading-tight">
+        {label}
+      </p>
+      <p className="text-xs text-brand-navy/60 leading-tight">{sublabel}</p>
+    </div>
+  );
+}
+
+// ── Attempt row ───────────────────────────────────────────────────────────────
+
+function AttemptRow({ attempt }: { attempt: any }) {
+  const [open, setOpen] = useState(false);
+  const pct =
+    attempt.maxScore > 0
+      ? Math.round((attempt.score / attempt.maxScore) * 100)
+      : 0;
+  const date = new Date(attempt.submittedAt).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const hasAnswers = attempt.answers.length > 0;
+  const isPassed = attempt.isPassed;
+
+  return (
+    <div className="bg-white rounded-2xl border border-brand-beige-dark overflow-hidden">
       <div className="flex items-center gap-4 px-5 py-4">
-        <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${attempt.isPassed ? "bg-green-100" : "bg-red-100"}`}>
-          {attempt.isPassed
-            ? <Trophy size={18} className="text-green-600" />
-            : <AlertCircle size={18} className="text-red-500" />}
+        <div
+          className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
+            isPassed ? "bg-brand-green/15" : "bg-red-100"
+          }`}
+        >
+          {isPassed ? (
+            <Trophy size={18} className="text-brand-green-dark" />
+          ) : (
+            <AlertCircle size={18} className="text-red-500" />
+          )}
         </div>
         <div className="flex-1 min-w-0">
-          <p className="font-semibold text-gray-900 text-sm truncate">{attempt.quizTitle}</p>
-          <p className="text-xs text-gray-500 mt-0.5 truncate">{attempt.courseTitle}</p>
+          <p className="font-semibold text-brand-navy text-sm truncate">
+            {attempt.quizTitle}
+          </p>
+          <p className="text-xs text-brand-navy/55 mt-0.5 truncate">
+            {attempt.courseTitle}
+          </p>
         </div>
         <div className="flex items-center gap-4 shrink-0">
           <div className="text-right">
-            <p className={`text-sm font-bold ${attempt.isPassed ? "text-green-600" : "text-red-500"}`}>{pct}%</p>
-            <p className="text-[11px] text-gray-400">{attempt.score}/{attempt.maxScore} pts</p>
+            <p
+              className={`text-sm font-bold ${
+                isPassed ? "text-brand-green-dark" : "text-red-500"
+              }`}
+            >
+              {pct}%
+            </p>
+            <p className="text-[11px] text-brand-navy/45">
+              {attempt.score}/{attempt.maxScore} pts
+            </p>
           </div>
-          <div className="text-right">
-            <p className="text-xs text-gray-500">{date}</p>
-            <p className={`text-[11px] font-medium mt-0.5 ${attempt.isPassed ? "text-green-600" : "text-red-500"}`}>
-              {attempt.isPassed ? "Passed" : "Failed"}
+          <div className="text-right hidden sm:block">
+            <p className="text-xs text-brand-navy/55">{date}</p>
+            <p
+              className={`text-[11px] font-semibold mt-0.5 uppercase tracking-wider ${
+                isPassed ? "text-brand-green-dark" : "text-red-500"
+              }`}
+            >
+              {isPassed ? "Passed" : "Failed"}
             </p>
           </div>
           {hasAnswers && (
             <button
               type="button"
-              onClick={() => setOpen(v => !v)}
-              className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+              onClick={() => setOpen((v) => !v)}
+              className="p-1.5 rounded-lg hover:bg-brand-beige transition-colors"
+              aria-label={open ? "Collapse" : "Expand"}
             >
-              {open ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
+              {open ? (
+                <ChevronUp size={16} className="text-brand-navy/55" />
+              ) : (
+                <ChevronDown size={16} className="text-brand-navy/55" />
+              )}
             </button>
           )}
         </div>
       </div>
 
       {open && hasAnswers && (
-        <div className="border-t border-gray-100 px-5 py-4 space-y-3">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Your Answers</p>
+        <div className="border-t border-brand-beige-dark px-5 py-4 space-y-2">
+          <p className="text-xs font-bold text-brand-navy/55 uppercase tracking-wider mb-3">
+            Your Answers
+          </p>
           {attempt.answers.map((a: any) => {
             const isPending = a.isCorrect === null;
             const isCorrect = a.isCorrect === true;
             return (
-              <div key={a.id} className={`flex items-start gap-3 p-3 rounded-xl border text-sm ${isPending ? "border-gray-200 bg-gray-50" : isCorrect ? "border-green-200 bg-green-50" : "border-red-200 bg-red-50"}`}>
-                <div className={`shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-white text-[10px] font-bold mt-0.5 ${isPending ? "bg-gray-400" : isCorrect ? "bg-green-500" : "bg-red-500"}`}>
+              <div
+                key={a.id}
+                className={`flex items-start gap-3 p-3 rounded-xl border text-sm ${
+                  isPending
+                    ? "border-brand-beige-dark bg-brand-beige/40"
+                    : isCorrect
+                      ? "border-brand-green/30 bg-brand-green/5"
+                      : "border-red-200 bg-red-50"
+                }`}
+              >
+                <div
+                  className={`shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-white text-[10px] font-bold mt-0.5 ${
+                    isPending
+                      ? "bg-brand-navy/40"
+                      : isCorrect
+                        ? "bg-brand-green-dark"
+                        : "bg-red-500"
+                  }`}
+                >
                   {isPending ? "?" : isCorrect ? "✓" : "✗"}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="font-medium text-gray-800 text-sm">{a.questionTitle}</p>
-                  {a.answerText && <p className="text-xs text-gray-500 mt-1 truncate">"{a.answerText}"</p>}
-                  {isPending && <p className="text-xs text-amber-500 mt-0.5">Pending review</p>}
+                  <p className="font-medium text-brand-navy text-sm">
+                    {a.questionTitle}
+                  </p>
+                  {a.answerText && (
+                    <p className="text-xs text-brand-navy/55 mt-1 truncate">
+                      "{a.answerText}"
+                    </p>
+                  )}
+                  {isPending && (
+                    <p className="text-xs text-brand-mustard mt-0.5 font-medium">
+                      Pending review
+                    </p>
+                  )}
                 </div>
-                <span className="text-xs text-gray-500 shrink-0">{a.pointsEarned}/{Number(a.points)} pt</span>
+                <span className="text-xs text-brand-navy/55 shrink-0 font-medium">
+                  {a.pointsEarned}/{Number(a.points)} pt
+                </span>
               </div>
             );
           })}
         </div>
       )}
-    </div>
-  );
-}
-
-export default function StudentQuizHistory() {
-  const { attempts } = useLoaderData<typeof loader>();
-
-  const passed = attempts.filter((a: any) => a.isPassed).length;
-  const total = attempts.length;
-
-  return (
-    <div className="min-h-screen bg-brand-beige">
-      <div className="max-w-3xl mx-auto px-4 py-10">
-        {/* Header */}
-        <div className="mb-8">
-          <Link to="/student/dashboard" className="text-sm text-blue-600 hover:underline flex items-center gap-1 mb-4">
-            ← Back to Dashboard
-          </Link>
-          <h1 className="text-2xl font-bold text-gray-900">Quiz History</h1>
-          <p className="text-gray-500 text-sm mt-1">All your quiz attempts</p>
-        </div>
-
-        {/* Stats */}
-        {total > 0 && (
-          <div className="grid grid-cols-3 gap-4 mb-8">
-            <div className="bg-white rounded-2xl border border-gray-200 p-4 text-center">
-              <p className="text-2xl font-black text-gray-900">{total}</p>
-              <p className="text-xs text-gray-500 mt-1">Total Attempts</p>
-            </div>
-            <div className="bg-white rounded-2xl border border-gray-200 p-4 text-center">
-              <p className="text-2xl font-black text-green-600">{passed}</p>
-              <p className="text-xs text-gray-500 mt-1">Passed</p>
-            </div>
-            <div className="bg-white rounded-2xl border border-gray-200 p-4 text-center">
-              <p className="text-2xl font-black text-gray-900">
-                {total > 0 ? Math.round((passed / total) * 100) : 0}%
-              </p>
-              <p className="text-xs text-gray-500 mt-1">Pass Rate</p>
-            </div>
-          </div>
-        )}
-
-        {attempts.length === 0 ? (
-          <div className="bg-white rounded-2xl border border-gray-200 py-20 flex flex-col items-center text-center">
-            <BookOpen size={40} className="text-gray-300 mb-4" />
-            <p className="text-gray-700 font-semibold">No quiz attempts yet</p>
-            <p className="text-gray-400 text-sm mt-1">Take a quiz in any course to see your history here.</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {attempts.map((attempt: any) => (
-              <AttemptRow key={attempt.attemptId} attempt={attempt} />
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 }

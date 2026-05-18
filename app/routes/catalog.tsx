@@ -8,16 +8,18 @@ import {
   Gift,
   DollarSign,
   Play,
-  CheckCircle2,
-  LogOut,
-  UserCircle,
   MonitorPlay,
   Video,
   Key,
   Search,
 } from "lucide-react";
-import { Form, useNavigation } from "react-router";
+import { Form } from "react-router";
 import { useState } from "react";
+import {
+  StudentSidebar,
+  StudentMobileTopbar,
+} from "../components/StudentSidebar";
+import { Toast } from "../components/Toast";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const user = await getSessionUser(request);
@@ -67,10 +69,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => b.count - a.count);
 
-  // If user is logged in, get their enrollments
+  // If user is logged in, get their enrollments + certificates count
   let enrolledCourseIds: Set<string> = new Set();
+  let hasCertificates = false;
   if (user) {
-    const [progresses, enrollments] = await Promise.all([
+    const [progresses, enrollments, completedCount] = await Promise.all([
       prisma.progress.findMany({
         where: { userId: user.id },
         select: { courseId: true },
@@ -79,9 +82,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
         where: { userId: user.id },
         select: { courseId: true },
       }),
+      prisma.progress.count({
+        where: { userId: user.id, isCompleted: true },
+      }),
     ]);
     progresses.forEach((p) => enrolledCourseIds.add(p.courseId));
     enrollments.forEach((e) => enrolledCourseIds.add(e.courseId));
+    hasCertificates = completedCount > 0;
   }
 
   return {
@@ -92,6 +99,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     categories,
     totalPublished: allPublished.length,
     enrolledCourseIds: Array.from(enrolledCourseIds),
+    hasCertificates,
   };
 }
 
@@ -104,7 +112,6 @@ export async function action({ request }: ActionFunctionArgs) {
   const intent = formData.get("intent") as string;
 
   if (intent === "enroll") {
-    // Find the course and verify it's free + published
     const course = await prisma.course.findUnique({ where: { id: courseId } });
     if (!course || course.status !== "PUBLISHED") {
       return data({ error: "Course not found." }, { status: 404 });
@@ -116,7 +123,6 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
-    // Create enrollment + progress record
     await prisma.enrollment.upsert({
       where: { userId_courseId: { userId: user.id, courseId } },
       update: {},
@@ -136,10 +142,17 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export default function Catalog() {
-  const { user, courses, q, categoryFilter, categories, totalPublished, enrolledCourseIds } =
-    useLoaderData<typeof loader>();
+  const {
+    user,
+    courses,
+    q,
+    categoryFilter,
+    categories,
+    totalPublished,
+    enrolledCourseIds,
+    hasCertificates,
+  } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
-  const navigation = useNavigation();
   const enrolledSet = new Set(enrolledCourseIds);
   const [searchVal, setSearchVal] = useState(q);
 
@@ -153,150 +166,86 @@ export default function Catalog() {
     return `/catalog${params.toString() ? `?${params.toString()}` : ""}`;
   };
 
-  return (
-    <div className="min-h-screen bg-brand-navy-dark">
-      {/* Header */}
-      <header className="bg-brand-navy-dark/80 backdrop-blur border-b border-slate-800 sticky top-0 z-30">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-brand-navy flex items-center justify-center shadow-lg shadow-brand-navy-dark/30">
-              <BookOpen className="text-white w-4 h-4" />
-            </div>
-            <span className="font-bold text-white text-lg hidden sm:block">
-              InstructionalGraphics
-            </span>
-          </div>
-
-          {/* Search */}
-          <Form method="get" className="flex-1 max-w-md" onSubmit={() => {}}>
-            <div className="relative">
-              <Search
-                size={14}
-                className="absolute left-3 inset-y-0 my-auto text-slate-500"
-              />
-              <input
-                name="q"
-                value={searchVal}
-                onChange={(e) => setSearchVal(e.target.value)}
-                type="text"
-                placeholder="Search courses…"
-                className="w-full bg-brand-navy border border-slate-700 rounded-lg pl-8 pr-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-brand-navy"
-              />
-            </div>
-          </Form>
-
-          <div className="flex items-center gap-3 shrink-0">
-            {user ? (
-              <>
-                <Link
-                  to="/student"
-                  className="text-slate-400 hover:text-white text-sm transition-colors flex items-center gap-1.5"
-                >
-                  <UserCircle size={16} /> My Courses
-                </Link>
-                <Form method="post" action="/auth/logout">
-                  <button
-                    type="submit"
-                    className="flex items-center gap-1.5 text-slate-400 hover:text-white transition-colors text-sm"
-                  >
-                    <LogOut size={16} /> Sign out
-                  </button>
-                </Form>
-              </>
-            ) : (
-              <>
-                <Link
-                  to="/auth/login"
-                  className="text-slate-400 hover:text-white text-sm transition-colors"
-                >
-                  Sign in
-                </Link>
-                <Link
-                  to="/auth/register"
-                  className="bg-brand-navy hover:bg-brand-navy-dark text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
-                >
-                  Sign up
-                </Link>
-              </>
-            )}
-          </div>
-        </div>
-      </header>
-
+  const content = (
+    <>
       {/* Hero */}
-      <div className="bg-gradient-to-b from-brand-navy-dark to-brand-navy-dark border-b border-slate-800 py-16">
-        <div className="max-w-6xl mx-auto px-6 text-center">
-          <h1 className="text-4xl font-bold text-white mb-3">
-            Learn at Your Own Pace
-          </h1>
-          <p className="text-slate-400 text-lg max-w-xl mx-auto">
-            Browse our library of professional courses. Free courses available
-            instantly — paid courses require a license key.
-          </p>
+      <div className="mb-8">
+        <div className="flex items-center gap-2 text-brand-mustard text-xs font-bold tracking-[0.18em] uppercase mb-2">
+          <BookOpen size={14} />
+          Browse Courses
         </div>
+        <h1 className="font-display text-4xl sm:text-5xl text-brand-navy">
+          Learn at Your Own Pace
+        </h1>
+        <p className="text-brand-navy/60 mt-2 max-w-2xl">
+          Browse our library of professional courses. Free courses available
+          instantly — paid courses require a license key.
+        </p>
       </div>
+
+      {/* Search */}
+      <Form method="get" className="mb-6">
+        <div className="relative max-w-md">
+          <Search
+            size={16}
+            className="absolute left-3 inset-y-0 my-auto text-brand-navy/40"
+          />
+          <input
+            name="q"
+            value={searchVal}
+            onChange={(e) => setSearchVal(e.target.value)}
+            type="text"
+            placeholder="Search courses…"
+            className="w-full bg-white border border-brand-beige-dark rounded-xl pl-10 pr-3 py-2.5 text-sm text-brand-navy placeholder-brand-navy/40 focus:outline-none focus:border-brand-navy"
+          />
+        </div>
+      </Form>
 
       {/* Category filter pills */}
       {categories.length > 0 && (
-        <div className="bg-brand-navy-dark border-b border-slate-800/60">
-          <div className="max-w-6xl mx-auto px-6 py-4 flex items-center gap-2 overflow-x-auto scrollbar-none">
-            <a
-              href={categoryPillHref("")}
-              className={`flex-shrink-0 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-colors whitespace-nowrap ${
-                !categoryFilter
-                  ? "bg-brand-navy border-brand-navy text-white"
-                  : "bg-brand-navy border-slate-700 text-slate-400 hover:text-white hover:border-slate-500"
-              }`}
-            >
-              All
-              <span className={`rounded-full px-1.5 py-0 text-[10px] font-bold ${!categoryFilter ? "bg-white/20 text-white" : "bg-slate-700 text-slate-400"}`}>
-                {totalPublished}
-              </span>
-            </a>
-            {categories.map(({ name, count }) => (
-              <a
-                key={name}
-                href={categoryPillHref(name)}
-                className={`flex-shrink-0 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-colors whitespace-nowrap ${
-                  categoryFilter === name
-                    ? "bg-brand-navy border-brand-navy text-white"
-                    : "bg-brand-navy border-slate-700 text-slate-400 hover:text-white hover:border-slate-500"
-                }`}
-              >
-                {name}
-                <span className={`rounded-full px-1.5 py-0 text-[10px] font-bold ${categoryFilter === name ? "bg-white/20 text-white" : "bg-slate-700 text-slate-400"}`}>
-                  {count}
-                </span>
-              </a>
-            ))}
-          </div>
+        <div className="flex items-center gap-2 overflow-x-auto scrollbar-none mb-8 -mx-1 px-1">
+          <CategoryPill
+            href={categoryPillHref("")}
+            label="All"
+            count={totalPublished}
+            active={!categoryFilter}
+          />
+          {categories.map(({ name, count }) => (
+            <CategoryPill
+              key={name}
+              href={categoryPillHref(name)}
+              label={name}
+              count={count}
+              active={categoryFilter === name}
+            />
+          ))}
         </div>
       )}
 
-      <main className="max-w-6xl mx-auto px-6 py-10 space-y-12">
+      {/* Course sections */}
+      <div className="space-y-12">
         {courses.length === 0 && (
-          <div className="text-center py-20">
-            <BookOpen className="mx-auto w-16 h-16 text-slate-700 mb-4" />
-            <p className="text-slate-400 text-lg font-medium">
+          <div className="text-center py-20 border-2 border-dashed border-brand-beige-dark rounded-2xl bg-white">
+            <BookOpen className="mx-auto w-14 h-14 text-brand-navy/30 mb-3" />
+            <p className="text-brand-navy font-medium">
               No courses available yet.
             </p>
-            <p className="text-slate-600 text-sm mt-1">
+            <p className="text-brand-navy/55 text-sm mt-1">
               {q ? `No results for "${q}". ` : ""}Check back soon!
             </p>
           </div>
         )}
 
-        {/* Free courses */}
         {freeCourses.length > 0 && (
           <section>
-            <div className="flex items-center gap-3 mb-6">
-              <div className="flex items-center gap-2 bg-brand-green/10 border border-brand-green/20 rounded-full px-3 py-1">
-                <Gift size={14} className="text-brand-green" />
-                <span className="text-brand-green text-sm font-semibold">
+            <div className="flex items-center gap-3 mb-5">
+              <div className="flex items-center gap-2 bg-brand-green/10 border border-brand-green/30 rounded-full px-3 py-1">
+                <Gift size={14} className="text-brand-green-dark" />
+                <span className="text-brand-green-dark text-xs font-bold uppercase tracking-wider">
                   Free Courses
                 </span>
               </div>
-              <span className="text-slate-600 text-sm">
+              <span className="text-brand-navy/50 text-sm">
                 {freeCourses.length} available
               </span>
             </div>
@@ -315,17 +264,16 @@ export default function Catalog() {
           </section>
         )}
 
-        {/* Paid courses */}
         {paidCourses.length > 0 && (
           <section>
-            <div className="flex items-center gap-3 mb-6">
-              <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/20 rounded-full px-3 py-1">
-                <DollarSign size={14} className="text-amber-400" />
-                <span className="text-amber-400 text-sm font-semibold">
+            <div className="flex items-center gap-3 mb-5">
+              <div className="flex items-center gap-2 bg-brand-mustard/15 border border-brand-mustard/40 rounded-full px-3 py-1">
+                <DollarSign size={14} className="text-brand-mustard" />
+                <span className="text-brand-mustard text-xs font-bold uppercase tracking-wider">
                   Paid Courses
                 </span>
               </div>
-              <span className="text-slate-600 text-sm">
+              <span className="text-brand-navy/50 text-sm">
                 {paidCourses.length} available
               </span>
             </div>
@@ -343,10 +291,107 @@ export default function Catalog() {
             </div>
           </section>
         )}
+      </div>
+    </>
+  );
+
+  // ── Logged-in: sidebar layout (matches student dashboard) ──────────────────
+  if (user) {
+    return (
+      <div className="min-h-screen bg-brand-beige">
+        <Toast />
+        <div className="flex">
+          <StudentSidebar
+            user={user}
+            active="browse"
+            certificatesEnabled={hasCertificates}
+          />
+          <main className="flex-1 min-w-0">
+            <StudentMobileTopbar />
+            <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8 lg:py-10">
+              {content}
+            </div>
+          </main>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Guest: simple header + same content ────────────────────────────────────
+  return (
+    <div className="min-h-screen bg-brand-beige">
+      <Toast />
+      {/* Guest header */}
+      <header className="bg-brand-navy-deeper border-b border-white/10 sticky top-0 z-30">
+        <div className="max-w-5xl mx-auto px-5 sm:px-8 py-4 flex items-center justify-between gap-4">
+          <Link to="/catalog" className="flex items-center">
+            <img
+              src="/White_center.avif"
+              alt="Teach Me Like a Tot"
+              className="h-10 w-auto object-contain"
+            />
+          </Link>
+          <div className="flex items-center gap-3 shrink-0">
+            <Link
+              to="/auth/login"
+              className="text-white/80 hover:text-white text-sm font-medium transition-colors"
+            >
+              Sign in
+            </Link>
+            <Link
+              to="/auth/register"
+              className="bg-brand-mustard hover:bg-brand-mustard/90 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
+            >
+              Sign up
+            </Link>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-5xl mx-auto px-5 sm:px-8 py-8 lg:py-10">
+        {content}
       </main>
     </div>
   );
 }
+
+// ── Category pill ─────────────────────────────────────────────────────────────
+
+function CategoryPill({
+  href,
+  label,
+  count,
+  active,
+}: {
+  href: string;
+  label: string;
+  count: number;
+  active: boolean;
+}) {
+  return (
+    <a
+      href={href}
+      className={`shrink-0 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-colors whitespace-nowrap ${
+        active
+          ? "bg-brand-navy border-brand-navy text-white"
+          : "bg-white border-brand-beige-dark text-brand-navy/70 hover:text-brand-navy hover:border-brand-navy/40"
+      }`}
+    >
+      {label}
+      <span
+        className={`rounded-full px-1.5 py-0 text-[10px] font-bold ${
+          active
+            ? "bg-white/25 text-white"
+            : "bg-brand-beige text-brand-navy/60"
+        }`}
+      >
+        {count}
+      </span>
+    </a>
+  );
+}
+
+// ── Course card ───────────────────────────────────────────────────────────────
 
 function CourseCard({
   course,
@@ -363,15 +408,9 @@ function CourseCard({
   const isStoryline = course.contentType === "STORYLINE";
 
   return (
-    <div className="bg-brand-navy-dark border border-slate-800 rounded-xl overflow-hidden hover:border-slate-600 transition-colors group flex flex-col">
+    <div className="bg-white rounded-2xl border border-brand-beige-dark overflow-hidden hover:border-brand-navy/30 transition-colors group flex flex-col">
       {/* Thumbnail */}
-      <div
-        className={`h-40 flex items-center justify-center relative overflow-hidden ${
-          isStoryline
-            ? "bg-gradient-to-br from-purple-900/30 to-brand-navy"
-            : "bg-gradient-to-br from-blue-900/30 to-brand-navy"
-        }`}
-      >
+      <div className="h-40 bg-brand-beige-dark flex items-center justify-center relative overflow-hidden">
         {course.thumbnailUrl ? (
           <img
             src={course.thumbnailUrl}
@@ -382,36 +421,36 @@ function CourseCard({
             }}
           />
         ) : isStoryline ? (
-          <MonitorPlay size={40} className="text-purple-700" />
+          <MonitorPlay size={40} className="text-brand-navy/30" />
         ) : (
-          <Video size={40} className="text-blue-700" />
+          <Video size={40} className="text-brand-navy/30" />
         )}
 
         {/* FREE / PAID badge */}
         <div
-          className={`absolute top-3 left-3 flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+          className={`absolute top-3 left-3 flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider shadow-sm ${
             isFree
-              ? "bg-brand-green/20 text-brand-green/40 border border-brand-green/30"
-              : "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+              ? "bg-brand-green-dark text-white"
+              : "bg-brand-mustard text-white"
           }`}
         >
           {isFree ? <Gift size={10} /> : <DollarSign size={10} />}
-          {isFree ? "FREE" : `$${course.price?.toFixed(2)}`}
+          {isFree ? "FREE" : `$${course.price?.toFixed(2) ?? "0.00"}`}
         </div>
       </div>
 
       {/* Body */}
       <div className="p-5 flex-1 flex flex-col">
-        <h3 className="font-semibold text-white leading-snug line-clamp-2 mb-2 group-hover:text-brand-mustard transition-colors">
+        <h3 className="font-display text-lg text-brand-navy leading-snug line-clamp-2 mb-2 group-hover:text-brand-mustard transition-colors">
           {course.title}
         </h3>
         {course.description && (
-          <p className="text-slate-500 text-xs line-clamp-2 mb-3">
+          <p className="text-brand-navy/55 text-xs line-clamp-2 mb-3">
             {course.description}
           </p>
         )}
 
-        <div className="flex items-center gap-3 text-xs text-slate-600 mb-4">
+        <div className="flex items-center gap-3 text-xs text-brand-navy/50 mb-4">
           <span>{course._count.modules} modules</span>
           <span>·</span>
           <span>{course._count.progress} enrolled</span>
@@ -433,7 +472,7 @@ function CourseCard({
                 <input type="hidden" name="intent" value="enroll" />
                 <button
                   type="submit"
-                  className="w-full flex items-center justify-center gap-2 bg-brand-navy hover:bg-brand-navy-dark text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
+                  className="w-full flex items-center justify-center gap-2 bg-brand-green-dark hover:bg-brand-green text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
                 >
                   <Gift size={14} /> Enroll for Free
                 </button>
@@ -449,7 +488,7 @@ function CourseCard({
           ) : (
             <Link
               to="/redeem"
-              className="w-full flex items-center justify-center gap-2 bg-white/5 hover:bg-white/10 text-white text-sm font-medium px-4 py-2.5 rounded-lg border border-white/10 hover:border-white/20 transition-colors"
+              className="w-full flex items-center justify-center gap-2 bg-brand-mustard hover:bg-brand-mustard/90 text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
             >
               <Key size={14} /> Redeem License Key
             </Link>

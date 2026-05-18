@@ -23,6 +23,8 @@ export default [
   route("student", "routes/student.dashboard.tsx"),
   route("student/course/:courseId", "routes/student.course.$courseId.tsx"),
   route("student/quiz-history", "routes/student.quiz-history.tsx"),
+  route("student/help", "routes/student.help.tsx"),
+  route("student/certificates", "routes/student.certificates.tsx"),
 
   // ─── Certificate (raw HTML response) ───────────────────────────────
   route("certificate/:courseId", "routes/certificate.$courseId.tsx"),
