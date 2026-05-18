@@ -5,6 +5,7 @@ import { prisma } from "../utils/db.server";
 import {
   StudentSidebar,
   StudentMobileTopbar,
+  StudentTopbar,
 } from "../components/StudentSidebar";
 import { Toast } from "../components/Toast";
 import { Award, BookOpen, Download, ExternalLink, Search } from "lucide-react";
@@ -58,6 +59,7 @@ export default function StudentCertificates() {
 
         <main className="flex-1 min-w-0">
           <StudentMobileTopbar />
+          <StudentTopbar user={user} />
 
           <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8 lg:py-10">
             {/* Hero */}
@@ -140,7 +142,7 @@ function CertCard({
             className="w-full h-full object-cover opacity-60 group-hover:opacity-75 transition-opacity"
           />
         ) : (
-          <div className="absolute inset-0 bg-gradient-to-br from-brand-navy via-brand-navy-dark to-brand-navy-deeper" />
+          <div className="absolute inset-0 bg-linear-to-br from-brand-navy via-brand-navy-dark to-brand-navy-deeper" />
         )}
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="w-14 h-14 rounded-full bg-brand-mustard/95 flex items-center justify-center shadow-lg">

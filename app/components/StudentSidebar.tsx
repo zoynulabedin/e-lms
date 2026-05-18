@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { Link, Form } from "react-router";
 import {
   LayoutDashboard,
@@ -10,6 +11,8 @@ import {
   Key,
   ArrowRight,
   Youtube,
+  ChevronDown,
+  Mail,
 } from "lucide-react";
 
 export type StudentNavItem =
@@ -75,17 +78,9 @@ function NavItem({
 // ── Sidebar ─────────────────────────────────────────────────────────────────
 
 export function StudentSidebar({
-  user,
   active,
   certificatesEnabled = false,
 }: StudentSidebarProps) {
-  const initials = user.name
-    .split(" ")
-    .map((p) => p.charAt(0))
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
-
   const activeBase =
     "relative w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors";
 
@@ -183,18 +178,6 @@ export function StudentSidebar({
         </Link>
       </div>
 
-      {/* User footer */}
-      <div className="px-6 py-4 border-t border-white/10 flex items-center gap-3">
-        <div className="w-9 h-9 rounded-full bg-brand-mustard text-white flex items-center justify-center font-bold text-sm shrink-0">
-          {initials}
-        </div>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-white truncate">
-            {user.name}
-          </p>
-          <p className="text-xs text-white/60 truncate">{user.email}</p>
-        </div>
-      </div>
     </aside>
   );
 }
@@ -219,6 +202,117 @@ export function StudentMobileTopbar() {
           <LogOut size={16} /> Sign out
         </button>
       </Form>
+    </div>
+  );
+}
+
+// ── Top bar with user profile pill (desktop) ────────────────────────────────
+
+export function StudentTopbar({
+  user,
+  title,
+  subtitle,
+}: {
+  user: { name: string; email: string };
+  title?: React.ReactNode;
+  subtitle?: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const initials = user.name
+    .split(" ")
+    .map((p) => p.charAt(0))
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
+  return (
+    <div className="hidden lg:flex items-center justify-between gap-4 px-8 py-4 border-b border-brand-beige-dark bg-[#FAEDE8] sticky top-0 z-20">
+      {/* Left: optional title/subtitle */}
+      <div className="min-w-0 flex-1">
+        {title && (
+          <h1 className="font-display text-2xl xl:text-3xl text-brand-navy leading-tight truncate">
+            {title}
+          </h1>
+        )}
+        {subtitle && (
+          <p className="text-brand-navy/60 text-sm mt-0.5 truncate">
+            {subtitle}
+          </p>
+        )}
+      </div>
+
+      {/* Right: user pill */}
+      <div className="shrink-0">
+      <div ref={ref} className="relative">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex items-center gap-2.5 bg-white hover:bg-white/80 border border-brand-beige-dark rounded-full pl-1 pr-3 py-1 transition-colors"
+          aria-expanded={open}
+          aria-haspopup="menu"
+        >
+          <div className="w-8 h-8 rounded-full bg-brand-navy text-white flex items-center justify-center font-bold text-xs shrink-0">
+            {initials}
+          </div>
+          <span className="text-brand-navy text-sm font-semibold leading-none">
+            {user.name}
+          </span>
+          <ChevronDown
+            size={14}
+            className={`text-brand-navy/50 transition-transform ${
+              open ? "rotate-180" : ""
+            }`}
+          />
+        </button>
+
+        {open && (
+          <div
+            role="menu"
+            className="absolute right-0 top-full mt-2 w-64 rounded-xl bg-white border border-brand-beige-dark shadow-lg overflow-hidden z-30"
+          >
+            <div className="px-4 py-3 border-b border-brand-beige-dark bg-brand-beige/40 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-brand-navy text-white flex items-center justify-center font-bold text-sm shrink-0">
+                {initials}
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-brand-navy truncate">
+                  {user.name}
+                </p>
+                <p className="text-xs text-brand-navy/60 truncate flex items-center gap-1">
+                  <Mail size={11} />
+                  {user.email}
+                </p>
+              </div>
+            </div>
+            <div className="p-1">
+              <Form method="post" action="/auth/logout">
+                <button
+                  type="submit"
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-brand-navy hover:bg-brand-green-dark hover:text-white font-medium transition-colors"
+                >
+                  <LogOut size={15} />
+                  Sign Out
+                </button>
+              </Form>
+            </div>
+          </div>
+        )}
+        </div>
+      </div>
     </div>
   );
 }

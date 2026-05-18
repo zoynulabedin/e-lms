@@ -6,6 +6,7 @@ import { prisma } from "../utils/db.server";
 import {
   StudentSidebar,
   StudentMobileTopbar,
+  StudentTopbar,
 } from "../components/StudentSidebar";
 import { Toast } from "../components/Toast";
 import {
@@ -130,6 +131,7 @@ export default function StudentHelp() {
 
         <main className="flex-1 min-w-0">
           <StudentMobileTopbar />
+          <StudentTopbar user={user} />
 
           <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8 lg:py-10">
             {/* Hero */}

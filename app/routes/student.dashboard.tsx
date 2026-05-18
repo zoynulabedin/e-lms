@@ -1,7 +1,11 @@
 import { redirect } from "react-router";
 import { Link, useLoaderData } from "react-router";
 import { Toast } from "../components/Toast";
-import { StudentSidebar, StudentMobileTopbar } from "../components/StudentSidebar";
+import {
+  StudentSidebar,
+  StudentMobileTopbar,
+  StudentTopbar,
+} from "../components/StudentSidebar";
 import type { LoaderFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireUser } from "../utils/auth.server";
@@ -114,17 +118,13 @@ export default function StudentDashboard() {
         {/* ── Main content ─────────────────────────────────────────────────── */}
         <main className="flex-1 min-w-0">
           <StudentMobileTopbar />
+          <StudentTopbar
+            user={user}
+            title={`Welcome back, ${firstName}!`}
+            subtitle="Continue learning where you left off."
+          />
 
           <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8 lg:py-10">
-            {/* Welcome */}
-            <div className="mb-8">
-              <h1 className="font-display text-4xl sm:text-5xl text-brand-navy">
-                Welcome back, {firstName}!
-              </h1>
-              <p className="text-brand-navy/60 mt-2">
-                Continue learning where you left off.
-              </p>
-            </div>
 
             {/* Stats */}
             <div className="grid grid-cols-3 gap-3 sm:gap-5 mb-10">
