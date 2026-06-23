@@ -1161,7 +1161,6 @@ export default function CourseViewer() {
                           const lesson = entry.item;
                           const isDone = completedSet.has(lesson.id);
                           const isActive = currentLesson?.id === lesson.id;
-                          const itemNum = entryIdx + 1;
 
                           return (
                             <Link
@@ -1197,14 +1196,6 @@ export default function CourseViewer() {
                                 style={{ color: isActive ? "#60a5fa" : "rgba(255,255,255,0.3)" }}
                               />
 
-                              {/* Number badge */}
-                              <div
-                                className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[12px] font-semibold"
-                                style={{ background: "#1a2a40", color: "#94a3b8" }}
-                              >
-                                {itemNum}
-                              </div>
-
                               {/* Title */}
                               <p
                                 className="flex-1 text-[15px] leading-snug min-w-0"
@@ -1230,7 +1221,6 @@ export default function CourseViewer() {
                         const quiz = entry.item;
                         const isActive = currentQuiz?.id === quiz.id;
                         const attempt = quiz.latestAttempt;
-                        const itemNum = entryIdx + 1;
 
                         return (
                           <Link
@@ -1265,14 +1255,6 @@ export default function CourseViewer() {
                               className="shrink-0"
                               style={{ color: isActive ? "#c084fc" : "rgba(255,255,255,0.3)" }}
                             />
-
-                            {/* Number badge */}
-                            <div
-                              className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[12px] font-semibold"
-                              style={{ background: "#1a2a40", color: "#94a3b8" }}
-                            >
-                              {itemNum}
-                            </div>
 
                             {/* Title + attempt */}
                             <div className="flex-1 min-w-0">
