@@ -90,7 +90,7 @@ const CURVE =
 const FEATURES = [
   { icon: "/login/icon-pace.png", lines: ["Learn at", "your own pace"] },
   { icon: "/login/icon-skills.png", lines: ["Build real", "money skills"] },
-  { icon: "/login/icon-secure.png", lines: ["Secure &", "private"] },
+  { icon: "/login/icon-secure.png", lines: ["Track Your", "Progress"] },
   { icon: "/login/icon-real.png", lines: ["Created for", "real life"] },
 ];
 
@@ -318,14 +318,14 @@ export default function Login() {
           </ul>
 
           <div className="mt-5 text-center lg:mt-4">
-            <Link
-              to="/catalog"
+            <a
+              href="https://www.teachmelikeatot.org"
               className="inline-flex items-center gap-2.5 text-[15px] transition-opacity hover:opacity-75 lg:text-[18px]"
               style={{ color: GOLD }}
             >
               <ArrowLeft size={20} strokeWidth={2.2} />
               Back to Teach Me Like a Tot
-            </Link>
+            </a>
           </div>
         </div>
       </footer>
