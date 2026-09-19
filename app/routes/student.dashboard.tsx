@@ -25,8 +25,8 @@ import {
 } from "lucide-react";
 
 const YOUTUBE_URL = "https://www.youtube.com/@TeachMeLikeATot";
-/** Where "Learn More" on a not-yet-purchased course sends the learner. */
-const COURSE_INFO_URL = "https://www.teachmelikeatot.org";
+/** Where "Learn More" on a not-enrolled course sends the learner (the store). */
+const COURSE_INFO_URL = "https://instructionalgraphics.org/collections/all-products";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const user = await requireUser(request);
@@ -494,16 +494,8 @@ function CourseCard({ c }: { c: any }) {
             >
               <Video size={13} /> Continue
             </Link>
-          ) : c.course?.courseType === "FREE" ? (
-            // Free course: "Learn More" opens it (which enrols the learner).
-            <Link
-              to={`/student/course/${c.courseId}`}
-              className="inline-flex items-center gap-1.5 bg-brand-navy-deeper hover:bg-brand-navy text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
-            >
-              <Lock size={12} /> Learn More
-            </Link>
           ) : (
-            // Paid course: "Learn More" goes to the site where it can be purchased.
+            // Not enrolled: "Learn More" goes to the store.
             <a
               href={COURSE_INFO_URL}
               target="_blank"
