@@ -24,6 +24,7 @@ export default [
   route("student/course/:courseId", "routes/student.course.$courseId.tsx"),
   route("student/quiz-history", "routes/student.quiz-history.tsx"),
   route("student/help", "routes/student.help.tsx"),
+  route("student/resources", "routes/student.resources.tsx"),
   route("student/certificates", "routes/student.certificates.tsx"),
 
   // ─── Certificate (raw HTML response) ───────────────────────────────
@@ -37,6 +38,9 @@ export default [
 
   // ─── Cloudinary image upload ─────────────────────────────────────────
   route("upload", "routes/upload.tsx"),
+
+  // ─── HLS video proxy (same-origin playlist/segments for hls.js) ─────────
+  route("api/video-proxy", "routes/api.video-proxy.ts"),
 
   // ─── Admin (protected by layout loader) ────────────────────────────
   layout("routes/layout.tsx", [

@@ -70,16 +70,22 @@ export async function loader({ request }: LoaderFunctionArgs) {
   }
 
   const completedCount = await prisma.progress.count({
-    where: { userId: user.id, isCompleted: true },
+    where: { userId: user.id, completedAt: { not: null } },
   });
 
   return {
     user,
     hasCertificates: completedCount > 0,
-    attempts: attempts.map((a: any) => ({
-      ...a,
-      answers: answersMap[a.attemptId] || [],
-    })),
+    attempts: attempts.map((a: any) => {
+      const answers = answersMap[a.attemptId] || [];
+      return {
+        ...a,
+        answers,
+        // Essay / short-answer questions sit at isCorrect = null until an
+        // instructor grades them; until then the attempt is neither passed nor failed.
+        pending: !a.isPassed && answers.some((x: any) => x.isCorrect === null),
+      };
+    }),
   };
 }
 
@@ -87,8 +93,9 @@ export default function StudentQuizHistory() {
   const { user, hasCertificates, attempts } = useLoaderData<typeof loader>();
 
   const passed = attempts.filter((a: any) => a.isPassed).length;
+  const graded = attempts.filter((a: any) => !a.pending).length;
   const total = attempts.length;
-  const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
+  const passRate = graded > 0 ? Math.round((passed / graded) * 100) : 0;
 
   return (
     <div className="min-h-screen bg-brand-beige">
@@ -241,13 +248,14 @@ function AttemptRow({ attempt }: { attempt: any }) {
   });
   const hasAnswers = attempt.answers.length > 0;
   const isPassed = attempt.isPassed;
+  const isPending = !!attempt.pending;
 
   return (
     <div className="bg-white rounded-2xl border border-brand-beige-dark overflow-hidden">
       <div className="flex items-center gap-4 px-5 py-4">
         <div
           className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
-            isPassed ? "bg-brand-green/15" : "bg-red-100"
+            isPassed ? "bg-brand-green/15" : isPending ? "bg-brand-mustard/20" : "bg-red-100"
           }`}
         >
           {isPassed ? (
@@ -281,10 +289,10 @@ function AttemptRow({ attempt }: { attempt: any }) {
             <p className="text-xs text-brand-navy/55">{date}</p>
             <p
               className={`text-[11px] font-semibold mt-0.5 uppercase tracking-wider ${
-                isPassed ? "text-brand-green-dark" : "text-red-500"
+                isPassed ? "text-brand-green-dark" : isPending ? "text-brand-mustard" : "text-red-500"
               }`}
             >
-              {isPassed ? "Passed" : "Failed"}
+              {isPassed ? "Passed" : isPending ? "Pending review" : "Failed"}
             </p>
           </div>
           {hasAnswers && (

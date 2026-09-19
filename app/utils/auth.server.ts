@@ -5,15 +5,41 @@ import crypto, { randomUUID } from "crypto";
 import { prisma } from "./db.server";
 import { redirect } from "react-router";
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-in-production";
+const JWT_SECRET = (() => {
+  const s = process.env.JWT_SECRET;
+  if (s && s.length >= 16) return s;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("JWT_SECRET must be set (>= 16 chars) in production.");
+  }
+  console.warn("[auth] JWT_SECRET missing - using an insecure development secret.");
+  return "dev-secret-change-in-production";
+})();
 const COOKIE_NAME = "lms_session";
-const SESSION_DURATION_DAYS = 7;
+const SESSION_DURATION_DAYS = 7; // inactivity window (slides on activity)
+const SESSION_MAX_DAYS = 30; // hard ceiling for the JWT / cookie
+
+/** Shape of the user object attached to a request session (safe to send to the client). */
+export type SessionUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  isBanned: boolean;
+  isSuspended: boolean;
+};
 
 // ─── Password helpers ─────────────────────────────────────────────────────────
 
 export async function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, 12);
 }
+
+/**
+ * A genuine bcrypt hash used when a login names an unknown email: comparing
+ * against it costs the same ~250 ms as a real check, so response time no
+ * longer reveals whether an account exists.
+ */
+export const DUMMY_HASH: string = bcrypt.hashSync("not-a-real-password", 12);
 
 export async function verifyPassword(
   password: string,
@@ -30,7 +56,7 @@ export function signToken(payload: {
   sessionId: string;
 }): string {
   return jwt.sign(payload, JWT_SECRET, {
-    expiresIn: `${SESSION_DURATION_DAYS}d`,
+    expiresIn: `${SESSION_MAX_DAYS}d`,
   });
 }
 
@@ -57,17 +83,20 @@ export function hashToken(token: string): string {
 // ─── Cookie helpers ───────────────────────────────────────────────────────────
 
 // COOKIE_SECURE env var controls the Secure flag:
-// - "true"  → secure cookies (HTTPS only) — set this in production with valid HTTPS
-// - "false" → insecure cookies (works over HTTP) — use behind HTTP proxies
-// - unset   → defaults to false (safe default that works everywhere)
-const COOKIE_SECURE = process.env.COOKIE_SECURE === "true";
+// - "true"  → secure cookies (HTTPS only)
+// - "false" → insecure cookies (only for local HTTP development)
+// - unset   → secure in production, insecure otherwise
+const COOKIE_SECURE =
+  process.env.COOKIE_SECURE !== undefined
+    ? process.env.COOKIE_SECURE === "true"
+    : process.env.NODE_ENV === "production";
 
 export function createSessionCookie(token: string): string {
   return serialize(COOKIE_NAME, token, {
     httpOnly: true,
     secure: COOKIE_SECURE,
     sameSite: "lax",
-    maxAge: 60 * 60 * 24 * SESSION_DURATION_DAYS,
+    maxAge: 60 * 60 * 24 * SESSION_MAX_DAYS, // hard ceiling; DB expiresAt slides with activity
     path: "/",
   });
 }
@@ -124,29 +153,6 @@ export async function createSession(
 ): Promise<string> {
   const { ipAddress, userAgent, deviceId } = getDeviceInfo(request);
 
-  // Use $queryRaw to avoid stale Prisma client type validation issues
-  const rows = await prisma.$queryRaw<Array<{ maxDevices: number }>>`
-    SELECT "maxDevices" FROM "User" WHERE id = ${userId}
-  `;
-  const limit = rows[0]?.maxDevices ?? 1;
-
-  // Get active sessions ordered by lastActiveAt ascending (oldest first)
-  const activeSessions = await prisma.$queryRaw<Array<{ id: string; lastActiveAt: Date }>>`
-    SELECT id, "lastActiveAt" FROM "UserSession"
-    WHERE "userId" = ${userId} AND "isActive" = true
-    ORDER BY "lastActiveAt" ASC
-  `;
-
-  // Invalidate oldest sessions if over device limit
-  if (limit > 0 && activeSessions.length >= limit) {
-    const idsToInvalidate = activeSessions
-      .slice(0, activeSessions.length - limit + 1)
-      .map((s) => s.id);
-    for (const sid of idsToInvalidate) {
-      await prisma.$executeRaw`UPDATE "UserSession" SET "isActive" = false WHERE id = ${sid}`;
-    }
-  }
-
   const expiresAt = new Date(
     Date.now() + SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000,
   );
@@ -156,10 +162,34 @@ export async function createSession(
   const token = signToken({ userId, role, sessionId });
   const tokenHash = hashToken(token);
 
-  await prisma.$executeRaw`
-    INSERT INTO "UserSession" (id, "userId", token, "deviceId", "ipAddress", "userAgent", "isActive", "expiresAt", "lastActiveAt", "createdAt")
-    VALUES (${sessionId}, ${userId}, ${tokenHash}, ${deviceId}, ${ipAddress}, ${userAgent}, true, ${expiresAt}, NOW(), NOW())
-  `;
+  // Read limit -> evict oldest -> insert, all inside one transaction with the
+  // user row locked, so two simultaneous logins can't both squeeze past the
+  // device limit, and a failed insert can't leave the user with no session.
+  await prisma.$transaction(async (tx) => {
+    const rows = await tx.$queryRaw<Array<{ maxDevices: number }>>`
+      SELECT "maxDevices" FROM "User" WHERE id = ${userId} FOR UPDATE
+    `;
+    const limit = rows[0]?.maxDevices ?? 1;
+
+    if (limit > 0) {
+      // Oldest sessions first; keep (limit - 1) so the new one fits.
+      const activeSessions = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM "UserSession"
+        WHERE "userId" = ${userId} AND "isActive" = true
+        ORDER BY "lastActiveAt" ASC
+      `;
+      const excess = activeSessions.length - limit + 1;
+      if (excess > 0) {
+        const ids = activeSessions.slice(0, excess).map((s) => s.id);
+        await tx.userSession.updateMany({ where: { id: { in: ids } }, data: { isActive: false } });
+      }
+    }
+
+    await tx.$executeRaw`
+      INSERT INTO "UserSession" (id, "userId", token, "deviceId", "ipAddress", "userAgent", "isActive", "expiresAt", "lastActiveAt", "createdAt")
+      VALUES (${sessionId}, ${userId}, ${tokenHash}, ${deviceId}, ${ipAddress}, ${userAgent}, true, ${expiresAt}, NOW(), NOW())
+    `;
+  });
 
   return token;
 }
@@ -187,8 +217,10 @@ export async function getSessionUser(request: Request) {
 
   if (!validSession) return null;
 
-  const users = await prisma.$queryRaw<any[]>`
-    SELECT id, email, name, role, "isBanned", "isSuspended", "passwordHash"
+  // NOTE: never select "passwordHash" here — this object is returned from
+  // loaders and serialized into the HTML sent to the browser.
+  const users = await prisma.$queryRaw<SessionUser[]>`
+    SELECT id, email, name, role, "isBanned", "isSuspended"
     FROM "User" WHERE id = ${payload.userId} LIMIT 1
   `;
   const user = users[0] ?? null;
@@ -197,11 +229,17 @@ export async function getSessionUser(request: Request) {
   // Block banned/suspended users
   if (user.isBanned || user.isSuspended) return null;
 
-  // Update last active timestamp (debounced — only update every 5 minutes)
+  // Sliding expiry: activity pushes the DB expiry out again (debounced to
+  // one write per 5 minutes). The JWT/cookie carry a longer hard ceiling so a
+  // daily-active learner is no longer logged out mid-lesson on day 7.
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
   if (validSession.lastActiveAt < fiveMinutesAgo) {
-    prisma.$executeRaw`UPDATE "UserSession" SET "lastActiveAt" = NOW() WHERE id = ${validSession.id}`
-      .catch(() => {}); // Non-critical
+    prisma.$executeRaw`
+      UPDATE "UserSession"
+      SET "lastActiveAt" = NOW(),
+          "expiresAt" = NOW() + (${SESSION_DURATION_DAYS}::int * INTERVAL '1 day')
+      WHERE id = ${validSession.id}
+    `.catch(() => {}); // Non-critical
   }
 
   return user;
@@ -241,7 +279,7 @@ export function generateLicenseKey(): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   const segment = (len: number) =>
     Array.from({ length: len }, () =>
-      chars.charAt(Math.floor(Math.random() * chars.length)),
+      chars.charAt(crypto.randomInt(chars.length)),
     ).join("");
   return `LIC-${segment(4)}-${segment(4)}-${segment(4)}`;
 }

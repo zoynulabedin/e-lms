@@ -40,12 +40,20 @@ COPY --from=build /app/build ./build
 COPY prisma ./prisma
 COPY prisma.config.ts ./
 
-# Copy package.json for npm start
-COPY package.json ./
+# Copy package.json + the tiny server entry (loads env via dotenv, no .env file required)
+COPY package.json server.js ./
+# Migration runner: baselines a `db push`-managed database once, then `migrate deploy`
+COPY scripts/migrate.mjs ./scripts/migrate.mjs
+
+# Run as an unprivileged user
+RUN addgroup -S app && adduser -S app -G app && chown -R app:app /app
+USER app
 
 EXPOSE 3000
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Sync schema to DB then start the app
-CMD ["sh", "-c", "npx prisma db push --accept-data-loss && npm run start"]
+# Apply committed migrations (never `db push --accept-data-loss` — that can
+# silently DROP columns/tables on any schema drift), then start the app.
+# scripts/migrate.mjs baselines an existing db-push database on first run.
+CMD ["sh", "-c", "node scripts/migrate.mjs && node server.js"]

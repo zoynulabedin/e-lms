@@ -27,7 +27,7 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const PER_PAGE = 20;
 
@@ -91,6 +91,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
     prisma.user.findMany({
       where,
       orderBy: { createdAt: "desc" },
+      // Loader data is serialized into the page - never ship hashes.
+      omit: { passwordHash: true },
       include: {
         _count: { select: { licenses: true, progress: true } },
         sessions: {
@@ -110,17 +112,44 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
 // ── Action ────────────────────────────────────────────────────────────────────
 
+const ROLES = ["ADMIN", "STUDENT", "CORPORATE"] as const;
+type Role = (typeof ROLES)[number];
+const isRole = (v: unknown): v is Role => ROLES.includes(v as Role);
+
 export async function action({ request }: ActionFunctionArgs) {
-  await requireAdmin(request);
+  const admin = await requireAdmin(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
   const userId = String(formData.get("userId") || "");
+
+  // ── Self-lockout guards ───────────────────────────────────────────────────
+  // An admin must not be able to remove their own access here, and the last
+  // ADMIN account can never be demoted, suspended, banned or deleted -
+  // otherwise nobody can get back into the panel without touching the DB.
+  const targetsSelf = userId && userId === admin.id;
+  const destructive = ["ban_user", "suspend_user", "delete_user", "revoke_all_sessions"].includes(String(intent));
+  const demotes =
+    (intent === "change_role" || intent === "edit_user") && formData.has("role") && formData.get("role") !== "ADMIN";
+  if (targetsSelf && (destructive || demotes)) {
+    return data({ error: "You cannot remove your own admin access from this page." }, { status: 400 });
+  }
+  if (userId && (destructive || demotes)) {
+    const target = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true, isBanned: true, isSuspended: true },
+    });
+    if (target?.role === "ADMIN" && !target.isBanned && !target.isSuspended) {
+      const adminCount = await prisma.user.count({ where: { role: "ADMIN", isBanned: false, isSuspended: false } });
+      if (adminCount <= 1)
+        return data({ error: "This is the last active admin account. Promote someone else first." }, { status: 400 });
+    }
+  }
 
   if (intent === "create_user") {
     const name = String(formData.get("name") || "").trim();
     const email = String(formData.get("email") || "").trim().toLowerCase();
     const password = String(formData.get("password") || "");
-    const role = (formData.get("role") as string) || "STUDENT";
+    const role = formData.get("role") || "STUDENT";
 
     if (!name || !email || password.length < 8) {
       return data(
@@ -128,24 +157,49 @@ export async function action({ request }: ActionFunctionArgs) {
         { status: 400 },
       );
     }
+    if (!isRole(role)) return data({ error: "Invalid role." }, { status: 400 });
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
       return data({ error: "An account with this email already exists." }, { status: 409 });
     }
     const passwordHash = await hashPassword(password);
-    await prisma.user.create({ data: { name, email, passwordHash, role: role as any } });
+    try {
+      await prisma.user.create({ data: { name, email, passwordHash, role } });
+    } catch (e: any) {
+      if (e?.code === "P2002")
+        return data({ error: "An account with this email already exists." }, { status: 409 });
+      throw e;
+    }
     return data({ success: true, created: true });
   }
 
   if (intent === "change_role") {
-    const role = formData.get("role") as "ADMIN" | "STUDENT" | "CORPORATE";
+    const role = formData.get("role");
+    if (!isRole(role)) return data({ error: "Invalid role." }, { status: 400 });
     await prisma.user.update({ where: { id: userId }, data: { role } });
     return data({ success: true });
   }
 
   if (intent === "change_max_devices") {
-    const maxDevices = parseInt(String(formData.get("maxDevices") || "1"), 10);
-    await prisma.user.update({ where: { id: userId }, data: { maxDevices } });
+    const n = Number.parseInt(String(formData.get("maxDevices") ?? ""), 10);
+    if (!Number.isInteger(n) || n < 0 || n > 50)
+      return data({ error: "Device limit must be a whole number from 0 (unlimited) to 50." }, { status: 400 });
+    await prisma.user.update({ where: { id: userId }, data: { maxDevices: n } });
+    // Lowering the limit takes effect now: keep the n most recently active
+    // sessions, sign the rest out.
+    if (n > 0) {
+      const extra = await prisma.userSession.findMany({
+        where: { userId, isActive: true },
+        orderBy: { lastActiveAt: "desc" },
+        skip: n,
+        select: { id: true },
+      });
+      if (extra.length)
+        await prisma.userSession.updateMany({
+          where: { id: { in: extra.map((x) => x.id) } },
+          data: { isActive: false },
+        });
+    }
     return data({ success: true });
   }
 
@@ -187,30 +241,53 @@ export async function action({ request }: ActionFunctionArgs) {
     const name = String(formData.get("name") || "").trim();
     const email = String(formData.get("email") || "").trim().toLowerCase();
     const password = String(formData.get("password") || "");
-    const role = (formData.get("role") as string) || "STUDENT";
+    const role = formData.get("role");
 
     if (!name || !email) {
       return data({ error: "Name and email are required." }, { status: 400 });
     }
+    // Role is optional on edit; when present it must be valid (no silent
+    // fallback to STUDENT).
+    if (formData.has("role") && !isRole(role)) return data({ error: "Invalid role." }, { status: 400 });
     const conflict = await prisma.user.findFirst({ where: { email, NOT: { id: userId } } });
     if (conflict) return data({ error: "That email is already used by another account." }, { status: 409 });
 
-    const updateData: any = { name, email, role };
+    const updateData: { name: string; email: string; role?: Role; passwordHash?: string } = { name, email };
+    if (isRole(role)) updateData.role = role;
     if (password.length >= 8) {
       updateData.passwordHash = await hashPassword(password);
     } else if (password.length > 0) {
       return data({ error: "New password must be at least 8 characters." }, { status: 400 });
     }
 
-    await prisma.user.update({ where: { id: userId }, data: updateData });
+    await prisma.$transaction([
+      prisma.user.update({ where: { id: userId }, data: updateData }),
+      // A password (or email) change must end every existing session for
+      // that account - that is the whole point of resetting a compromised login.
+      ...(updateData.passwordHash
+        ? [prisma.userSession.updateMany({ where: { userId, isActive: true }, data: { isActive: false } })]
+        : []),
+    ]);
     return data({ success: true, edited: true });
   }
 
   if (intent === "delete_user") {
-    // Cascade: revoke sessions + licenses, then delete user
-    await prisma.userSession.deleteMany({ where: { userId } });
-    await prisma.license.updateMany({ where: { userId }, data: { userId: null, status: "REVOKED" } });
-    await prisma.user.delete({ where: { id: userId } });
+    // All-or-nothing. Paid (Shopify) licences go back to PENDING so the key
+    // can be redeemed again; admin-generated bulk keys are revoked.
+    await prisma.$transaction([
+      prisma.userSession.deleteMany({ where: { userId } }),
+      // Paid keys the user was actively using go back to PENDING (the buyer
+      // can redeem again). Anything already REVOKED stays revoked.
+      prisma.license.updateMany({
+        where: { userId, shopifyOrderId: { not: null }, status: "ACTIVE" },
+        data: { userId: null, status: "PENDING", redeemedAt: null },
+      }),
+      prisma.license.updateMany({
+        where: { userId, OR: [{ shopifyOrderId: null }, { status: "REVOKED" }] },
+        data: { userId: null, status: "REVOKED" },
+      }),
+      prisma.user.delete({ where: { id: userId } }),
+    ]);
     return data({ success: true, deleted: true });
   }
 
@@ -467,21 +544,34 @@ function EditUserModal({ user, onClose, fetcher }: { user: any; onClose: () => v
 export default function UsersPage() {
   const { users, q, roleFilter, page, totalPages, total } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
-  const createFetcher = useFetcher<typeof action>();
-  const editFetcher = useFetcher<typeof action>();
+  // Fresh fetcher per modal open: fetcher.data lingers after a success, which
+  // used to auto-close the very next Create/Edit modal 300 ms after opening.
+  const [createKey, setCreateKey] = useState(0);
+  const [editKey, setEditKey] = useState(0);
+  const createFetcher = useFetcher<typeof action>({ key: `create-user-${createKey}` });
+  const editFetcher = useFetcher<typeof action>({ key: `edit-user-${editKey}` });
   const [showCreate, setShowCreate] = useState(false);
   const [editUser, setEditUser] = useState<any>(null);
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
 
   const createResult = createFetcher.data as any;
   const editResult = editFetcher.data as any;
+  const rowResult = fetcher.data as any;
 
-  if (createResult?.created && showCreate) {
-    setTimeout(() => setShowCreate(false), 300);
-  }
-  if (editResult?.edited && editUser) {
-    setTimeout(() => setEditUser(null), 300);
-  }
+  const openCreate = () => { setCreateKey((k) => k + 1); setShowCreate(true); };
+  const openEdit = (u: any) => { setEditKey((k) => k + 1); setEditUser(u); };
+
+  useEffect(() => {
+    if (createFetcher.state !== "idle" || !createResult?.created || !showCreate) return;
+    const t = setTimeout(() => setShowCreate(false), 300);
+    return () => clearTimeout(t);
+  }, [createFetcher.state, createResult?.created, showCreate]);
+
+  useEffect(() => {
+    if (editFetcher.state !== "idle" || !editResult?.edited || !editUser) return;
+    const t = setTimeout(() => setEditUser(null), 300);
+    return () => clearTimeout(t);
+  }, [editFetcher.state, editResult?.edited, editUser]);
 
   function toggleSessions(userId: string) {
     setExpandedSessions(prev => {
@@ -499,11 +589,18 @@ export default function UsersPage() {
           <h1 className="text-2xl font-semibold text-gray-900">User Management</h1>
           <p className="text-sm text-gray-500 mt-0.5">{total} total users</p>
         </div>
-        <button onClick={() => setShowCreate(true)}
+        <button onClick={openCreate}
           className="flex items-center gap-2 bg-brand-navy text-white px-4 py-2 rounded-lg font-medium text-sm hover:bg-brand-navy-dark transition-colors shadow-sm">
           <UserPlus size={15} /> Create User
         </button>
       </div>
+
+      {/* Row-action errors (self-lockout guard, invalid input, ...) */}
+      {rowResult?.error && (
+        <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">
+          <AlertCircle size={15} /> {rowResult.error}
+        </div>
+      )}
 
       {/* Success banners */}
       {createResult?.created && (
@@ -693,7 +790,7 @@ export default function UsersPage() {
                             <button
                               type="button"
                               title="Edit user"
-                              onClick={() => setEditUser(user)}
+                              onClick={() => openEdit(user)}
                               className="text-gray-400 hover:text-brand-navy p-1.5 rounded hover:bg-green-50 transition-colors"
                             >
                               <Pencil size={13} />

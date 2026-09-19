@@ -68,6 +68,7 @@ model User {
   enrollments    Enrollment[]
   passwordResets PasswordReset[]
   sessions       UserSession[]
+  quizAttempts   QuizAttempt[]
 }
 
 model PasswordReset {
@@ -77,6 +78,8 @@ model PasswordReset {
   token     String   @unique
   expiresAt DateTime
   createdAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 // ─── User Session (Device Tracking) ──────────────────────────────────────────
@@ -93,6 +96,16 @@ model UserSession {
   lastActiveAt DateTime @default(now())
   createdAt    DateTime @default(now())
   expiresAt    DateTime
+
+  @@index([userId, isActive])
+}
+
+// ─── Shopify webhook idempotency ───────────────────────────────────────────────
+// One row per processed order. Inserted in the same transaction as the
+// licences, so a retried/duplicate delivery hits the unique key and is dropped.
+model ShopifyOrder {
+  orderId     String   @id
+  processedAt DateTime @default(now())
 }
 
 // ─── Course ───────────────────────────────────────────────────────────────────
@@ -113,7 +126,7 @@ model Course {
   videoUrl          String? // YouTube, Vimeo, or direct .mp4 (flat courses)
   introVideoUrl     String? // Course intro/preview video
   thumbnailUrl      String? // Featured image URL
-  isPublic          Boolean      @default(false)
+  isPublic          Boolean      @default(true) // false = unlisted (hidden from catalog, reachable by link/licence)
   difficulty        String? // "Beginner" | "Intermediate" | "Advanced"
   isQA              Boolean      @default(false)
   whatYouLearn      String?
@@ -141,6 +154,8 @@ model Module {
   updatedAt DateTime @updatedAt
   lessons   Lesson[]
   quizzes   Quiz[]
+
+  @@index([courseId])
 }
 
 // ─── Lesson ───────────────────────────────────────────────────────────────────
@@ -162,6 +177,8 @@ model Lesson {
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
   lessonProgress LessonProgress[]
+
+  @@index([moduleId])
 }
 
 // ─── Quiz ─────────────────────────────────────────────────────────────────────
@@ -188,6 +205,9 @@ model Quiz {
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
   questions            Question[]
+  attempts             QuizAttempt[]
+
+  @@index([moduleId])
 }
 
 // ─── Question ─────────────────────────────────────────────────────────────────
@@ -206,6 +226,9 @@ model Question {
   randomizeAnswers Boolean  @default(false)
   createdAt        DateTime @default(now())
   answers          Answer[]
+  attemptAnswers   QuizAttemptAnswer[]
+
+  @@index([quizId])
 }
 
 // ─── Answer ───────────────────────────────────────────────────────────────────
@@ -220,6 +243,9 @@ model Answer {
   imageUrl   String? // Optional image for IMAGE_ANSWERING questions
   isOptional Boolean  @default(false) // Mark answer as optional
   matchText  String? // Right-column text for MATCHING questions
+  order      Int      @default(0) // Display/expected order (ORDERING questions grade against this)
+
+  @@index([questionId])
 }
 
 // ─── LessonProgress ───────────────────────────────────────────────────────────
@@ -266,20 +292,28 @@ model License {
   redeemedAt     DateTime?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
+
+  @@index([userId, courseId, status])
+  @@index([courseId])
+  @@index([shopifyOrderId])
 }
 
 // ─── QuizAttempt ──────────────────────────────────────────────────────────────
 
 model QuizAttempt {
-  id          String   @id @default(uuid())
+  id          String              @id @default(uuid())
   userId      String
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   quizId      String
-  score       Int      @default(0)
-  maxScore    Int      @default(0)
-  isPassed    Boolean  @default(false)
-  submittedAt DateTime @default(now())
+  quiz        Quiz                @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  score       Int                 @default(0)
+  maxScore    Int                 @default(0)
+  isPassed    Boolean             @default(false)
+  submittedAt DateTime            @default(now())
+  answers     QuizAttemptAnswer[]
 
   @@index([userId, quizId])
+  @@index([quizId])
 }
 
 // ─── Progress ─────────────────────────────────────────────────────────────────
@@ -303,9 +337,11 @@ model Progress {
 // ─── QuizAttemptAnswer ─────────────────────────────────────────────────────
 
 model QuizAttemptAnswer {
-  id           String    @id @default(uuid())
+  id           String      @id @default(uuid())
   attemptId    String
-  questionId   String
+  attempt      QuizAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionId   String? // SetNull when the question is deleted — the attempt and its score survive
+  question     Question?   @relation(fields: [questionId], references: [id], onDelete: SetNull)
   answerId     String?
   answerText   String?
   isCorrect    Boolean?

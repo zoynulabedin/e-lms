@@ -86,13 +86,30 @@ export async function loader({ request }: LoaderFunctionArgs) {
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  await requireAdmin(request);
+  const admin = await requireAdmin(request);
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
 
+  // Same lockout guard as /users: never ban/suspend yourself or the last admin.
+  if (intent === "ban_user" || intent === "suspend_user") {
+    const userId = String(formData.get("userId") || "");
+    if (userId === admin.id)
+      return data({ error: "You cannot ban or suspend your own account." }, { status: 400 });
+    const target = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true, isBanned: true, isSuspended: true },
+    });
+    if (target?.role === "ADMIN" && !target.isBanned && !target.isSuspended) {
+      const admins = await prisma.user.count({ where: { role: "ADMIN", isBanned: false, isSuspended: false } });
+      if (admins <= 1)
+        return data({ error: "This is the last active admin account." }, { status: 400 });
+    }
+  }
+
   if (intent === "force_logout_session") {
     const sessionId = formData.get("sessionId") as string;
-    await prisma.userSession.update({
+    // updateMany: a session that was already removed is a no-op, not a 500.
+    await prisma.userSession.updateMany({
       where: { id: sessionId },
       data: { isActive: false },
     });
@@ -183,8 +200,16 @@ export default function SessionsManagement() {
   } | null>(null);
   const [banReason, setBanReason] = useState("");
 
+  const rowError =
+    fetcher.state === "idle" && fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
+
   return (
     <div className="space-y-7">
+      {rowError && (
+        <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">
+          {rowError}
+        </div>
+      )}
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>

@@ -9,9 +9,8 @@ export async function action({ request }: ActionFunctionArgs) {
   });
 }
 
-export async function loader({ request }: LoaderFunctionArgs) {
-  await invalidateSession(request);
-  return redirect("/auth/login", {
-    headers: { "Set-Cookie": clearSessionCookie() },
-  });
+// Logging out is a state change, so it only happens on POST. A plain GET
+// (a link on another site, a browser prefetch) just lands on the login page.
+export async function loader(_args: LoaderFunctionArgs) {
+  return redirect("/auth/login");
 }

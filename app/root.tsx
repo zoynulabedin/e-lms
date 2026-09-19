@@ -13,8 +13,27 @@ import "./app.css";
 
 export function headers() {
   return {
-    "Content-Security-Policy":
-      "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https:; font-src 'self' https: data:; frame-src 'self' https:;",
+    // 'unsafe-inline' stays for React Router's hydration script; 'unsafe-eval'
+    // and the blanket https: script source are gone. frame-ancestors blocks
+    // clickjacking, HSTS pins HTTPS, nosniff stops MIME confusion.
+    "Content-Security-Policy": [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "img-src 'self' data: blob: https:",
+      "media-src 'self' blob: https:",
+      "connect-src 'self' https:",
+      "font-src 'self' https://fonts.gstatic.com data:",
+      "frame-src 'self' https:",
+      "frame-ancestors 'none'",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+    ].join("; "),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "X-Frame-Options": "DENY",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
   };
 }
 

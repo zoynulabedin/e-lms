@@ -46,9 +46,13 @@ export const StorylinePlayer = forwardRef<HTMLIFrameElement, StorylinePlayerProp
     const allowedOriginSet = useMemo(() => {
       const set = new Set<string>();
       try {
-        set.add(new URL(src).origin);
+        // Resolve relative src (e.g. "/storyline/x/story.html") against the
+        // page origin so same-origin iframes are accepted too.
+        const base =
+          typeof window !== "undefined" ? window.location.origin : DEFAULT_HOST;
+        set.add(new URL(src, base).origin);
       } catch {
-        // src is relative or invalid — fall back to defaults only
+        // invalid src — fall back to defaults only
       }
       set.add(DEFAULT_HOST);
       for (const o of allowedOrigins ?? []) set.add(o);
@@ -69,10 +73,18 @@ export const StorylinePlayer = forwardRef<HTMLIFrameElement, StorylinePlayerProp
       return () => window.removeEventListener("message", handleMessage);
     }, [lessonId, nextLessonUrl, onComplete, allowedOriginSet]);
 
+    // A new lesson always starts with no countdown running — otherwise a
+    // countdown that hit zero on lesson N fires again as soon as lesson N+1's
+    // props arrive and skips it.
+    useEffect(() => {
+      setCountdown(null);
+    }, [lessonId]);
+
     // Countdown ticker — drives auto-advance at zero
     useEffect(() => {
       if (countdown === null) return;
       if (countdown <= 0) {
+        setCountdown(null);
         if (nextLessonUrl) navigate(nextLessonUrl);
         return;
       }
@@ -108,6 +120,7 @@ export const StorylinePlayer = forwardRef<HTMLIFrameElement, StorylinePlayerProp
                 <button
                   type="button"
                   onClick={() => {
+                    setCountdown(null);
                     if (nextLessonUrl) navigate(nextLessonUrl);
                   }}
                   className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md text-sm font-medium transition"

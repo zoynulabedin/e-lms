@@ -10,15 +10,19 @@ import { prisma } from "../utils/db.server";
 import {
   getSessionUser,
   hashPassword,
+  verifyPassword,
   createSession,
   createSessionCookie,
 } from "../utils/auth.server";
 import { Key, CheckCircle2, AlertCircle, BookOpen } from "lucide-react";
+import { rateLimitResponse, recordFailure } from "../utils/rate-limit.server";
+import { isPlaceholderEmail } from "../utils/license";
 import { useState } from "react";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url);
-  const key = url.searchParams.get("key") || "";
+  // Same normalisation as the action, so a lowercase / padded key still resolves.
+  const key = (url.searchParams.get("key") || "").trim().toUpperCase();
 
   if (!key) return { key: "", license: null, user: null };
 
@@ -44,13 +48,18 @@ export async function action({ request }: ActionFunctionArgs) {
   const intent = String(formData.get("intent") || "");
 
   if (!key) return data({ error: "License key is required." }, { status: 400 });
+  const limited = rateLimitResponse("redeem", request, key);
+  if (limited) return limited;
 
   const license = await prisma.license.findUnique({
     where: { key },
     include: { course: true },
   });
 
-  if (!license) return data({ error: "Invalid license key." }, { status: 404 });
+  if (!license) {
+    recordFailure("redeem", request, key);
+    return data({ error: "Invalid license key." }, { status: 404 });
+  }
   if (license.status === "REVOKED")
     return data({ error: "This license has been revoked." }, { status: 403 });
   if (license.status === "ACTIVE")
@@ -61,14 +70,16 @@ export async function action({ request }: ActionFunctionArgs) {
 
   // ─── Get or create user ───────────────────────────────────────────────────
   let userId: string;
+  let userEmail: string = email;
   let responseHeaders: Record<string, string> = {};
 
   if (intent === "redeem_existing") {
     // User is already logged in
     const sessionUser = await getSessionUser(request);
     if (!sessionUser)
-      return redirect(`/auth/login?redirect=/redeem?key=${key}`);
+      return redirect(`/auth/login?redirect=${encodeURIComponent(`/redeem?key=${key}`)}`);
     userId = sessionUser.id;
+    userEmail = sessionUser.email;
   } else {
     // Register a new account on redeem
     if (!name || !email || password.length < 8) {
@@ -80,36 +91,75 @@ export async function action({ request }: ActionFunctionArgs) {
         { status: 400 },
       );
     }
+    // Second subject: the account email - one PENDING key must not become an
+    // unlimited password oracle for an existing account.
+    const limitedByEmail = rateLimitResponse("redeem", request, email);
+    if (limitedByEmail) return limitedByEmail;
+
     let user = await prisma.user.findUnique({ where: { email } });
     if (!user) {
       const passwordHash = await hashPassword(password);
       user = await prisma.user.create({
         data: { name, email, passwordHash, role: "STUDENT" },
       });
+    } else {
+      // Existing account: never issue a session without verifying the password.
+      if (user.isBanned || user.isSuspended) {
+        return data(
+          { error: "This account is unavailable. Please contact support." },
+          { status: 403 },
+        );
+      }
+      const ok = await verifyPassword(password, user.passwordHash);
+      if (!ok) {
+        recordFailure("redeem", request, email);
+        return data(
+          {
+            error:
+              "An account with this email already exists. Enter its password, or sign in first and redeem from your dashboard.",
+          },
+          { status: 401 },
+        );
+      }
     }
     userId = user.id;
     const token = await createSession(userId, user.role, request);
     responseHeaders["Set-Cookie"] = createSessionCookie(token);
   }
 
-  // Activate license
-  await prisma.license.update({
-    where: { key },
-    data: { status: "ACTIVE", userId, redeemedAt: new Date() },
+  // Activate license atomically: the conditional updateMany is the lock -
+  // two people submitting the same key at once can't both win, and a failure
+  // after the flip can't leave an ACTIVE key without an enrolment.
+  const redeemedEmail = isPlaceholderEmail(license.customerEmail) ? userEmail || null : null;
+  const activated = await prisma.$transaction(async (tx) => {
+    const r = await tx.license.updateMany({
+      where: { key, status: "PENDING" },
+      data: {
+        status: "ACTIVE",
+        userId,
+        redeemedAt: new Date(),
+        ...(redeemedEmail ? { customerEmail: redeemedEmail } : {}),
+      },
+    });
+    if (r.count === 0) return false;
+    await tx.enrollment.upsert({
+      where: { userId_courseId: { userId, courseId: license.courseId } },
+      update: {},
+      create: { userId, courseId: license.courseId },
+    });
+    await tx.progress.upsert({
+      where: { userId_courseId: { userId, courseId: license.courseId } },
+      update: {},
+      create: { userId, courseId: license.courseId },
+    });
+    return true;
   });
-
-  // Create enrollment + progress records
-  await prisma.enrollment.upsert({
-    where: { userId_courseId: { userId, courseId: license.courseId } },
-    update: {},
-    create: { userId, courseId: license.courseId },
-  });
-
-  await prisma.progress.upsert({
-    where: { userId_courseId: { userId, courseId: license.courseId } },
-    update: {},
-    create: { userId, courseId: license.courseId },
-  });
+  if (!activated) {
+    return data(
+      { error: "This license key has already been redeemed." },
+      { status: 409, headers: responseHeaders },
+    );
+  }
 
   return redirect(`/student/course/${license.courseId}`, {
     headers: responseHeaders,
@@ -142,9 +192,15 @@ export default function Redeem() {
             </div>
           )}
 
-          {/* Step 1: enter key first if not pre-filled */}
-          {!paramKey && !license && (
+          {/* Step 1: enter key first if not pre-filled (or the key was not found) */}
+          {!license && (
             <Form method="get" className="space-y-5">
+              {paramKey && (
+                <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 text-red-300 rounded-lg px-4 py-3 text-sm">
+                  <AlertCircle size={15} className="shrink-0" />
+                  We couldn't find a license with the key <span className="font-mono">{paramKey}</span>. Check for typos and try again.
+                </div>
+              )}
               <div>
                 <label
                   htmlFor="key-input"
@@ -228,9 +284,7 @@ export default function Redeem() {
                       name="email"
                       type="email"
                       defaultValue={
-                        license.customerEmail !== "pending@customer.com"
-                          ? license.customerEmail
-                          : ""
+                        isPlaceholderEmail(license.customerEmail) ? "" : license.customerEmail
                       }
                       required
                       className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-navy text-sm"
@@ -262,7 +316,7 @@ export default function Redeem() {
                   <p className="text-center text-xs text-slate-500">
                     Already have an account?{" "}
                     <Link
-                      to={`/auth/login?redirect=/redeem?key=${paramKey}`}
+                      to={`/auth/login?redirect=${encodeURIComponent(`/redeem?key=${paramKey}`)}`}
                       className="text-brand-mustard hover:text-brand-mustard"
                     >
                       Sign in

@@ -64,7 +64,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       orderBy: { licenses: { _count: "desc" } },
     }),
     prisma.$queryRaw<Array<{ day: string; count: bigint }>>`
-      SELECT DATE("redeemedAt") as day, COUNT(*) as count
+      SELECT DATE("redeemedAt")::text as day, COUNT(*)::bigint as count
       FROM "License"
       WHERE "redeemedAt" >= NOW() - INTERVAL '14 days'
         AND "redeemedAt" IS NOT NULL
@@ -75,7 +75,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
       SELECT COALESCE(SUM(c.price), 0)::text as total
       FROM "License" l
       JOIN "Course" c ON l."courseId" = c.id
-      WHERE l.status = 'ACTIVE'
+      WHERE l."shopifyOrderId" IS NOT NULL   -- real purchases only, never admin-generated bulk keys
+        AND l.status <> 'REVOKED'            -- redeemed or not, the sale happened
         AND c."courseType" = 'PAID'
         AND c.price IS NOT NULL
     `,

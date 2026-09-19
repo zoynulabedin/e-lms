@@ -2,6 +2,7 @@ import { data } from "react-router";
 import { useLoaderData, useFetcher, Link } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
+import { recomputeCourseProgress } from "../utils/progress.server";
 import { requireAdmin } from "../utils/auth.server";
 import { CheckCircle2, ChevronDown, ChevronUp, AlertCircle, BookOpen, User } from "lucide-react";
 import { useState } from "react";
@@ -83,9 +84,18 @@ export async function action({ request }: ActionFunctionArgs) {
 
   if (intent === "grade_answer") {
     const attemptAnswerId = formData.get("attemptAnswerId") as string;
-    const manualScore = Math.max(0, parseInt(formData.get("manualScore") as string || "0", 10));
-    const maxPoints = parseInt(formData.get("maxPoints") as string || "1", 10);
-    const clampedScore = Math.min(manualScore, maxPoints);
+    const parsed = parseInt(String(formData.get("manualScore") ?? ""), 10);
+    if (!Number.isInteger(parsed) || parsed < 0)
+      return data({ error: "Score must be a whole number of 0 or more." }, { status: 400 });
+    // Never trust a client-supplied maximum: read the question's points.
+    const rows = await prisma.$queryRaw<Array<{ points: number }>>`
+      SELECT q.points FROM "QuizAttemptAnswer" qaa
+      JOIN "Question" q ON q.id = qaa."questionId"
+      WHERE qaa.id = ${attemptAnswerId}
+    `;
+    if (!rows[0]) return data({ error: "Answer not found (its question may have been deleted)." }, { status: 404 });
+    const maxPoints = Number(rows[0].points);
+    const clampedScore = Math.min(parsed, maxPoints);
     const isCorrect = clampedScore > 0;
 
     await prisma.$executeRaw`
@@ -108,14 +118,20 @@ export async function action({ request }: ActionFunctionArgs) {
     if (attemptRows[0]) {
       const newScore = Number(attemptRows[0].total);
       const attemptId = attemptRows[0].attemptId;
-      const attempt = await prisma.$queryRaw<any[]>`SELECT "maxScore", "quizId" FROM "QuizAttempt" WHERE id = ${attemptId}`;
+      const attempt = await prisma.$queryRaw<any[]>`SELECT "maxScore", "quizId", "userId" FROM "QuizAttempt" WHERE id = ${attemptId}`;
       if (attempt[0]) {
-        const quiz = await prisma.$queryRaw<any[]>`SELECT "passingGrade" FROM "Quiz" WHERE id = ${attempt[0].quizId}`;
+        const quiz = await prisma.$queryRaw<any[]>`
+          SELECT q."passingGrade", m."courseId" FROM "Quiz" q
+          JOIN "Module" m ON m.id = q."moduleId"
+          WHERE q.id = ${attempt[0].quizId}
+        `;
         const passingGrade = Number(quiz[0]?.passingGrade ?? 80);
         const isPassed = attempt[0].maxScore > 0 && (newScore / Number(attempt[0].maxScore)) * 100 >= passingGrade;
         await prisma.$executeRaw`
           UPDATE "QuizAttempt" SET score = ${newScore}, "isPassed" = ${isPassed} WHERE id = ${attemptId}
         `;
+        // Manual grading can flip an attempt to passed — reflect it in course progress.
+        if (quiz[0]?.courseId) await recomputeCourseProgress(attempt[0].userId, quiz[0].courseId);
       }
     }
 

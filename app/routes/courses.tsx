@@ -45,17 +45,40 @@ export async function action({ request }: ActionFunctionArgs) {
 
   if (intent === "delete") {
     const id = formData.get("id") as string;
+    // Deleting a course cascades to every License (incl. paid Shopify orders),
+    // Enrollment and Progress/certificate row. Refuse while any exist —
+    // unpublish instead. Only a course nobody has ever bought/started can go.
+    const course = await prisma.course.findUnique({
+      where: { id },
+      select: {
+        title: true,
+        _count: { select: { licenses: true, enrollments: true, progress: true } },
+      },
+    });
+    if (!course) return data({ error: "Course not found." }, { status: 404 });
+    const { licenses, enrollments, progress } = course._count;
+    if (licenses > 0 || enrollments > 0 || progress > 0) {
+      return data(
+        {
+          error: `"${course.title}" has ${licenses} license(s), ${enrollments} enrolment(s) and ${progress} progress record(s). Unpublish it instead of deleting.`,
+        },
+        { status: 400 },
+      );
+    }
     await prisma.course.delete({ where: { id } });
     return data({ success: true });
   }
 
-  if (intent === "toggle_status") {
+  if (intent === "set_status") {
     const id = formData.get("id") as string;
-    const current = formData.get("current") as string;
-    const newStatus = current === "PUBLISHED" ? "DRAFT" : "PUBLISHED";
+    const status = formData.get("status");
+    if (status !== "DRAFT" && status !== "PUBLISHED")
+      return data({ error: "Invalid status." }, { status: 400 });
     await prisma.course.update({
       where: { id },
-      data: { status: newStatus as any, isPublic: newStatus === "PUBLISHED" },
+      // Publishing from the list also lists the course; un-listing is an
+      // explicit choice made with the builder's "Public Course" toggle.
+      data: status === "PUBLISHED" ? { status, isPublic: true } : { status },
     });
     return data({ success: true });
   }
@@ -169,6 +192,12 @@ export default function CourseManagement() {
         </button>
       </div>
 
+      {fetcher.data && "error" in fetcher.data && fetcher.data.error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">
+          {fetcher.data.error}
+        </div>
+      )}
+
       {/* Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
         {courses.map((course: any) => {
@@ -268,9 +297,9 @@ export default function CourseManagement() {
                     <Edit3 size={12} /> Edit Course
                   </Link>
                   <toggleFetcher.Form method="post" className="ml-auto">
-                    <input type="hidden" name="intent" value="toggle_status" />
+                    <input type="hidden" name="intent" value="set_status" />
                     <input type="hidden" name="id" value={course.id} />
-                    <input type="hidden" name="current" value={course.status} />
+                    <input type="hidden" name="status" value={isPublished ? "DRAFT" : "PUBLISHED"} />
                     <button
                       type="submit"
                       className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors border ${

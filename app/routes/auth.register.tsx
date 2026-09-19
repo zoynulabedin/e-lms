@@ -9,6 +9,7 @@ import {
 } from "../utils/auth.server";
 import { Store, Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
+import { rateLimitResponse, recordAttempt } from "../utils/rate-limit.server";
 
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
@@ -28,6 +29,10 @@ export async function action({ request }: ActionFunctionArgs) {
     );
   }
 
+  const limited = rateLimitResponse("register", request, email);
+  if (limited) return limited;
+  recordAttempt("register", request, email);
+
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
     return data(
@@ -36,19 +41,24 @@ export async function action({ request }: ActionFunctionArgs) {
     );
   }
 
-  // First registered user becomes ADMIN
-  const userCount = await prisma.user.count();
-  const role = userCount === 0 ? "ADMIN" : "STUDENT";
-
+  // Public registration always creates a STUDENT. The first admin is created
+  // with scripts/seed-admin.ts - never by whoever registers first on a fresh DB.
   const passwordHash = await hashPassword(password);
-  const user = await prisma.user.create({
-    data: { name, email, passwordHash, role },
-  });
+  let user;
+  try {
+    user = await prisma.user.create({
+      data: { name, email, passwordHash, role: "STUDENT" },
+    });
+  } catch (e: any) {
+    if (e?.code === "P2002")
+      return data({ error: "An account with this email already exists." }, { status: 409 });
+    throw e;
+  }
 
   const token = await createSession(user.id, user.role, request);
   const cookie = createSessionCookie(token);
 
-  return redirect(role === "ADMIN" ? "/?toast=registered" : "/student?toast=registered", {
+  return redirect("/student?toast=registered", {
     headers: { "Set-Cookie": cookie },
   });
 }

@@ -28,7 +28,7 @@ const RESPONSE_SLA = "We typically respond within 1 business day.";
 export async function loader({ request }: LoaderFunctionArgs) {
   const user = await requireUser(request);
   const completedCount = await prisma.progress.count({
-    where: { userId: user.id, isCompleted: true },
+    where: { userId: user.id, completedAt: { not: null } },
   });
   return { user, hasCertificates: completedCount > 0 };
 }

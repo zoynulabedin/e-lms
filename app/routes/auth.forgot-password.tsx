@@ -3,6 +3,8 @@ import { Form, Link, useActionData, useNavigation } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { sendPasswordResetEmail } from "../utils/email.server";
+import { hashToken } from "../utils/auth.server";
+import { rateLimitResponse, recordAttempt } from "../utils/rate-limit.server";
 import crypto from "crypto";
 import { Store, Mail } from "lucide-react";
 
@@ -15,18 +17,25 @@ export async function action({ request }: ActionFunctionArgs) {
   if (!email) {
     return data({ error: "Email is required." }, { status: 400 });
   }
+  const limited = rateLimitResponse("forgot_password", request, email);
+  if (limited) return limited;
+  recordAttempt("forgot_password", request, email);
 
   const user = await prisma.user.findUnique({ where: { email } });
 
   // Always return success to prevent email enumeration
   if (user) {
+    // The raw token goes in the email only; the DB keeps a SHA-256 of it so a
+    // leaked backup / log can't be replayed as a live reset link.
     const token = crypto.randomBytes(32).toString("hex");
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
-    await prisma.passwordReset.deleteMany({ where: { userId: user.id } });
-    await prisma.passwordReset.create({
-      data: { userId: user.id, token, expiresAt },
-    });
+    await prisma.$transaction([
+      prisma.passwordReset.deleteMany({ where: { userId: user.id } }),
+      prisma.passwordReset.create({
+        data: { userId: user.id, token: hashToken(token), expiresAt },
+      }),
+    ]);
     await sendPasswordResetEmail({ to: email, token });
   }
 
@@ -52,7 +61,7 @@ export default function ForgotPassword() {
         </div>
 
         <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-8 shadow-2xl">
-          {actionData?.success ? (
+          {actionData && "success" in actionData && actionData.success ? (
             <div className="text-center space-y-4">
               <div className="inline-flex items-center justify-center w-12 h-12 bg-green-500/20 rounded-full mb-2">
                 <Mail className="text-green-400 w-6 h-6" />
@@ -71,7 +80,7 @@ export default function ForgotPassword() {
             </div>
           ) : (
             <Form method="post" className="space-y-5">
-              {actionData?.error && (
+              {actionData && "error" in actionData && actionData.error && (
                 <div className="bg-red-500/10 border border-red-500/20 text-red-400 rounded-lg px-4 py-3 text-sm">
                   {actionData.error}
                 </div>

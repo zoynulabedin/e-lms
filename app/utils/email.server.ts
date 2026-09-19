@@ -1,6 +1,40 @@
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+/**
+ * Lazily constructed: `new Resend(undefined)` throws, and this module is
+ * imported by /licenses, the Shopify webhook and forgot-password - a missing
+ * RESEND_API_KEY must degrade to "email not configured", not take those
+ * routes down at import time.
+ */
+let _resend: Resend | null = null;
+function getResend(): Resend | null {
+  const key = process.env.RESEND_API_KEY;
+  if (!key) return null;
+  return (_resend ??= new Resend(key));
+}
+
+export type EmailResult = { ok: true; id?: string } | { ok: false; error: string };
+
+async function send(label: string, payload: Parameters<Resend["emails"]["send"]>[0]): Promise<EmailResult> {
+  const client = getResend();
+  if (!client) {
+    console.error(`[email] ${label}: RESEND_API_KEY is not set - email not sent`);
+    return { ok: false, error: "Email is not configured (RESEND_API_KEY missing)." };
+  }
+  try {
+    const { data, error } = await client.emails.send(payload);
+    if (error) {
+      console.error(`[email] ${label} failed:`, error);
+      return { ok: false, error: error.message ?? String(error) };
+    }
+    console.log(`[email] ${label} sent:`, data?.id);
+    return { ok: true, id: data?.id };
+  } catch (e: any) {
+    console.error(`[email] ${label} threw:`, e);
+    return { ok: false, error: e?.message ?? "Unknown email error" };
+  }
+}
+
 const FROM = process.env.EMAIL_FROM || "noreply@instructionalgraphics.org";
 const APP_URL = process.env.APP_URL || "http://localhost:5173";
 
@@ -17,7 +51,7 @@ export async function sendLicenseEmail({
 }) {
   const redeemUrl = `${APP_URL}/redeem?key=${licenseKey}`;
 
-  const { data, error } = await resend.emails.send({
+  return send("license email", {
     from: FROM,
     to: [to],
     subject: `Your course access is ready — ${courseTitle}`,
@@ -119,11 +153,6 @@ export async function sendLicenseEmail({
     `,
   });
 
-  if (error) {
-    console.error("[email] Failed to send license email:", error);
-  } else {
-    console.log("[email] License email sent:", data?.id);
-  }
 }
 
 // ─── Admin order notification email ──────────────────────────────────────────
@@ -132,13 +161,27 @@ export async function sendAdminOrderNotification({
   orderId,
   customerEmail,
   licenses,
+  unmapped = [],
 }: {
   orderId: string;
   customerEmail: string;
   licenses: Array<{ key: string; courseTitle: string }>;
+  /** Line items whose SKU did not match a course — the buyer paid but got nothing. */
+  unmapped?: string[];
 }) {
   const adminEmail = process.env.ADMIN_EMAIL;
-  if (!adminEmail) return;
+  if (!adminEmail) {
+    if (unmapped.length)
+      console.warn(`[email] ADMIN_EMAIL not set — unmapped SKUs on order ${orderId}: ${unmapped.join(", ")}`);
+    return { ok: false, error: "ADMIN_EMAIL not set" } as EmailResult;
+  }
+
+  const unmappedBlock = unmapped.length
+    ? `<div style="margin:0 0 20px;padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#991b1b;font-size:13px;">
+        <strong>⚠ ${unmapped.length} line item(s) did not match a course</strong> — the customer paid but received no key:<br/>
+        ${unmapped.map((u) => `<code>${u}</code>`).join("<br/>")}
+      </div>`
+    : "";
 
   const licenseRows = licenses
     .map(
@@ -147,7 +190,7 @@ export async function sendAdminOrderNotification({
     )
     .join("");
 
-  const { data, error } = await resend.emails.send({
+  return send("admin order notification", {
     from: FROM,
     to: [adminEmail],
     subject: `New order: ${licenses.length} license(s) generated — Order #${orderId}`,
@@ -155,6 +198,7 @@ export async function sendAdminOrderNotification({
       <div style="font-family:Inter,sans-serif;max-width:600px;margin:0 auto;padding:32px 24px;background:#fff;border-radius:12px;border:1px solid #e5e7eb;">
         <h1 style="font-size:20px;font-weight:700;color:#111827;margin-bottom:4px;">New Shopify Order</h1>
         <p style="color:#6b7280;margin-bottom:20px;">Order <strong>#${orderId}</strong> from <strong>${customerEmail}</strong></p>
+        ${unmappedBlock}
         <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
           <thead>
             <tr style="background:#f9fafb;">
@@ -169,11 +213,6 @@ export async function sendAdminOrderNotification({
     `,
   });
 
-  if (error) {
-    console.error("[email] Failed to send admin notification:", error);
-  } else {
-    console.log("[email] Admin notification sent:", data?.id);
-  }
 }
 
 // ─── Password reset email ─────────────────────────────────────────────────────
@@ -187,7 +226,7 @@ export async function sendPasswordResetEmail({
 }) {
   const resetUrl = `${APP_URL}/auth/reset-password?token=${token}`;
 
-  const { data, error } = await resend.emails.send({
+  return send("password reset email", {
     from: FROM,
     to: [to],
     subject: "Reset your password",
@@ -203,9 +242,4 @@ export async function sendPasswordResetEmail({
     `,
   });
 
-  if (error) {
-    console.error("[email] Failed to send reset email:", error);
-  } else {
-    console.log("[email] Password reset email sent:", data?.id);
-  }
 }

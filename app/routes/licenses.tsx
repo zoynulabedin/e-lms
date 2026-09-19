@@ -5,6 +5,7 @@ import { prisma } from "../utils/db.server";
 import { requireAdmin } from "../utils/auth.server";
 import { generateLicenseKey } from "../utils/auth.server";
 import { sendLicenseEmail } from "../utils/email.server";
+import { PLACEHOLDER_EMAIL, isPlaceholderEmail } from "../utils/license";
 import { useState } from "react";
 import {
   Plus,
@@ -30,15 +31,24 @@ export async function loader({ request }: LoaderFunctionArgs) {
   await requireAdmin(request);
 
   const url = new URL(request.url);
-  const statusFilter = url.searchParams.get("status") || "ALL";
-  const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+  const VALID_STATUS = ["ALL", "ACTIVE", "PENDING", "REVOKED"] as const;
+  type StatusFilter = (typeof VALID_STATUS)[number];
+  const rawStatus = url.searchParams.get("status") || "ALL";
+  const statusFilter: StatusFilter = (VALID_STATUS as readonly string[]).includes(rawStatus)
+    ? (rawStatus as StatusFilter)
+    : "ALL";
+  const rawPage = parseInt(url.searchParams.get("page") || "1", 10);
+  const page = Number.isFinite(rawPage) && rawPage >= 1 ? rawPage : 1;
 
-  const where = statusFilter !== "ALL" ? { status: statusFilter as any } : undefined;
+  const where = statusFilter !== "ALL" ? { status: statusFilter } : undefined;
 
   const [licenses, totalCount, courses] = await Promise.all([
     prisma.license.findMany({
       where,
-      include: { course: true, user: true },
+      include: {
+      course: { select: { id: true, title: true } },
+      user: { select: { id: true, name: true, email: true, role: true } },
+    },
       orderBy: { createdAt: "desc" },
       take: PER_PAGE,
       skip: (page - 1) * PER_PAGE,
@@ -70,15 +80,21 @@ export async function action({ request }: ActionFunctionArgs) {
       include: { course: true },
     });
     if (!license) return data({ error: "License not found" }, { status: 404 });
-    if (!license.customerEmail || license.customerEmail.includes("placeholder")) {
+    if (license.status === "REVOKED") {
+      return data({ error: "This license is revoked - cannot resend an activation email." }, { status: 400 });
+    }
+    if (isPlaceholderEmail(license.customerEmail)) {
       return data({ error: "No valid customer email on this license." }, { status: 400 });
     }
 
-    await sendLicenseEmail({
+    const sent = await sendLicenseEmail({
       to: license.customerEmail,
       licenseKey: license.key,
       courseTitle: license.course?.title ?? "Your Course",
     });
+    if (!sent.ok) {
+      return data({ error: `Email could not be sent: ${sent.error}` }, { status: 502 });
+    }
 
     return data({ success: true, message: `Email resent to ${license.customerEmail}.` });
   }
@@ -86,8 +102,16 @@ export async function action({ request }: ActionFunctionArgs) {
   if (intent === "revoke") {
     const id = formData.get("id") as string;
     if (!id) return data({ error: "Missing license ID" }, { status: 400 });
-    await prisma.license.update({ where: { id }, data: { status: "REVOKED" } });
-    return data({ success: true, message: "License revoked successfully." });
+    // updateMany never throws on a missing row (unlike update → P2025 → 500).
+    // Access is enforced from license status (see utils/access.server.ts), so
+    // the student loses the course immediately — no enrollment cleanup needed.
+    const r = await prisma.license.updateMany({
+      where: { id, status: { not: "REVOKED" } },
+      data: { status: "REVOKED" },
+    });
+    if (r.count === 0)
+      return data({ error: "License not found or already revoked." }, { status: 404 });
+    return data({ success: true, message: "License revoked — student access removed." });
   }
 
   if (intent === "generate_bulk") {
@@ -122,7 +146,7 @@ export async function action({ request }: ActionFunctionArgs) {
           data: {
             key: generateLicenseKey(),
             courseId,
-            customerEmail: customerEmail || "unassigned@placeholder.com",
+            customerEmail: customerEmail || PLACEHOLDER_EMAIL,
             status: "PENDING",
             isBulk: true,
           },
@@ -150,20 +174,73 @@ const StatusIcon = ({ status }: { status: string }) => {
   return <Ban size={12} />;
 };
 
-function CopyKeyButton({ licenseKey }: { licenseKey: string }) {
+/** Copy text to clipboard; falls back to execCommand on non-secure (http) origins. */
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fall through to legacy path
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function useCopy(text: string) {
   const [copied, setCopied] = useState(false);
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(licenseKey).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+  const copy = async () => {
+    const ok = await copyToClipboard(text);
+    if (!ok) return;
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
+  return { copied, copy };
+}
 
+/** Key chip shown in the table — click the chip or the icon to copy. */
+function InlineCopyKey({ licenseKey }: { licenseKey: string }) {
+  const { copied, copy } = useCopy(licenseKey);
   return (
     <button
-      onClick={handleCopy}
-      className="flex w-full items-center gap-2 px-4 py-2 text-xs text-left text-gray-700 hover:bg-gray-50"
+      type="button"
+      onClick={copy}
+      title={copied ? "Copied!" : "Click to copy"}
+      className="group/key inline-flex items-center gap-1.5 font-mono text-xs bg-gray-100 hover:bg-gray-200 text-slate-800 pl-2 pr-1.5 py-0.5 rounded transition-colors cursor-pointer"
+    >
+      <span className="select-all">{licenseKey}</span>
+      {copied ? (
+        <Check size={12} className="text-green-600 shrink-0" />
+      ) : (
+        <Copy
+          size={12}
+          className="text-gray-400 group-hover/key:text-gray-700 shrink-0"
+        />
+      )}
+    </button>
+  );
+}
+
+/** Dropdown-menu variant. */
+function CopyKeyButton({ licenseKey }: { licenseKey: string }) {
+  const { copied, copy } = useCopy(licenseKey);
+  return (
+    <button
+      onClick={copy}
+      className="flex w-full items-center gap-2 px-4 py-2 text-xs text-left text-gray-700 hover:bg-gray-50 cursor-pointer"
     >
       {copied ? (
         <>
@@ -325,9 +402,7 @@ export default function LicenseManagement() {
                 licenses.map((license: any) => (
                   <tr key={license.id} className="hover:bg-gray-50">
                     <td className="px-6 py-3 whitespace-nowrap">
-                      <code className="font-mono text-xs bg-gray-100 text-slate-800 px-2 py-0.5 rounded">
-                        {license.key}
-                      </code>
+                      <InlineCopyKey licenseKey={license.key} />
                     </td>
                     <td className="px-6 py-3 whitespace-nowrap text-gray-700 max-w-[180px] truncate">
                       {license.course?.title ?? (

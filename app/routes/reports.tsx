@@ -15,6 +15,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     revokedLicenses,
     pendingLicenses,
     completedCourses,
+    startedCourses,
     licensesByDay,
     topCourses,
   ] = await Promise.all([
@@ -25,6 +26,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     prisma.license.count({ where: { status: "REVOKED" } }),
     prisma.license.count({ where: { status: "PENDING" } }),
     prisma.progress.count({ where: { isCompleted: true } }),
+    prisma.progress.count(),
     // Licenses created per day (last 7 days)
     prisma.$queryRaw<Array<{ day: string; count: bigint }>>`
       SELECT DATE("createdAt")::text as day, COUNT(*)::bigint as count
@@ -36,7 +38,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
     // Top courses by license count
     prisma.course.findMany({
       take: 5,
-      include: { _count: { select: { licenses: true, progress: true } } },
+      include: {
+        _count: {
+          select: { licenses: true, progress: { where: { isCompleted: true } } },
+        },
+      },
       orderBy: { licenses: { _count: "desc" } },
     }),
   ]);
@@ -66,6 +72,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       revokedLicenses,
       pendingLicenses,
       completedCourses,
+      startedCourses,
     },
     licensesByDay: filledDays,
     topCourses,
@@ -75,9 +82,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
 export default function Reports() {
   const { stats, licensesByDay, topCourses } = useLoaderData<typeof loader>();
 
+  // Same definition as the dashboard: completed / started (never > 100 %).
   const completionRate =
-    stats.activeLicenses > 0
-      ? Math.round((stats.completedCourses / stats.activeLicenses) * 100)
+    stats.startedCourses > 0
+      ? Math.round((stats.completedCourses / stats.startedCourses) * 100)
       : 0;
 
   const maxCount = Math.max(...licensesByDay.map((d) => d.count), 1);

@@ -1,29 +1,31 @@
 /**
- * Seed script: Creates an initial admin user.
- * Run: npx tsx scripts/seed-admin.ts
+ * Seed script: creates the initial admin user.
+ *
+ * Credentials come from the environment — never hard-code them here:
+ *   SEED_ADMIN_EMAIL=admin@example.com SEED_ADMIN_PASSWORD='...' SEED_ADMIN_NAME='Admin' \
+ *     npx tsx scripts/seed-admin.ts
+ *
+ * Uses the same Prisma client (pg adapter) as the app, so it works against any
+ * Postgres — Neon, local, Docker.
  */
 import "dotenv/config";
+import { prisma } from "../app/utils/db.server";
+import { hashPassword } from "../app/utils/auth.server";
 
-// MUST set webSocketConstructor synchronously before any Pool usage
-import { neonConfig, Pool } from "@neondatabase/serverless";
-import WebSocket from "ws";
+const email = (process.env.SEED_ADMIN_EMAIL || "").trim().toLowerCase();
+const password = process.env.SEED_ADMIN_PASSWORD || "";
+const name = (process.env.SEED_ADMIN_NAME || "Admin User").trim();
 
-neonConfig.webSocketConstructor = WebSocket;
-
-import { PrismaNeon } from "@prisma/adapter-neon";
-import { PrismaClient } from "@prisma/client";
-import bcrypt from "bcryptjs";
-
-const connectionString = process.env.DATABASE_URL;
-if (!connectionString) throw new Error("DATABASE_URL is not set in .env");
-
-const pool = new Pool({ connectionString });
-const adapter = new PrismaNeon(pool);
-const prisma = new PrismaClient({ adapter });
-
-const email = "admin@instructionalgraphics.com";
-const password = "Admin@123!";
-const name = "Admin User";
+if (!email || !password) {
+  console.error(
+    "SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD must be set (see .env.example).",
+  );
+  process.exit(1);
+}
+if (password.length < 12) {
+  console.error("SEED_ADMIN_PASSWORD must be at least 12 characters.");
+  process.exit(1);
+}
 
 async function main() {
   const existing = await prisma.user.findUnique({ where: { email } });
@@ -32,14 +34,13 @@ async function main() {
     return;
   }
 
-  const passwordHash = await bcrypt.hash(password, 12);
+  const passwordHash = await hashPassword(password);
   const user = await prisma.user.create({
     data: { email, passwordHash, name, role: "ADMIN" },
   });
 
   console.log("✅ Admin user created:");
   console.log(`   Email: ${email}`);
-  console.log(`   Password: ${password}`);
   console.log(`   ID: ${user.id}`);
 }
 
@@ -50,5 +51,4 @@ main()
   })
   .finally(async () => {
     await prisma.$disconnect();
-    await pool.end();
   });

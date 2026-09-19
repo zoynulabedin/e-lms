@@ -1,6 +1,5 @@
 import type { LoaderFunctionArgs } from "react-router";
-
-// No Node.js imports — uses only global fetch (Node 18+) and global process
+import { requireUser } from "../utils/auth.server";
 
 const ALLOWED_HOST = "courses.instructionalgraphics.org";
 const BROWSER_UA =
@@ -16,15 +15,10 @@ function resolveUrl(path: string, base: string): string | null {
 }
 
 export async function loader({ request }: LoaderFunctionArgs) {
+  // Logged-in learners only - otherwise this is an open relay for the
+  // allowed host, paid for with our bandwidth.
+  await requireUser(request);
   const params = new URL(request.url).searchParams;
-
-  // Connectivity test — open ?debug=1 in browser to confirm route is live
-  if (params.get("debug") === "1") {
-    return new Response(
-      JSON.stringify({ ok: true, node: process.version }),
-      { headers: { "Content-Type": "application/json" } },
-    );
-  }
 
   const videoUrl = params.get("url") ?? "";
   if (!videoUrl) return new Response("Missing ?url", { status: 400 });
@@ -61,6 +55,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
   }
   clearTimeout(timer);
 
+  if (!upstream.ok && upstream.status !== 206) {
+    return new Response(`Upstream returned ${upstream.status}`, { status: upstream.status });
+  }
+
   const ct = upstream.headers.get("content-type") ?? "";
   const isPlaylist = videoUrl.includes(".m3u8") || ct.toLowerCase().includes("mpegurl");
 
@@ -86,22 +84,20 @@ export async function loader({ request }: LoaderFunctionArgs) {
       headers: {
         "Content-Type": "application/vnd.apple.mpegurl",
         "Cache-Control": "no-cache",
-        "Access-Control-Allow-Origin": "*",
       },
     });
   }
 
-  const buffer = await upstream.arrayBuffer();
+  // Stream segments through instead of buffering whole files in memory.
   const mime = ct || (videoUrl.endsWith(".ts") ? "video/mp2t" : "application/octet-stream");
-
-  return new Response(buffer, {
-    status: upstream.status,
-    headers: {
-      "Content-Type": mime,
-      "Content-Length": String(buffer.byteLength),
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Expose-Headers": "Content-Length, Content-Range",
-      ...(upstream.headers.get("Content-Range") ? { "Content-Range": upstream.headers.get("Content-Range")! } : {}),
-    },
-  });
+  const headers: Record<string, string> = {
+    "Content-Type": mime,
+    "Cache-Control": "private, max-age=3600",
+    "Access-Control-Expose-Headers": "Content-Length, Content-Range",
+  };
+  for (const h of ["Content-Length", "Content-Range", "Accept-Ranges"]) {
+    const v = upstream.headers.get(h);
+    if (v) headers[h] = v;
+  }
+  return new Response(upstream.body, { status: upstream.status, headers });
 }

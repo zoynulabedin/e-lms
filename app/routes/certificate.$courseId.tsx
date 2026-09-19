@@ -17,7 +17,10 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     include: { course: true },
   });
 
-  if (!progress || !progress.isCompleted) {
+  // completedAt is set the first time the learner finishes and is never
+  // cleared - an issued certificate stays valid even if the admin later adds
+  // material and isCompleted drops until the new items are done.
+  if (!progress || !progress.completedAt) {
     throw data(
       { message: "Certificate not available. Complete the course first." },
       { status: 403 },
@@ -36,11 +39,24 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
         day: "numeric",
       });
 
+  // user.name and course.title come from free-text inputs; this response is
+  // raw HTML, so they must be entity-escaped or a name like <img onerror=...>
+  // would execute in every viewer's browser.
+  const esc = (v: unknown) =>
+    String(v ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  const safeName = esc(user.name);
+  const safeTitle = esc(progress.course.title);
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <title>Certificate – ${progress.course.title}</title>
+  <title>Certificate – ${safeTitle}</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Playfair+Display:wght@700&display=swap');
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -68,9 +84,9 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     <h1>Certificate of Completion</h1>
     <div class="divider"></div>
     <p class="sub">This certifies that</p>
-    <p class="name">${user.name}</p>
+    <p class="name">${safeName}</p>
     <p class="sub">has successfully completed</p>
-    <p class="course">${progress.course.title}</p>
+    <p class="course">${safeTitle}</p>
     <p class="date">Completed on ${completedDate}</p>
     <div style="margin-top:40px;">
       <button onclick="window.print()" class="no-print" style="background:#1D375F;color:#fff;border:none;padding:10px 28px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;font-family:Inter,sans-serif;">

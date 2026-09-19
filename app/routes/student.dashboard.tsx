@@ -9,6 +9,7 @@ import {
 import type { LoaderFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireUser } from "../utils/auth.server";
+import { getAccessibleCourseIds } from "../utils/access.server";
 import {
   BookOpen,
   CheckCircle2,
@@ -29,15 +30,18 @@ export async function loader({ request }: LoaderFunctionArgs) {
   // Redirect admin to admin dashboard
   if (user.role === "ADMIN") return redirect("/");
 
+  // Entitlement first, then progress/enrollment rows scoped to those courses —
+  // a revoked licence drops the course from the dashboard immediately.
+  const accessibleIds = await getAccessibleCourseIds(user.id);
   const [progresses, enrollments] = await Promise.all([
     prisma.progress.findMany({
-      where: { userId: user.id },
-      include: { course: true },
+      where: { userId: user.id, courseId: { in: accessibleIds } },
+      include: { course: { select: { id: true, title: true, thumbnailUrl: true, courseType: true, category: true } } },
       orderBy: { lastAccessedAt: "desc" },
     }),
     prisma.enrollment.findMany({
-      where: { userId: user.id },
-      include: { course: true },
+      where: { userId: user.id, courseId: { in: accessibleIds } },
+      include: { course: { select: { id: true, title: true, thumbnailUrl: true, courseType: true, category: true } } },
       orderBy: { enrolledAt: "desc" },
     }),
   ]);
@@ -57,6 +61,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     course: any;
     completionPercent: number;
     isCompleted: boolean;
+    hasCertificate: boolean;
     lastAccessedAt: Date | null;
   }
 
@@ -69,6 +74,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
       course,
       completionPercent: progress?.completionPercent ?? 0,
       isCompleted: progress?.isCompleted ?? false,
+      // A certificate, once earned, stays available (completedAt is never cleared).
+      hasCertificate: !!progress?.completedAt,
       lastAccessedAt:
         progress?.lastAccessedAt || enrollment?.enrolledAt || null,
     };
@@ -81,7 +88,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     return bTime - aTime;
   });
 
-  const hasCertificates = myCourses.some((c) => c.isCompleted);
+  const hasCertificates = myCourses.some((c) => c.hasCertificate);
 
   return { user, myCourses, hasCertificates };
 }
@@ -209,7 +216,7 @@ export default function StudentDashboard() {
             )}
 
             {/* My Courses */}
-            <section className="mb-10">
+            <section id="my-courses" className="mb-10 scroll-mt-6">
               <div className="mb-5">
                 <h2 className="font-display text-2xl text-brand-navy">My Courses</h2>
               </div>

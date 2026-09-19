@@ -14,8 +14,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const user = await requireUser(request);
 
   const completed = await prisma.progress.findMany({
-    where: { userId: user.id, isCompleted: true },
-    include: { course: true },
+    where: { userId: user.id, completedAt: { not: null } },
+    include: { course: { select: { title: true, thumbnailUrl: true, category: true } } },
     orderBy: { completedAt: "desc" },
   });
 

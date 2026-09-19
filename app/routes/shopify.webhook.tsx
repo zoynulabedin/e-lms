@@ -30,6 +30,13 @@ export async function action({ request }: ActionFunctionArgs) {
     return data({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Only orders/paid may mint licenses. Other topics signed with the same
+  // secret (orders/create, orders/updated, refunds…) are acknowledged and ignored.
+  const topic = request.headers.get("X-Shopify-Topic");
+  if (topic && topic !== "orders/paid") {
+    return data({ ok: true, ignored: topic });
+  }
+
   let order: any;
   try {
     order = JSON.parse(rawBody);
@@ -37,68 +44,145 @@ export async function action({ request }: ActionFunctionArgs) {
     return data({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  const orderId = order?.id != null ? String(order.id) : "";
+  if (!orderId) {
+    return data({ error: "Order id missing" }, { status: 400 });
+  }
+
+  if (order?.financial_status && order.financial_status !== "paid") {
+    return data({ ok: true, ignored: `financial_status=${order.financial_status}` });
+  }
+
   const customerEmail = (order?.email || order?.customer?.email || "")
     .trim()
     .toLowerCase();
 
   if (!customerEmail) {
-    console.warn("[shopify webhook] Order has no customer email:", order?.id);
+    console.warn("[shopify webhook] Order has no customer email:", orderId);
     return data({ ok: true }); // Acknowledge but skip
   }
 
-  const lineItems: any[] = order?.line_items || [];
-  const generatedKeys: Array<{
-    key: string;
-    courseId: string;
-    courseTitle: string;
-  }> = [];
-
-  for (const item of lineItems) {
-    // We map Shopify variant SKU → Course ID
-    const courseId = item?.sku || null;
-    const quantity = item?.quantity || 1;
-
-    if (!courseId) continue;
-
-    const course = await prisma.course.findUnique({ where: { id: courseId } });
-    if (!course) {
-      console.warn(`[shopify webhook] No course found for SKU: ${courseId}`);
-      continue;
+  try {
+    // Idempotency: Shopify retries any webhook that doesn't get a 2xx within
+    // ~5s (and may deliver twice, even concurrently). The ShopifyOrder row is
+    // claimed in the SAME transaction as the licence insert below, so two
+    // overlapping deliveries can never both mint keys.
+    const already = await prisma.shopifyOrder.findUnique({ where: { orderId } });
+    if (already) {
+      console.log(`[shopify webhook] Order ${orderId} already processed — skipping`);
+      return data({ ok: true, duplicate: true });
     }
 
-    // Generate one license per unit purchased
-    for (let i = 0; i < quantity; i++) {
-      const key = generateLicenseKey();
-      await prisma.license.create({
-        data: {
-          key,
+    const lineItems: any[] = order?.line_items || [];
+    const toCreate: Array<{
+      key: string;
+      courseId: string;
+      courseTitle: string;
+      isBulk: boolean;
+    }> = [];
+    const unmapped: string[] = [];
+
+    for (const item of lineItems) {
+      // Map the line item to a course: variant SKU = course id, or the
+      // product id entered in the course builder's "Shopify Product ID" field.
+      const sku = item?.sku ? String(item.sku).trim() : "";
+      const productId = item?.product_id != null ? String(item.product_id) : "";
+      const quantity = Math.max(1, Number(item?.quantity) || 1);
+
+      let course = sku
+        ? await prisma.course.findUnique({ where: { id: sku }, select: { id: true, title: true } })
+        : null;
+      if (!course && productId) {
+        course = await prisma.course.findFirst({
+          where: { shopifyProductId: productId },
+          select: { id: true, title: true },
+        });
+      }
+      if (!course) {
+        console.warn(`[shopify webhook] No course for SKU "${sku}" / product ${productId}`);
+        unmapped.push(`${sku || "(no SKU)"} / product ${productId || "?"} (${item?.title ?? "?"})`);
+        continue;
+      }
+      const courseId = course.id;
+
+      // Generate one license per unit purchased
+      for (let i = 0; i < quantity; i++) {
+        toCreate.push({
+          key: generateLicenseKey(),
           courseId,
-          customerEmail,
-          status: "PENDING",
-          shopifyOrderId: String(order.id),
+          courseTitle: course.title,
           isBulk: quantity > 1,
-        },
-      });
-      generatedKeys.push({ key, courseId, courseTitle: course.title });
+        });
+      }
     }
+
+    // Nothing mapped: acknowledge (so Shopify stops retrying) but do NOT
+    // claim the order - once the admin fixes the SKU / product id they can
+    // re-send the webhook from Shopify and it will mint normally.
+    if (toCreate.length === 0) {
+      console.warn(`[shopify webhook] Order ${orderId}: no line item matched a course (${unmapped.join(", ")})`);
+      void sendAdminOrderNotification({ orderId, customerEmail, licenses: [], unmapped }).catch(console.error);
+      return data({ ok: true, generated: 0, unmapped: unmapped.length });
+    }
+
+    // Claim + mint atomically. A concurrent duplicate delivery fails the
+    // primary-key insert (P2002) and rolls back without creating anything.
+    try {
+      await prisma.$transaction([
+        prisma.shopifyOrder.create({ data: { orderId } }),
+        prisma.license.createMany({
+          data: toCreate.map(({ key, courseId, isBulk }) => ({
+            key,
+            courseId,
+            customerEmail,
+            status: "PENDING" as const,
+            shopifyOrderId: orderId,
+            isBulk,
+          })),
+        }),
+      ]);
+    } catch (e: any) {
+      if (e?.code === "P2002") {
+        console.log(`[shopify webhook] Order ${orderId} processed concurrently — skipping`);
+        return data({ ok: true, duplicate: true });
+      }
+      throw e;
+    }
+
+    console.log(
+      `[shopify webhook] Order ${orderId}: generated ${toCreate.length} license(s) for ${customerEmail}` +
+        (unmapped.length ? `; unmapped: ${unmapped.join(", ")}` : ""),
+    );
+
+    // Emails go out after the DB commit and are NOT awaited, so Shopify gets
+    // its 200 well inside the timeout even for large orders. Failures are
+    // logged; the admin can "Resend Email" from /licenses.
+    void Promise.allSettled([
+      ...toCreate.map(({ key, courseTitle }) =>
+        sendLicenseEmail({ to: customerEmail, licenseKey: key, courseTitle }),
+      ),
+      sendAdminOrderNotification({
+        orderId,
+        customerEmail,
+        licenses: toCreate.map(({ key, courseTitle }) => ({ key, courseTitle })),
+        unmapped,
+      }),
+    ]).then((results) => {
+      for (const r of results) {
+        if (r.status === "rejected")
+          console.error("[shopify webhook] email failed:", r.reason);
+      }
+    });
+
+    return data(
+      { ok: true, generated: toCreate.length, unmapped: unmapped.length },
+      { status: 200 },
+    );
+  } catch (err) {
+    // 5xx makes Shopify retry; the idempotency check makes that retry safe.
+    console.error(`[shopify webhook] Order ${orderId} failed:`, err);
+    return data({ error: "Internal error" }, { status: 500 });
   }
-
-  // Send license email to customer and notify admin
-  for (const { key, courseTitle } of generatedKeys) {
-    await sendLicenseEmail({ to: customerEmail, licenseKey: key, courseTitle });
-  }
-
-  await sendAdminOrderNotification({
-    orderId: String(order.id),
-    customerEmail,
-    licenses: generatedKeys.map(({ key, courseTitle }) => ({ key, courseTitle })),
-  });
-
-  console.log(
-    `[shopify webhook] Order ${order.id}: generated ${generatedKeys.length} license(s) for ${customerEmail}`,
-  );
-
-  return data({ ok: true, generated: generatedKeys.length }, { status: 200 });
 }
 
 // Shopify also sends GET health checks

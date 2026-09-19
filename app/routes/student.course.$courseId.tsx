@@ -3,7 +3,10 @@ import { useLoaderData, useFetcher, Link } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireUser } from "../utils/auth.server";
+import { computeCourseAccess, requireCourseAccess } from "../utils/access.server";
+import { recomputeCourseProgress } from "../utils/progress.server";
 import { randomUUID } from "crypto";
+import { Prisma } from "@prisma/client";
 import {
   ChevronLeft,
   ChevronDown,
@@ -27,7 +30,7 @@ import {
   Lock,
   Bookmark,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { HlsPlayer } from "../components/HlsPlayer";
 import { StorylinePlayer } from "../components/StorylinePlayer";
 
@@ -71,8 +74,13 @@ function resolveVideoEmbed(raw: string): {
     return { type: "vimeo", src: `https://player.vimeo.com/video/${vimeoId}` };
   if (trimmed.includes("wistia.com"))
     return { type: "iframe", src: trimmed.replace("/medias/", "/embed/iframe/") };
-  if (trimmed.includes(".m3u8"))
-    return { type: "hls", src: trimmed };
+  if (trimmed.includes(".m3u8")) {
+    // The proxy only relays the Storyline host (needed there for CORS);
+    // HLS hosted anywhere else keeps playing directly.
+    let proxied = false;
+    try { proxied = new URL(trimmed).hostname === "courses.instructionalgraphics.org"; } catch {}
+    return { type: "hls", src: proxied ? `/api/video-proxy?url=${encodeURIComponent(trimmed)}` : trimmed };
+  }
   if (VIDEO_EXTENSIONS.test(trimmed))
     return { type: "direct", src: trimmed };
   // Everything else (HTML pages, relative paths, unknown embeds) → iframe
@@ -111,7 +119,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
       include: {
         modules: {
           orderBy: { order: "asc" },
-          include: { lessons: { orderBy: { order: "asc" } } },
+          include: { lessons: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] } },
         },
       },
     }),
@@ -119,13 +127,20 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 
   if (!course) throw data({ message: "Course not found." }, { status: 404 });
 
-  const hasAccess =
-    license ||
-    enrollment ||
-    (course.courseType === "FREE" && course.status === "PUBLISHED");
+  const hasAccess = computeCourseAccess(course, license, enrollment);
 
   if (!hasAccess)
     throw data({ message: "You don't have access to this course." }, { status: 403 });
+
+  // A published FREE course opened by link counts as enrolling in it - that
+  // is what puts it on the dashboard / resources page.
+  if (!enrollment && !license && course.courseType === "FREE") {
+    await prisma.enrollment.upsert({
+      where: { userId_courseId: { userId: user.id, courseId } },
+      update: {},
+      create: { userId: user.id, courseId },
+    });
+  }
 
   await prisma.progress.upsert({
     where: { userId_courseId: { userId: user.id, courseId } },
@@ -138,7 +153,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
       where: { userId_courseId: { userId: user.id, courseId } },
     }),
     prisma.lessonProgress.findMany({
-      where: { userId: user.id },
+      where: { userId: user.id, isCompleted: true, lesson: { module: { courseId } } },
       select: { lessonId: true, isCompleted: true },
     }),
   ]);
@@ -147,7 +162,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   const quizRows = await prisma.$queryRaw<any[]>`
     SELECT * FROM "Quiz"
     WHERE "moduleId" IN (SELECT id FROM "Module" WHERE "courseId" = ${courseId})
-    ORDER BY "order"
+    ORDER BY "order", "createdAt"
   `;
 
   const questionRows = await prisma.$queryRaw<any[]>`
@@ -160,8 +175,9 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   `;
 
   const answerRows = await prisma.$queryRaw<any[]>`
-    SELECT a.id, a."questionId", a.text, a."imageUrl", a."videoUrl", a."matchText",
-      CASE WHEN q."questionType" = 'TRUE_FALSE' THEN a."isCorrect" ELSE NULL END AS "isCorrect"
+    SELECT a.id, a."questionId", a.text, a."imageUrl", a."videoUrl", q."questionType",
+      CASE WHEN q."questionType" = 'TRUE_FALSE' THEN a."isCorrect" ELSE NULL END AS "isCorrect",
+      CASE WHEN q."questionType" = 'MATCHING' THEN a."matchText" ELSE NULL END AS "matchText"
     FROM "Answer" a
     JOIN "Question" q ON a."questionId" = q.id
     WHERE a."questionId" IN (
@@ -171,7 +187,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
         WHERE "moduleId" IN (SELECT id FROM "Module" WHERE "courseId" = ${courseId})
       )
     )
-    ORDER BY a.id
+    ORDER BY a."order", a.id
   `;
 
   const quizAttemptRows = await prisma.$queryRaw<any[]>`
@@ -189,23 +205,59 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     if (!answersMap[a.questionId]) answersMap[a.questionId] = [];
     answersMap[a.questionId].push(a);
   }
+  // ORDERING: the stored order IS the answer key, so the array must not
+  // reach the browser in that order. Shuffle server-side, stable per
+  // user+question so re-renders/reloads don't reshuffle mid-attempt.
+  for (const [qid, list] of Object.entries(answersMap)) {
+    if (list[0]?.questionType !== "ORDERING") continue;
+    let h = 2166136261;
+    for (const ch of `${user.id}:${qid}`) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+    for (let i = list.length - 1; i > 0; i--) {
+      h ^= h << 13; h ^= h >>> 17; h ^= h << 5;
+      const j = (h >>> 0) % (i + 1);
+      [list[i], list[j]] = [list[j], list[i]];
+    }
+  }
 
   const questionsMap: Record<string, any[]> = {};
   for (const q of questionRows) {
     (q as any).answers = answersMap[q.id] || [];
+    if (q.questionType === "MATCHING") {
+      // The right-hand column is offered as a shuffled option list; the
+      // pairing (which matchText belongs to which left item) never leaves the server.
+      const opts = Array.from(
+        new Set((q as any).answers.map((a: any) => String(a.matchText ?? "").trim()).filter(Boolean)),
+      ) as string[];
+      let h = 2166136261;
+      for (const ch of `${user.id}:${q.id}:m`) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+      for (let i = opts.length - 1; i > 0; i--) {
+        h ^= h << 13; h ^= h >>> 17; h ^= h << 5;
+        const j = (h >>> 0) % (i + 1);
+        [opts[i], opts[j]] = [opts[j], opts[i]];
+      }
+      (q as any).matchOptions = opts;
+      for (const a of (q as any).answers) delete a.matchText;
+    }
     if (!questionsMap[q.quizId]) questionsMap[q.quizId] = [];
     questionsMap[q.quizId].push(q);
   }
 
   const attemptsMap: Record<string, any> = {};
+  const attemptCountMap: Record<string, number> = {};
+  const passedMap: Record<string, boolean> = {};
   for (const a of quizAttemptRows) {
-    if (!attemptsMap[a.quizId]) attemptsMap[a.quizId] = a;
+    if (!attemptsMap[a.quizId]) attemptsMap[a.quizId] = a; // rows are newest-first
+    attemptCountMap[a.quizId] = (attemptCountMap[a.quizId] ?? 0) + 1;
+    if (a.isPassed) passedMap[a.quizId] = true;
   }
 
   const quizzesWithData = quizRows.map((q) => ({
     ...q,
     questions: questionsMap[q.id] || [],
     latestAttempt: attemptsMap[q.id] || null,
+    attemptCount: attemptCountMap[q.id] ?? 0,
+    // A pass is sticky: failing a later retake does not un-pass the quiz.
+    hasPassed: passedMap[q.id] ?? false,
   }));
 
   const quizzesModuleMap: Record<string, any[]> = {};
@@ -285,63 +337,99 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 export async function action({ request, params }: ActionFunctionArgs) {
   const user = await requireUser(request);
   const courseId = params.courseId!;
+  // Same rule as the loader — without this any logged-in user could mark
+  // progress / submit quizzes on courses they never bought.
+  await requireCourseAccess(user.id, courseId);
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
 
   if (intent === "update_progress") {
-    const percent = Math.min(100, Math.max(0, parseInt(String(formData.get("percent") || "0"), 10)));
-    const completed = String(formData.get("completed")) === "true";
+    // Only "flat" courses (no lessons/quizzes) track a course-level watch
+    // percent. Modular courses derive progress from lessons/quizzes — a single
+    // lesson's watch percent must never overwrite the whole course.
+    const itemCount = await prisma.lesson.count({ where: { module: { courseId } } });
+    if (itemCount > 0)
+      return data({ error: "Use complete_lesson for modular courses." }, { status: 400 });
+
+    const percent = Math.min(100, Math.max(0, parseInt(String(formData.get("percent") || "0"), 10) || 0));
+    const existing = await prisma.progress.findUnique({
+      where: { userId_courseId: { userId: user.id, courseId } },
+      select: { completionPercent: true, isCompleted: true, completedAt: true },
+    });
+    // The server decides completion (>= 95 %), and progress never goes
+    // backwards - re-watching from the start must not un-complete the course.
+    const newPercent = Math.max(existing?.completionPercent ?? 0, percent);
+    const isCompleted = (existing?.isCompleted ?? false) || newPercent >= 95;
+    const completedAt = existing?.completedAt ?? (isCompleted ? new Date() : null);
     await prisma.progress.upsert({
       where: { userId_courseId: { userId: user.id, courseId } },
-      update: { completionPercent: percent, isCompleted: completed, completedAt: completed ? new Date() : null, lastAccessedAt: new Date() },
-      create: { userId: user.id, courseId, completionPercent: percent, isCompleted: completed, completedAt: completed ? new Date() : null },
+      update: { completionPercent: newPercent, isCompleted, completedAt, lastAccessedAt: new Date() },
+      create: { userId: user.id, courseId, completionPercent: newPercent, isCompleted, completedAt },
     });
+    return data({ ok: true });
   }
 
   if (intent === "complete_lesson") {
     const lessonId = formData.get("lessonId") as string;
+    const lesson = lessonId
+      ? await prisma.lesson.findFirst({
+          where: { id: lessonId, module: { courseId } },
+          select: { id: true },
+        })
+      : null;
+    if (!lesson)
+      return data({ error: "Lesson not found in this course." }, { status: 400 });
     await prisma.lessonProgress.upsert({
       where: { userId_lessonId: { userId: user.id, lessonId } },
       update: { isCompleted: true, completedAt: new Date() },
       create: { userId: user.id, lessonId, isCompleted: true, completedAt: new Date() },
     });
-
-    const courseWithModules = await prisma.course.findUnique({
-      where: { id: courseId },
-      include: { modules: { include: { lessons: { select: { id: true } } } } },
-    });
-    const allLessonIds = courseWithModules?.modules.flatMap((m) => m.lessons.map((l) => l.id)) ?? [];
-
-    if (allLessonIds.length > 0) {
-      const completedCount = await prisma.lessonProgress.count({
-        where: { userId: user.id, lessonId: { in: allLessonIds }, isCompleted: true },
-      });
-      const percent = Math.round((completedCount / allLessonIds.length) * 100);
-      const isCompleted = percent >= 100;
-      await prisma.progress.upsert({
-        where: { userId_courseId: { userId: user.id, courseId } },
-        update: { completionPercent: percent, isCompleted, completedAt: isCompleted ? new Date() : null, lastAccessedAt: new Date() },
-        create: { userId: user.id, courseId, completionPercent: percent, isCompleted, completedAt: isCompleted ? new Date() : null },
-      });
-    }
+    await recomputeCourseProgress(user.id, courseId);
+    return data({ ok: true });
   }
 
   if (intent === "submit_quiz") {
     const quizId = formData.get("quizId") as string;
-    const quizRows = await prisma.$queryRaw<any[]>`SELECT * FROM "Quiz" WHERE id = ${quizId}`;
+    const quizRows = await prisma.$queryRaw<any[]>`
+      SELECT q.* FROM "Quiz" q
+      JOIN "Module" m ON m.id = q."moduleId"
+      WHERE q.id = ${quizId} AND m."courseId" = ${courseId}
+    `;
     const quiz = quizRows[0];
     if (!quiz) return data({ error: "Quiz not found" }, { status: 404 });
+
+    // Attempt limit (0 = unlimited). Enforced here, not just displayed.
+    const attemptsAllowed = Number(quiz.attemptsAllowed) || 0;
+    if (attemptsAllowed > 0) {
+      const [{ n }] = await prisma.$queryRaw<Array<{ n: bigint }>>`
+        SELECT COUNT(*)::bigint AS n FROM "QuizAttempt" WHERE "userId" = ${user.id} AND "quizId" = ${quizId}
+      `;
+      if (Number(n) >= attemptsAllowed)
+        return data({ error: "You have used all attempts for this quiz." }, { status: 403 });
+    }
 
     const questions = await prisma.$queryRaw<any[]>`
       SELECT * FROM "Question" WHERE "quizId" = ${quizId} ORDER BY "order"
     `;
+    const allAnswers = questions.length
+      ? await prisma.$queryRaw<any[]>`
+          SELECT * FROM "Answer"
+          WHERE "questionId" IN (${Prisma.join(questions.map((q: any) => q.id))})
+          ORDER BY "order", id
+        `
+      : [];
+    const answersByQuestion: Record<string, any[]> = {};
+    for (const a of allAnswers) (answersByQuestion[a.questionId] ??= []).push(a);
+
+    const norm = (v: unknown) => String(v ?? "").trim().toLowerCase();
 
     let score = 0;
     let maxScore = 0;
     const questionResults: any[] = [];
+    const missingRequired: string[] = [];
 
     for (const q of questions) {
-      const answers = await prisma.$queryRaw<any[]>`SELECT * FROM "Answer" WHERE "questionId" = ${q.id}`;
+      const answers = answersByQuestion[q.id] ?? [];
       const points = Number(q.points);
       maxScore += points;
       const type = q.questionType;
@@ -350,26 +438,76 @@ export async function action({ request, params }: ActionFunctionArgs) {
       let isCorrect: boolean | null = null;
       let submittedAnswerId: string | null = null;
       let submittedText: string | null = null;
+      let answered = false;
 
       if (type === "MULTIPLE_CHOICE" || type === "TRUE_FALSE" || type === "IMAGE_ANSWERING" || type === "VIDEO_ANSWERING") {
-        submittedAnswerId = (formData.get(`answer_${q.id}`) as string) || null;
-        isCorrect = !!submittedAnswerId && answers.some((a: any) => a.id === submittedAnswerId && a.isCorrect);
-        if (isCorrect) { pointsEarned = points; score += points; }
+        const chosen = Array.from(new Set(formData.getAll(`answer_${q.id}`).map(String).filter(Boolean)));
+        answered = chosen.length > 0;
+        if (type === "MULTIPLE_CHOICE" && q.allowMultiple) {
+          // Every correct option and nothing else — otherwise 0.
+          const correctIds = answers.filter((a: any) => a.isCorrect).map((a: any) => a.id).sort();
+          const chosenSorted = [...chosen].sort();
+          isCorrect =
+            chosenSorted.length > 0 &&
+            chosenSorted.length === correctIds.length &&
+            correctIds.every((id: string, i: number) => id === chosenSorted[i]);
+          submittedAnswerId = chosenSorted[0] ?? null;
+          submittedText = chosenSorted.length
+            ? answers.filter((a: any) => chosenSorted.includes(a.id)).map((a: any) => a.text).join(", ")
+            : null;
+        } else {
+          submittedAnswerId = chosen[0] ?? null;
+          isCorrect = !!submittedAnswerId && answers.some((a: any) => a.id === submittedAnswerId && a.isCorrect);
+        }
       } else if (type === "FILL_BLANK") {
-        submittedText = ((formData.get(`answer_${q.id}`) as string) || "").trim().toLowerCase();
-        const correctTexts = answers.filter((a: any) => a.isCorrect).map((a: any) => a.text.toLowerCase());
-        isCorrect = correctTexts.some((c: string) => c === submittedText);
-        if (isCorrect) { pointsEarned = points; score += points; }
+        submittedText = String(formData.get(`answer_${q.id}`) ?? "").trim();
+        answered = submittedText !== "";
+        const correctTexts = answers.filter((a: any) => a.isCorrect).map((a: any) => norm(a.text));
+        isCorrect = answered && correctTexts.includes(norm(submittedText));
       } else if (type === "ESSAY" || type === "SHORT_ANSWER") {
         submittedText = (formData.get(`answer_${q.id}`) as string) || null;
+        answered = !!submittedText?.trim();
         isCorrect = null; // needs manual grading
-        pointsEarned = 0;
+      } else if (type === "MATCHING") {
+        // Each left item must be matched to its matchText (case-insensitive).
+        const gradable = answers.filter((a: any) => norm(a.matchText) !== "");
+        const responses: Record<string, string> = {};
+        let matched = 0;
+        for (const a of answers) {
+          const v = String(formData.get(`answer_${q.id}_${a.id}`) ?? "").trim();
+          responses[a.text] = v;
+          if (v) answered = true;
+          if (norm(a.matchText) !== "" && norm(v) === norm(a.matchText)) matched++;
+        }
+        submittedText = answered
+          ? Object.entries(responses).filter(([, v]) => v).map(([k, v]) => `${k} → ${v}`).join("; ")
+          : null;
+        // No matchText configured → cannot auto-grade → instructor review.
+        isCorrect = gradable.length === 0 ? null : matched === gradable.length;
+      } else if (type === "ORDERING") {
+        // Expected position = the admin's entry order (Answer.order). Legacy
+        // questions where every answer still has order 0 go to manual review.
+        const orders = answers.map((a: any) => Number(a.order));
+        const gradable = answers.length > 1 && new Set(orders).size === answers.length;
+        const responses: Record<string, number | null> = {};
+        let allMatch = answers.length > 0;
+        answers.forEach((a: any, i: number) => {
+          const raw = String(formData.get(`answer_${q.id}_${a.id}`) ?? "").trim();
+          const v = raw === "" ? NaN : Number(raw);
+          responses[a.text] = Number.isFinite(v) ? v : null;
+          if (Number.isFinite(v)) answered = true;
+          if (v !== i + 1) allMatch = false;
+        });
+        submittedText = answered
+          ? Object.entries(responses).filter(([, v]) => v !== null).map(([k, v]) => `${v}. ${k}`).join("; ")
+          : null;
+        isCorrect = gradable ? allMatch : null;
       } else {
-        // MATCHING, ORDERING — full credit
-        pointsEarned = points;
-        score += points;
-        isCorrect = true;
+        isCorrect = null;
       }
+
+      if (q.answerRequired && !answered) missingRequired.push(q.title);
+      if (isCorrect) { pointsEarned = points; score += points; }
 
       questionResults.push({
         id: q.id,
@@ -385,6 +523,14 @@ export async function action({ request, params }: ActionFunctionArgs) {
           : undefined,
       });
     }
+
+    // A timed quiz that ran out of time is accepted as-is; blanks score 0.
+    const timedOut = formData.get("timedOut") === "1" && Number(quiz.timeLimit) > 0;
+    if (missingRequired.length && !timedOut)
+      return data(
+        { error: `Please answer the required question${missingRequired.length > 1 ? "s" : ""}: ${missingRequired.join("; ")}` },
+        { status: 400 },
+      );
 
     const passingGrade = Number(quiz.passingGrade);
     const isPassed = maxScore > 0 && (score / maxScore) * 100 >= passingGrade;
@@ -404,7 +550,18 @@ export async function action({ request, params }: ActionFunctionArgs) {
       `;
     }
 
-    return data({ ok: true, score, maxScore, isPassed, passingGrade, feedbackMode: quiz.feedbackMode, attemptId, questionResults });
+    // A passed quiz counts toward course completion, same as a lesson.
+    if (isPassed) await recomputeCourseProgress(user.id, courseId);
+
+    const pending = questionResults.some((qr) => qr.isCorrect === null);
+    // DEFAULT feedback mode shows only the score — never per-question
+    // correctness, which would let learners brute-force answers over retakes.
+    const visibleResults = quiz.feedbackMode === "DEFAULT" ? [] : questionResults;
+
+    return data({
+      ok: true, score, maxScore, isPassed, pending, passingGrade,
+      feedbackMode: quiz.feedbackMode, attemptId, questionResults: visibleResults,
+    });
   }
 
   return { ok: true };
@@ -434,6 +591,16 @@ function AnswerVideo({ videoUrl }: { videoUrl: string }) {
 
 // ── QuestionBlock ─────────────────────────────────────────────────────────────
 
+/** Deterministic shuffle so a question's option order is stable across re-renders. */
+function seededShuffle<T>(items: T[], seed: string): T[] {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) { h ^= seed.charCodeAt(i); h = Math.imul(h, 16777619); }
+  const rand = () => { h ^= h << 13; h ^= h >>> 17; h ^= h << 5; return ((h >>> 0) % 100000) / 100000; };
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [out[i], out[j]] = [out[j], out[i]]; }
+  return out;
+}
+
 function QuestionBlock({
   question,
   index,
@@ -442,11 +609,23 @@ function QuestionBlock({
 }: {
   question: any;
   index: number;
-  value: string;
-  onChange: (v: string) => void;
+  value: string | string[];
+  onChange: (v: string | string[]) => void;
 }) {
   const type = question.questionType;
-  const answers: any[] = question.answers || [];
+  const rawAnswers: any[] = question.answers || [];
+  // ORDERING must never display answers in their correct order; other types
+  // shuffle only when the admin asked for it.
+  const answers: any[] = useMemo(
+    () => (type === "ORDERING" || question.randomizeAnswers ? seededShuffle(rawAnswers, question.id) : rawAnswers),
+    [rawAnswers, type, question.randomizeAnswers, question.id],
+  );
+  const multi = type === "MULTIPLE_CHOICE" && !!question.allowMultiple;
+  const selected: string[] = Array.isArray(value) ? value : value ? [value] : [];
+  const toggle = (id: string) =>
+    multi
+      ? onChange(selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id])
+      : onChange(id);
   const [tfRevealed, setTfRevealed] = useState(false);
 
   const handleTfSelect = (answerId: string) => {
@@ -462,8 +641,13 @@ function QuestionBlock({
           {index + 1}
         </span>
         <p className="text-gray-800 text-sm leading-relaxed flex-1">{question.title}</p>
-        <span className="shrink-0 text-[12px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
-          {Number(question.points)} pt{Number(question.points) !== 1 ? "s" : ""}
+        <span className="shrink-0 flex items-center gap-1.5">
+          {question.answerRequired && (
+            <span className="text-[11px] font-semibold text-red-600 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded-full">Required</span>
+          )}
+          <span className="text-[12px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
+            {Number(question.points)} pt{Number(question.points) !== 1 ? "s" : ""}
+          </span>
         </span>
       </div>
 
@@ -472,7 +656,7 @@ function QuestionBlock({
           {answers.filter((a: any, i: number, arr: any[]) =>
             arr.findIndex((x: any) => x.text === a.text) === i
           ).slice(0, 2).map((a: any) => {
-            const isSelected = value === a.id;
+            const isSelected = selected[0] === a.id;
             const isCorrect = a.isCorrect === true;
             let rowClass = "border-gray-200 hover:border-gray-300 hover:bg-gray-50 cursor-pointer";
             let radioClass = "border-gray-300";
@@ -532,8 +716,9 @@ function QuestionBlock({
 
       {(type === "MULTIPLE_CHOICE" || type === "IMAGE_ANSWERING") && (
         <div className="space-y-2 pl-10">
+          {multi && <p className="text-xs text-gray-500 mb-1">Select all that apply.</p>}
           {answers.map((a: any) => {
-            const isSelected = value === a.id;
+            const isSelected = selected.includes(a.id);
             return (
               <div key={a.id}>
                 <label
@@ -542,13 +727,13 @@ function QuestionBlock({
                   }`}
                 >
                   <div
-                    className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
+                    className={`w-4 h-4 ${multi ? "rounded" : "rounded-full"} border-2 flex items-center justify-center shrink-0 transition-colors ${
                       isSelected ? "border-blue-600 bg-blue-600" : "border-gray-300"
                     }`}
                   >
-                    {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                    {isSelected && (multi ? <Check size={10} className="text-white" strokeWidth={3} /> : <div className="w-1.5 h-1.5 rounded-full bg-white" />)}
                   </div>
-                  <input type="radio" name={`answer_${question.id}`} value={a.id} checked={isSelected} onChange={() => onChange(a.id)} className="sr-only" />
+                  <input type={multi ? "checkbox" : "radio"} name={`answer_${question.id}`} value={a.id} checked={isSelected} onChange={() => toggle(a.id)} className="sr-only" />
                   <div className="flex-1">
                     {type === "IMAGE_ANSWERING" && a.imageUrl && (
                       <img src={a.imageUrl} alt="" className="w-28 h-20 object-cover rounded mb-2" />
@@ -567,7 +752,7 @@ function QuestionBlock({
       {type === "VIDEO_ANSWERING" && (
         <div className="space-y-3 pl-10">
           {answers.map((a: any) => {
-            const isSelected = value === a.id;
+            const isSelected = selected[0] === a.id;
             const embed = isSelected && a.videoUrl ? resolveVideoEmbed(a.videoUrl) : null;
             return (
               <div key={a.id}>
@@ -649,12 +834,25 @@ function QuestionBlock({
             <div key={a.id} className="flex items-center gap-3">
               <div className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 bg-gray-50">{a.text}</div>
               <span className="text-gray-400">→</span>
-              <input
-                type="text"
-                name={`answer_${question.id}_${a.id}`}
-                className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none focus:border-blue-500"
-                placeholder="Match..."
-              />
+              {Array.isArray(question.matchOptions) && question.matchOptions.length > 0 ? (
+                <select
+                  name={`answer_${question.id}_${a.id}`}
+                  defaultValue=""
+                  className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="">Choose…</option>
+                  {question.matchOptions.map((opt: string) => (
+                    <option key={opt} value={opt}>{opt}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  name={`answer_${question.id}_${a.id}`}
+                  className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none focus:border-blue-500"
+                  placeholder="Match..."
+                />
+              )}
             </div>
           ))}
         </div>
@@ -812,10 +1010,13 @@ function QuestionReviewCard({ qr, idx, feedbackMode }: { qr: any; idx: number; f
 
 function QuizAttemptForm({ quiz, onRetake }: { quiz: any; onRetake: () => void }) {
   const quizFetcher = useFetcher<{
-    ok?: boolean; score?: number; maxScore?: number; isPassed?: boolean; passingGrade?: number;
-    feedbackMode?: string; attemptId?: string; questionResults?: any[];
+    ok?: boolean; error?: string; score?: number; maxScore?: number; isPassed?: boolean; pending?: boolean;
+    passingGrade?: number; feedbackMode?: string; attemptId?: string; questionResults?: any[];
   }>();
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
+  const attemptsAllowed = Number(quiz.attemptsAllowed) || 0;
+  const attemptsUsed = Number(quiz.attemptCount) || 0;
+  const attemptsLeft = attemptsAllowed > 0 ? Math.max(0, attemptsAllowed - attemptsUsed) : Infinity;
   const [timeLeft, setTimeLeft] = useState<number | null>(
     Number(quiz.timeLimit) > 0 ? Number(quiz.timeLimit) * 60 : null,
   );
@@ -831,12 +1032,19 @@ function QuizAttemptForm({ quiz, onRetake }: { quiz: any; onRetake: () => void }
   }, [submitted]);
 
   useEffect(() => {
-    if (timeLeft === 0 && !submitted) formRef.current?.requestSubmit();
+    if (timeLeft === 0 && !submitted) {
+      // Time is up: submit what exists, even if a required question is blank.
+      const flag = document.createElement("input");
+      flag.type = "hidden"; flag.name = "timedOut"; flag.value = "1";
+      formRef.current?.appendChild(flag);
+      formRef.current?.requestSubmit();
+    }
   }, [timeLeft, submitted]);
 
   if (submitted && result) {
-    const pct = result.maxScore! > 0 ? Math.round((result.score! / result.maxScore!) * 100) : 0;
+    const pct = result.maxScore! > 0 ? Math.floor((result.score! / result.maxScore!) * 100) : 0;
     const isPassed = !!result.isPassed;
+    const isPending = !!result.pending && !isPassed;
     const feedbackMode = result.feedbackMode ?? "DEFAULT";
     const hasReview = (feedbackMode === "REVEAL" || feedbackMode === "RETRY") && Array.isArray(result.questionResults) && result.questionResults.length > 0;
 
@@ -849,20 +1057,24 @@ function QuizAttemptForm({ quiz, onRetake }: { quiz: any; onRetake: () => void }
           <ScoreArc pct={pct} isPassed={isPassed} />
 
           <div className={`mt-5 inline-flex items-center gap-2 px-5 py-2 rounded-full text-sm font-bold border ${
-            isPassed ? "bg-green-50 text-green-700 border-green-200" : "bg-red-50 text-red-600 border-red-200"
+            isPassed ? "bg-green-50 text-green-700 border-green-200"
+              : isPending ? "bg-amber-50 text-amber-700 border-amber-200"
+              : "bg-red-50 text-red-600 border-red-200"
           }`}>
-            {isPassed ? <><Trophy size={14} /> Quiz Passed!</> : <><AlertCircle size={14} /> Quiz Failed</>}
+            {isPassed ? <><Trophy size={14} /> Quiz Passed!</>
+              : isPending ? <><AlertCircle size={14} /> Awaiting instructor review</>
+              : <><AlertCircle size={14} /> Quiz Failed</>}
           </div>
 
           <p className="text-gray-500 text-sm mt-3">
             <span className="font-semibold text-gray-800">{result.score} / {result.maxScore}</span> points &nbsp;·&nbsp; Passing grade: {result.passingGrade}%
           </p>
 
-          {!isPassed && (
+          {!isPassed && !isPending && (
             <p className="text-gray-400 text-xs mt-1">You need {result.passingGrade}% or higher to pass.</p>
           )}
 
-          {result.questionResults?.some((qr: any) => qr.isCorrect === null) && (
+          {result.pending && (
             <div className="mt-3 flex items-center gap-2 text-amber-600 text-xs bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
               <AlertCircle size={12} />
               Some answers require instructor review. Your score may change.
@@ -883,14 +1095,21 @@ function QuizAttemptForm({ quiz, onRetake }: { quiz: any; onRetake: () => void }
           </div>
         )}
 
-        {/* Retake */}
-        <div className="flex justify-center">
-          <button
-            onClick={onRetake}
-            className="flex items-center gap-2 border border-gray-300 hover:border-gray-400 text-gray-700 hover:text-gray-900 bg-white px-6 py-2.5 rounded-xl transition-colors text-sm font-medium shadow-sm"
-          >
-            <RefreshCw size={14} /> Retake Quiz
-          </button>
+        {/* Retake — only while attempts remain (loader revalidates attemptCount after submit) */}
+        <div className="flex flex-col items-center gap-2">
+          {attemptsLeft > 0 ? (
+            <button
+              onClick={onRetake}
+              className="flex items-center gap-2 border border-gray-300 hover:border-gray-400 text-gray-700 hover:text-gray-900 bg-white px-6 py-2.5 rounded-xl transition-colors text-sm font-medium shadow-sm"
+            >
+              <RefreshCw size={14} /> Retake Quiz
+            </button>
+          ) : (
+            <p className="text-xs text-gray-400">No attempts remaining.</p>
+          )}
+          {attemptsAllowed > 0 && attemptsLeft > 0 && attemptsLeft !== Infinity && (
+            <p className="text-xs text-gray-400">{attemptsLeft} attempt{attemptsLeft === 1 ? "" : "s"} left</p>
+          )}
         </div>
       </div>
     );
@@ -913,7 +1132,7 @@ function QuizAttemptForm({ quiz, onRetake }: { quiz: any; onRetake: () => void }
         <div className="flex items-center gap-4 mt-3 text-xs text-gray-400">
           <span>{questions.length} question{questions.length !== 1 ? "s" : ""}</span>
           <span>Passing grade: {quiz.passingGrade}%</span>
-          {Number(quiz.attemptsAllowed) > 0 && <span>Max attempts: {quiz.attemptsAllowed}</span>}
+          {attemptsAllowed > 0 && <span>Attempts: {attemptsUsed} / {attemptsAllowed}</span>}
         </div>
         {quiz.latestAttempt && (
           <div className={`mt-4 flex items-center gap-2 p-3 rounded-lg border text-sm ${
@@ -937,16 +1156,27 @@ function QuizAttemptForm({ quiz, onRetake }: { quiz: any; onRetake: () => void }
           <HelpCircle size={40} className="text-gray-300 mx-auto mb-3" />
           <p className="text-gray-400">This quiz has no questions yet.</p>
         </div>
+      ) : attemptsLeft <= 0 ? (
+        <div className="text-center py-16 border border-gray-200 rounded-xl">
+          <AlertCircle size={40} className="text-gray-300 mx-auto mb-3" />
+          <p className="text-gray-600 font-medium">You have used all {attemptsAllowed} attempts for this quiz.</p>
+          {quiz.hasPassed && <p className="text-green-600 text-sm mt-1">You already passed — nice work.</p>}
+        </div>
       ) : (
         <quizFetcher.Form method="post" ref={formRef}>
           <input type="hidden" name="intent" value="submit_quiz" />
           <input type="hidden" name="quizId" value={quiz.id} />
+          {quizFetcher.data?.error && (
+            <div className="mb-4 flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+              <AlertCircle size={14} className="shrink-0" /> {quizFetcher.data.error}
+            </div>
+          )}
           {questions.map((q: any, idx: number) => (
             <QuestionBlock
               key={q.id}
               question={q}
               index={idx}
-              value={answers[q.id] || ""}
+              value={answers[q.id] ?? (q.allowMultiple ? [] : "")}
               onChange={(v) => setAnswers((prev) => ({ ...prev, [q.id]: v }))}
             />
           ))}
@@ -1021,48 +1251,87 @@ export default function CourseViewer() {
   const isHlsVideo = videoSrc && videoSrc.type === "hls";
   const isDirectVideo = videoSrc && videoSrc.type === "direct";
 
-  const completedCount = completedLessonIds.length;
+  // Completed lessons in THIS course only - the header's "n of m" count.
+  const completedCount = course.modules
+    .flatMap((m: any) => m.lessons)
+    .filter((l: any) => completedSet.has(l.id)).length;
 
-  // Storyline postMessage
+  const markLessonComplete = (lessonId: string) => {
+    const fd = new FormData();
+    fd.append("intent", "complete_lesson");
+    fd.append("lessonId", lessonId);
+    fetcher.submit(fd, { method: "post" });
+  };
+
+  // Flat (no-module) courses report a course-level watch percent; modular
+  // courses mark the current lesson complete instead. One submission per
+  // lesson - the server derives the course percent from all lessons/quizzes.
+  const lessonDoneRef = useRef<string | null>(null);
+  // Latest values readable from long-lived event handlers without making
+  // them effect dependencies (a re-subscribe would reset the 5 % throttle).
+  const completedSetRef = useRef(completedSet);
+  completedSetRef.current = completedSet;
+  const currentLessonIdRef = useRef<string | null>(currentLesson?.id ?? null);
+  currentLessonIdRef.current = currentLesson?.id ?? null;
+  const lastReportedRef = useRef(0);
+
+  const reportWatchProgress = (pct: number) => {
+    if (hasModules) {
+      const id = currentLessonIdRef.current;
+      if (!id || pct < 95) return;
+      if (completedSetRef.current.has(id) || lessonDoneRef.current === id) return;
+      lessonDoneRef.current = id;
+      markLessonComplete(id);
+      return;
+    }
+    const fd = new FormData();
+    fd.append("intent", "update_progress");
+    fd.append("percent", String(pct));
+    fetcher.submit(fd, { method: "post" });
+  };
+
+  // Storyline postMessage - only trust messages from OUR iframe, from the
+  // origin we embedded. Anything else (another tab, a hostile page holding a
+  // reference to this window) is ignored.
   useEffect(() => {
     if (!isStoryline) return;
+    let allowedOrigin: string | null = null;
+    try {
+      allowedOrigin = embedUrl ? new URL(embedUrl, window.location.origin).origin : null;
+    } catch { allowedOrigin = null; }
     const handler = (event: MessageEvent) => {
+      if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return;
+      if (allowedOrigin && event.origin !== allowedOrigin) return;
       try {
         const msg = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
         if (msg?.type === "progress" && typeof msg.percent === "number") {
-          const fd = new FormData();
-          fd.append("intent", "update_progress");
-          fd.append("percent", String(msg.percent));
-          fd.append("completed", msg.percent >= 100 ? "true" : "false");
-          fetcher.submit(fd, { method: "post" });
+          reportWatchProgress(Math.round(msg.percent));
         }
       } catch { /* non-JSON */ }
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [fetcher, isStoryline]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStoryline, embedUrl, hasModules, currentLesson?.id]);
 
   // Video timeupdate
   useEffect(() => {
     if (isStoryline) return;
     const video = videoRef.current;
     if (!video) return;
-    let lastReported = 0;
+    lastReportedRef.current = 0;
     const onTimeUpdate = () => {
       if (!video.duration) return;
       const pct = Math.round((video.currentTime / video.duration) * 100);
-      if (Math.abs(pct - lastReported) >= 5) {
-        lastReported = pct;
-        const fd = new FormData();
-        fd.append("intent", "update_progress");
-        fd.append("percent", String(pct));
-        fd.append("completed", pct >= 95 ? "true" : "false");
-        fetcher.submit(fd, { method: "post" });
+      if (Math.abs(pct - lastReportedRef.current) >= 5) {
+        lastReportedRef.current = pct;
+        reportWatchProgress(pct);
       }
     };
     video.addEventListener("timeupdate", onTimeUpdate);
     return () => video.removeEventListener("timeupdate", onTimeUpdate);
-  }, [fetcher, isStoryline]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStoryline, hasModules, currentLesson?.id]);
 
   const toggleFullscreen = () => {
     const el = (iframeRef.current ?? videoRef.current)?.parentElement;
@@ -1073,13 +1342,6 @@ export default function CourseViewer() {
       document.exitFullscreen?.();
       setIsFullscreen(false);
     }
-  };
-
-  const markLessonComplete = (lessonId: string) => {
-    const fd = new FormData();
-    fd.append("intent", "complete_lesson");
-    fd.append("lessonId", lessonId);
-    fetcher.submit(fd, { method: "post" });
   };
 
   const toggleModule = (id: string) => {
@@ -1221,6 +1483,7 @@ export default function CourseViewer() {
                         const quiz = entry.item;
                         const isActive = currentQuiz?.id === quiz.id;
                         const attempt = quiz.latestAttempt;
+                        const passed = !!quiz.hasPassed;
 
                         return (
                           <Link
@@ -1242,11 +1505,11 @@ export default function CourseViewer() {
                             <div
                               className="shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center"
                               style={{
-                                borderColor: attempt?.isPassed ? "#22c55e" : "rgba(255,255,255,0.25)",
-                                background: attempt?.isPassed ? "#22c55e" : "transparent",
+                                borderColor: passed ? "#22c55e" : "rgba(255,255,255,0.25)",
+                                background: passed ? "#22c55e" : "transparent",
                               }}
                             >
-                              {attempt?.isPassed && <Check size={10} className="text-white" strokeWidth={3} />}
+                              {passed && <Check size={10} className="text-white" strokeWidth={3} />}
                             </div>
 
                             {/* Bookmark */}
@@ -1398,7 +1661,7 @@ export default function CourseViewer() {
             {/* Quiz player */}
             {currentQuiz && (
               <div className="absolute inset-0 overflow-y-auto bg-gray-50">
-                <QuizPlayer quiz={currentQuiz} />
+                <QuizPlayer key={currentQuiz.id} quiz={currentQuiz} />
               </div>
             )}
 
@@ -1464,6 +1727,7 @@ export default function CourseViewer() {
               <div className="absolute inset-0 bg-black">
                 {embedUrl ? (
                   <StorylinePlayer
+                    key={currentLesson?.id ?? course.id}
                     ref={iframeRef}
                     src={embedUrl}
                     title={currentLesson?.title || course.title}

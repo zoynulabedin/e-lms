@@ -8,7 +8,8 @@ import {
 } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
-import { hashPassword } from "../utils/auth.server";
+import { hashPassword, hashToken } from "../utils/auth.server";
+import { rateLimitResponse, recordFailure } from "../utils/rate-limit.server";
 import { Store, Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
 
@@ -17,7 +18,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const token = url.searchParams.get("token");
   if (!token) return data({ valid: false, token: "" });
 
-  const reset = await prisma.passwordReset.findUnique({ where: { token } });
+  const reset = await prisma.passwordReset.findUnique({ where: { token: hashToken(token) } });
   if (!reset || reset.expiresAt < new Date()) {
     return data({ valid: false, token });
   }
@@ -37,8 +38,13 @@ export async function action({ request }: ActionFunctionArgs) {
     );
   }
 
-  const reset = await prisma.passwordReset.findUnique({ where: { token } });
+  const limited = rateLimitResponse("reset_password", request);
+  if (limited) return limited;
+
+  const tokenHash = hashToken(token);
+  const reset = await prisma.passwordReset.findUnique({ where: { token: tokenHash } });
   if (!reset || reset.expiresAt < new Date()) {
+    recordFailure("reset_password", request);
     return data(
       { error: "This reset link has expired or is invalid." },
       { status: 400 },
@@ -46,11 +52,18 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   const passwordHash = await hashPassword(password);
-  await prisma.user.update({
-    where: { id: reset.userId },
-    data: { passwordHash },
+  // Consume the token exactly once; ONLY the request that actually deleted
+  // it may change the password and sign out the existing sessions.
+  const applied = await prisma.$transaction(async (tx) => {
+    const consumed = await tx.passwordReset.deleteMany({ where: { token: tokenHash } });
+    if (consumed.count === 0) return false;
+    await tx.user.update({ where: { id: reset.userId }, data: { passwordHash } });
+    await tx.userSession.updateMany({ where: { userId: reset.userId, isActive: true }, data: { isActive: false } });
+    return true;
   });
-  await prisma.passwordReset.delete({ where: { token } });
+  if (!applied) {
+    return data({ error: "This reset link has already been used." }, { status: 400 });
+  }
 
   return redirect("/auth/login?reset=1");
 }

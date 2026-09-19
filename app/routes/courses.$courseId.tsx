@@ -6,8 +6,11 @@ import { randomUUID } from "crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../utils/db.server";
 import { requireAdmin } from "../utils/auth.server";
+import { recomputeCourseProgressForAllUsers } from "../utils/progress.server";
+import { normalizeModuleOrder } from "../utils/curriculum.server";
 import { useState, useRef, useEffect } from "react";
 import {
+  AlertCircle,
   ArrowLeft,
   ChevronDown,
   ChevronRight,
@@ -160,6 +163,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
       ? await prisma.$queryRaw<Array<any>>`
           SELECT * FROM "Answer"
           WHERE "questionId" IN (${Prisma.join(questionRows.map((q: any) => q.id))})
+          ORDER BY "order", id
         `
       : [];
 
@@ -196,10 +200,25 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 
 // ── Action ────────────────────────────────────────────────────────────────────
 
+const QUESTION_TYPE_VALUES = [
+  "MULTIPLE_CHOICE", "TRUE_FALSE", "FILL_BLANK", "SHORT_ANSWER", "ESSAY",
+  "MATCHING", "ORDERING", "IMAGE_ANSWERING", "VIDEO_ANSWERING",
+] as const;
+const isQuestionType = (v: unknown): v is (typeof QUESTION_TYPE_VALUES)[number] =>
+  QUESTION_TYPE_VALUES.includes(v as any);
+
 export async function action({ request, params }: ActionFunctionArgs) {
   await requireAdmin(request);
-  const { courseId } = params;
+  const courseId = params.courseId;
+  if (!courseId) return data({ error: "Course id missing." }, { status: 400 });
   const formData = await request.formData();
+
+  // Ownership helpers: every question/answer id posted must belong to THIS
+  // course, otherwise an admin form could be replayed against another course.
+  const questionInCourse = async (id: string) =>
+    !!id && (await prisma.question.count({ where: { id, quiz: { module: { courseId } } } })) > 0;
+  const answerInCourse = async (id: string) =>
+    !!id && (await prisma.answer.count({ where: { id, question: { quiz: { module: { courseId } } } } })) > 0;
   const intent = formData.get("intent") as string;
 
   // ── Basics ────────────────────────────────────────────────────────────────
@@ -212,8 +231,14 @@ export async function action({ request, params }: ActionFunctionArgs) {
     const difficulty = (formData.get("difficulty") as string) || null;
     const isQA = formData.get("isQA") === "true";
     const isPublicCourse = formData.get("isPublicCourse") === "true";
-    const contentType = (formData.get("contentType") as string) || "STORYLINE";
-    const courseType = (formData.get("courseType") as string) || "FREE";
+    const contentTypeRaw = (formData.get("contentType") as string) || "STORYLINE";
+    const courseTypeRaw = (formData.get("courseType") as string) || "FREE";
+    if (contentTypeRaw !== "STORYLINE" && contentTypeRaw !== "VIDEO")
+      return data({ error: "Invalid content type." }, { status: 400 });
+    if (courseTypeRaw !== "FREE" && courseTypeRaw !== "PAID")
+      return data({ error: "Invalid course type." }, { status: 400 });
+    const contentType = contentTypeRaw;
+    const courseType = courseTypeRaw;
     const priceRaw = formData.get("price") as string;
     const price = priceRaw ? parseFloat(priceRaw) : null;
     const shopifyProductId = (formData.get("shopifyProductId") as string)?.trim() || null;
@@ -221,8 +246,11 @@ export async function action({ request, params }: ActionFunctionArgs) {
     const videoUrl = (formData.get("videoUrl") as string)?.trim() || null;
     const introVideoUrl = (formData.get("introVideoUrl") as string)?.trim() || null;
     const thumbnailUrl = (formData.get("thumbnailUrl") as string)?.trim() || null;
-    const statusVal = formData.get("status") as string;
-    const status = statusVal || "DRAFT";
+    // Status is optional here: only "DRAFT"/"PUBLISHED" are accepted, anything
+    // else leaves the current value untouched (COALESCE below).
+    const statusVal = formData.get("status");
+    const status =
+      statusVal === "DRAFT" || statusVal === "PUBLISHED" ? statusVal : null;
 
     if (!title) return data({ error: "Title is required." }, { status: 400 });
     const finalPrice = courseType === "PAID" ? price : null;
@@ -245,7 +273,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
         "videoUrl" = ${videoUrl},
         "introVideoUrl" = ${introVideoUrl},
         "thumbnailUrl" = ${thumbnailUrl},
-        status = ${status}::"CourseStatus",
+        status = COALESCE(${status}::"CourseStatus", status),
         "isPublic" = ${isPublic},
         "updatedAt" = NOW()
       WHERE id = ${courseId}
@@ -271,13 +299,16 @@ export async function action({ request, params }: ActionFunctionArgs) {
     return data({ success: true });
   }
 
-  // ── Status toggle ─────────────────────────────────────────────────────────
-  if (intent === "toggle_status") {
-    const current = formData.get("current") as string;
-    const newStatus = current === "PUBLISHED" ? "DRAFT" : "PUBLISHED";
+  // ── Status ───────────────────────────────────────────────────────────────
+  // Explicit target status — never "flip whatever the client says is current",
+  // which let a stale form publish a draft (or un-publish a live course).
+  if (intent === "set_status") {
+    const status = formData.get("status");
+    if (status !== "DRAFT" && status !== "PUBLISHED")
+      return data({ error: "Invalid status." }, { status: 400 });
     await prisma.course.update({
       where: { id: courseId },
-      data: { status: newStatus as any },
+      data: { status },
     });
     return data({ success: true });
   }
@@ -301,7 +332,9 @@ export async function action({ request, params }: ActionFunctionArgs) {
 
   if (intent === "delete_module") {
     const id = formData.get("id") as string;
-    await prisma.module.deleteMany({ where: { id } });
+    const r = await prisma.module.deleteMany({ where: { id, courseId } });
+    if (r.count === 0) return data({ error: "Module not found." }, { status: 404 });
+    await recomputeCourseProgressForAllUsers(courseId);
     return data({ success: true });
   }
 
@@ -325,65 +358,130 @@ export async function action({ request, params }: ActionFunctionArgs) {
     if (!title) return data({ error: "Lesson title is required." }, { status: 400 });
 
     if (intent === "create_lesson") {
+      const mod = await prisma.module.findFirst({ where: { id: moduleId, courseId }, select: { id: true } });
+      if (!mod) return data({ error: "Module not found." }, { status: 400 });
       const count = await prisma.lesson.count({ where: { moduleId } });
       await prisma.lesson.create({
         data: { moduleId, title, lessonType: lessonType as any, videoUrl, iframeEmbed, embedUrl, resourceUrl, content, thumbnailUrl, duration, order: count },
       });
+      await normalizeModuleOrder(moduleId);
+      // A new lesson changes every learner's denominator.
+      await recomputeCourseProgressForAllUsers(courseId);
     } else {
-      await prisma.lesson.update({
-        where: { id: lessonId },
+      const r = await prisma.lesson.updateMany({
+        where: { id: lessonId, module: { courseId } },
         data: { title, lessonType: lessonType as any, videoUrl, iframeEmbed, embedUrl, resourceUrl, content, thumbnailUrl, duration },
       });
+      if (r.count === 0) return data({ error: "Lesson not found." }, { status: 404 });
     }
     return data({ success: true });
   }
 
   if (intent === "delete_lesson") {
     const id = formData.get("id") as string;
-    await prisma.lesson.deleteMany({ where: { id } });
+    const lesson = await prisma.lesson.findFirst({ where: { id, module: { courseId } }, select: { moduleId: true } });
+    if (!lesson) return data({ error: "Lesson not found." }, { status: 404 });
+    await prisma.lesson.delete({ where: { id } });
+    await normalizeModuleOrder(lesson.moduleId);
+    await recomputeCourseProgressForAllUsers(courseId);
     return data({ success: true });
   }
 
-  if (intent === "reorder_lessons") {
-    const itemsJson = formData.get("items") as string;
-    const items: { id: string; order: number }[] = JSON.parse(itemsJson);
-    await Promise.all(
-      items.map(({ id, order }) => prisma.lesson.update({ where: { id }, data: { order } }))
-    );
-    return data({ success: true });
-  }
+  if (intent === "reorder_lessons" || intent === "reorder_modules") {
+    let items: Array<{ id: string; order: number }>;
+    try {
+      items = JSON.parse(String(formData.get("items") ?? ""));
+    } catch {
+      return data({ error: "Bad reorder payload." }, { status: 400 });
+    }
+    if (
+      !Array.isArray(items) ||
+      !items.every((i) => i && typeof i.id === "string" && Number.isInteger(i.order) && i.order >= 0)
+    )
+      return data({ error: "Bad reorder payload." }, { status: 400 });
 
-  if (intent === "reorder_modules") {
-    const itemsJson = formData.get("items") as string;
-    const items: { id: string; order: number }[] = JSON.parse(itemsJson);
-    await Promise.all(
-      items.map(({ id, order }) => prisma.module.update({ where: { id }, data: { order } }))
+    if (intent === "reorder_modules") {
+      await prisma.$transaction(
+        items.map(({ id, order }) => prisma.module.updateMany({ where: { id, courseId }, data: { order } })),
+      );
+      return data({ success: true });
+    }
+
+    // Only lessons of this course; then re-pack the touched modules so quizzes
+    // keep following their lessons.
+    await prisma.$transaction(
+      items.map(({ id, order }) =>
+        prisma.lesson.updateMany({ where: { id, module: { courseId } }, data: { order } }),
+      ),
     );
+    const touched = await prisma.lesson.findMany({
+      where: { id: { in: items.map((i) => i.id) }, module: { courseId } },
+      select: { moduleId: true },
+      distinct: ["moduleId"],
+    });
+    for (const { moduleId } of touched) await normalizeModuleOrder(moduleId);
     return data({ success: true });
   }
 
   // ── Quizzes ───────────────────────────────────────────────────────────────
   if (intent === "create_quiz" || intent === "update_quiz") {
+    const isCreate = intent === "create_quiz";
     const moduleId = formData.get("moduleId") as string;
     const quizId = formData.get("quizId") as string;
-    const title = (formData.get("title") as string)?.trim() || "Quiz";
-    const summary = (formData.get("summary") as string)?.trim() || null;
-    const timeLimit = parseInt(formData.get("timeLimit") as string || "0", 10) || 0;
-    const hideQuizTime = formData.get("hideQuizTime") === "true";
-    const feedbackMode = (formData.get("feedbackMode") as string) || "RETRY";
-    const attemptsAllowed = parseInt(formData.get("attemptsAllowed") as string || "10", 10) || 10;
-    const passingGrade = parseInt(formData.get("passingGrade") as string || "80", 10) || 80;
-    const maxQuestionsAllowed = parseInt(formData.get("maxQuestionsAllowed") as string || "10", 10) || 10;
-    const autoStart = formData.get("autoStart") === "true";
-    const questionLayout = (formData.get("questionLayout") as string) || "SINGLE";
-    const questionOrder = (formData.get("questionOrder") as string) || "RANDOM";
-    const hideQuestionNumber = formData.get("hideQuestionNumber") === "true";
-    const shortAnswerCharLimit = parseInt(formData.get("shortAnswerCharLimit") as string || "200", 10) || 200;
-    const essayCharLimit = parseInt(formData.get("essayCharLimit") as string || "500", 10) || 500;
 
-    if (intent === "create_quiz") {
+    // Field readers. On CREATE a missing field gets its default; on UPDATE a
+    // missing field yields null so COALESCE keeps the stored value — the
+    // Details tab (title/summary) and Settings tab post different subsets and
+    // must not wipe each other. Out-of-range values are rejected, and a valid
+    // 0 is no longer swallowed by `|| default`.
+    const invalid: string[] = [];
+    const intField = (name: string, def: number, min: number, max: number): number | null => {
+      if (!formData.has(name)) return isCreate ? def : null;
+      const raw = String(formData.get(name) ?? "").trim();
+      if (raw === "") return isCreate ? def : null;
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < min || n > max) { invalid.push(`${name} must be ${min}–${max}`); return null; }
+      return n;
+    };
+    const boolField = (name: string): boolean | null =>
+      formData.has(name) ? formData.get(name) === "true" : isCreate ? false : null;
+    const enumField = (name: string, allowed: readonly string[], def: string): string | null => {
+      if (!formData.has(name)) return isCreate ? def : null;
+      const v = String(formData.get(name));
+      if (!allowed.includes(v)) { invalid.push(`${name} is invalid`); return null; }
+      return v;
+    };
+
+    const title = formData.has("title")
+      ? (String(formData.get("title")).trim() || "Quiz")
+      : isCreate ? "Quiz" : null;
+    const summary = formData.has("summary")
+      ? (String(formData.get("summary")).trim() || null)
+      : null; // absent on update → keep (COALESCE); absent on create → NULL
+    const timeLimit = intField("timeLimit", 0, 0, 24 * 60);
+    const hideQuizTime = boolField("hideQuizTime");
+    const feedbackMode = enumField("feedbackMode", ["RETRY", "REVEAL", "DEFAULT"], "RETRY");
+    const attemptsAllowed = intField("attemptsAllowed", 10, 0, 1000); // 0 = unlimited
+    const passingGrade = intField("passingGrade", 80, 0, 100);
+    const maxQuestionsAllowed = intField("maxQuestionsAllowed", 10, 0, 1000);
+    const autoStart = boolField("autoStart");
+    const questionLayout = enumField("questionLayout", ["SINGLE", "ALL"], "SINGLE");
+    const questionOrder = enumField("questionOrder", ["RANDOM", "SEQUENTIAL"], "RANDOM");
+    const hideQuestionNumber = boolField("hideQuestionNumber");
+    const shortAnswerCharLimit = intField("shortAnswerCharLimit", 200, 1, 10000);
+    const essayCharLimit = intField("essayCharLimit", 500, 1, 50000);
+
+    if (invalid.length)
+      return data({ error: invalid.join("; ") }, { status: 400 });
+
+    if (isCreate) {
+      if (!moduleId) return data({ error: "Module is required." }, { status: 400 });
+      const mod = await prisma.module.findFirst({ where: { id: moduleId, courseId }, select: { id: true } });
+      if (!mod) return data({ error: "Module not found." }, { status: 400 });
+      // Provisional order: after every lesson AND quiz in the module. normalizeModuleOrder re-packs it.
       const [{ count }] = await prisma.$queryRaw<Array<{ count: bigint }>>`
-        SELECT COUNT(*) as count FROM "Quiz" WHERE "moduleId" = ${moduleId}
+        SELECT (SELECT COUNT(*) FROM "Lesson" WHERE "moduleId" = ${moduleId})
+             + (SELECT COUNT(*) FROM "Quiz"   WHERE "moduleId" = ${moduleId}) AS count
       `;
       const newId = randomUUID();
       await prisma.$executeRaw`
@@ -396,26 +494,42 @@ export async function action({ request, params }: ActionFunctionArgs) {
           ${maxQuestionsAllowed}, ${autoStart}, ${questionLayout}, ${questionOrder},
           ${hideQuestionNumber}, ${shortAnswerCharLimit}, ${essayCharLimit}, NOW(), NOW())
       `;
+      await normalizeModuleOrder(moduleId);
+      await recomputeCourseProgressForAllUsers(courseId);
     } else {
-      await prisma.$executeRaw`
+      if (!quizId) return data({ error: "Quiz id is required." }, { status: 400 });
+      const summaryProvided = formData.has("summary");
+      const n = await prisma.$executeRaw`
         UPDATE "Quiz" SET
-          title = ${title}, summary = ${summary}, "timeLimit" = ${timeLimit},
-          "hideQuizTime" = ${hideQuizTime}, "feedbackMode" = ${feedbackMode}::"FeedbackMode",
-          "attemptsAllowed" = ${attemptsAllowed}, "passingGrade" = ${passingGrade},
-          "maxQuestionsAllowed" = ${maxQuestionsAllowed}, "autoStart" = ${autoStart},
-          "questionLayout" = ${questionLayout}, "questionOrder" = ${questionOrder},
-          "hideQuestionNumber" = ${hideQuestionNumber},
-          "shortAnswerCharLimit" = ${shortAnswerCharLimit},
-          "essayCharLimit" = ${essayCharLimit}, "updatedAt" = NOW()
-        WHERE id = ${quizId}
+          title = COALESCE(${title}::text, title),
+          summary = CASE WHEN ${summaryProvided}::boolean THEN ${summary}::text ELSE summary END,
+          "timeLimit" = COALESCE(${timeLimit}::int, "timeLimit"),
+          "hideQuizTime" = COALESCE(${hideQuizTime}::boolean, "hideQuizTime"),
+          "feedbackMode" = COALESCE(${feedbackMode}::"FeedbackMode", "feedbackMode"),
+          "attemptsAllowed" = COALESCE(${attemptsAllowed}::int, "attemptsAllowed"),
+          "passingGrade" = COALESCE(${passingGrade}::int, "passingGrade"),
+          "maxQuestionsAllowed" = COALESCE(${maxQuestionsAllowed}::int, "maxQuestionsAllowed"),
+          "autoStart" = COALESCE(${autoStart}::boolean, "autoStart"),
+          "questionLayout" = COALESCE(${questionLayout}::text, "questionLayout"),
+          "questionOrder" = COALESCE(${questionOrder}::text, "questionOrder"),
+          "hideQuestionNumber" = COALESCE(${hideQuestionNumber}::boolean, "hideQuestionNumber"),
+          "shortAnswerCharLimit" = COALESCE(${shortAnswerCharLimit}::int, "shortAnswerCharLimit"),
+          "essayCharLimit" = COALESCE(${essayCharLimit}::int, "essayCharLimit"),
+          "updatedAt" = NOW()
+        WHERE id = ${quizId} AND "moduleId" IN (SELECT id FROM "Module" WHERE "courseId" = ${courseId})
       `;
+      if (n === 0) return data({ error: "Quiz not found." }, { status: 404 });
     }
     return data({ success: true });
   }
 
   if (intent === "delete_quiz") {
     const id = formData.get("id") as string;
+    const quiz = await prisma.quiz.findFirst({ where: { id, module: { courseId } }, select: { moduleId: true } });
+    if (!quiz) return data({ error: "Quiz not found." }, { status: 404 });
     await prisma.$executeRaw`DELETE FROM "Quiz" WHERE id = ${id}`;
+    await normalizeModuleOrder(quiz.moduleId);
+    await recomputeCourseProgressForAllUsers(courseId);
     return data({ success: true });
   }
 
@@ -423,39 +537,52 @@ export async function action({ request, params }: ActionFunctionArgs) {
   if (intent === "create_question") {
     const quizId = formData.get("quizId") as string;
     const questionType = (formData.get("questionType") as string) || "MULTIPLE_CHOICE";
+    if (!isQuestionType(questionType)) return data({ error: "Invalid question type." }, { status: 400 });
     const title = (formData.get("title") as string)?.trim() || "New Question";
+    const quizOk = quizId && (await prisma.quiz.count({ where: { id: quizId, module: { courseId } } })) > 0;
+    if (!quizOk) return data({ error: "Quiz not found." }, { status: 404 });
     const [{ count }] = await prisma.$queryRaw<Array<{ count: bigint }>>`
       SELECT COUNT(*) as count FROM "Question" WHERE "quizId" = ${quizId}
     `;
     const newId = randomUUID();
-    await prisma.$executeRaw`
-      INSERT INTO "Question" (id, "quizId", "questionType", title, "order", points, "answerRequired", "allowMultiple", "randomizeAnswers", "createdAt")
-      VALUES (${newId}, ${quizId}, ${questionType}, ${title}, ${Number(count)}, 1, false, false, false, NOW())
-    `;
-    // Auto-seed True / False answers for TRUE_FALSE questions
-    if (questionType === "TRUE_FALSE") {
-      // Defensive delete first to prevent duplicates on any edge-case double submit
-      await prisma.$executeRaw`DELETE FROM "Answer" WHERE "questionId" = ${newId}`;
-      const trueId = randomUUID();
-      const falseId = randomUUID();
-      await prisma.$executeRaw`
-        INSERT INTO "Answer" (id, "questionId", text, "isCorrect", "isOptional")
-        VALUES (${trueId}, ${newId}, 'True', true, false),
-               (${falseId}, ${newId}, 'False', false, false)
+    // Question + its seeded True/False answers are one unit of work.
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        INSERT INTO "Question" (id, "quizId", "questionType", title, "order", points, "answerRequired", "allowMultiple", "randomizeAnswers", "createdAt")
+        VALUES (${newId}, ${quizId}, ${questionType}, ${title}, ${Number(count)}, 1, false, false, false, NOW())
       `;
-    }
+      if (questionType === "TRUE_FALSE") {
+        await tx.$executeRaw`
+          INSERT INTO "Answer" (id, "questionId", text, "isCorrect", "isOptional", "order")
+          VALUES (${randomUUID()}, ${newId}, 'True', true, false, 0),
+                 (${randomUUID()}, ${newId}, 'False', false, false, 1)
+        `;
+      }
+    });
     return data({ success: true });
   }
 
   if (intent === "update_question") {
     const id = formData.get("id") as string;
+    if (!(await questionInCourse(id))) return data({ error: "Question not found." }, { status: 404 });
     const title = (formData.get("title") as string)?.trim() || "";
     const description = (formData.get("description") as string)?.trim() || null;
     const questionType = (formData.get("questionType") as string) || "MULTIPLE_CHOICE";
-    const points = Math.max(0, parseInt(formData.get("points") as string || "1", 10) || 1);
+    if (!isQuestionType(questionType)) return data({ error: "Invalid question type." }, { status: 400 });
+    const parsedPoints = parseInt(String(formData.get("points") ?? ""), 10);
+    const points = Number.isInteger(parsedPoints) ? Math.min(1000, Math.max(0, parsedPoints)) : 1;
     const answerRequired = formData.get("answerRequired") === "true";
     const allowMultiple = formData.get("allowMultiple") === "true";
     const randomizeAnswers = formData.get("randomizeAnswers") === "true";
+    // Switching "Multiple Correct Answer" off must leave a single correct
+    // option, otherwise the student side would accept any of the leftovers.
+    if (questionType === "MULTIPLE_CHOICE" && !allowMultiple) {
+      await prisma.$executeRaw`
+        UPDATE "Answer" SET "isCorrect" = false
+        WHERE "questionId" = ${id} AND "isCorrect" = true
+          AND id <> (SELECT id FROM "Answer" WHERE "questionId" = ${id} AND "isCorrect" = true ORDER BY "order", id LIMIT 1)
+      `;
+    }
     await prisma.$executeRaw`
       UPDATE "Question" SET
         title = ${title},
@@ -472,6 +599,8 @@ export async function action({ request, params }: ActionFunctionArgs) {
 
   if (intent === "delete_question") {
     const id = formData.get("id") as string;
+    if (!(await questionInCourse(id))) return data({ error: "Question not found." }, { status: 404 });
+    // QuizAttemptAnswer.questionId is SET NULL by the FK, so past attempts keep their score.
     await prisma.$executeRaw`DELETE FROM "Question" WHERE id = ${id}`;
     return data({ success: true });
   }
@@ -479,21 +608,25 @@ export async function action({ request, params }: ActionFunctionArgs) {
   // ── Answers ───────────────────────────────────────────────────────────────
   if (intent === "create_answer") {
     const questionId = formData.get("questionId") as string;
+    if (!(await questionInCourse(questionId))) return data({ error: "Question not found." }, { status: 404 });
     const text = (formData.get("text") as string)?.trim() || "Option";
     const matchText = (formData.get("matchText") as string)?.trim() || null;
     const videoUrl = (formData.get("videoUrl") as string)?.trim() || null;
     const imageUrl = (formData.get("imageUrl") as string)?.trim() || null;
     const isOptional = formData.get("isOptional") === "true";
     const newId = randomUUID();
+    // Answers are entered in their intended order; ORDERING questions grade against it.
     await prisma.$executeRaw`
-      INSERT INTO "Answer" (id, "questionId", text, "isCorrect", "videoUrl", "imageUrl", "isOptional", "matchText")
-      VALUES (${newId}, ${questionId}, ${text}, false, ${videoUrl}, ${imageUrl}, ${isOptional}, ${matchText})
+      INSERT INTO "Answer" (id, "questionId", text, "isCorrect", "videoUrl", "imageUrl", "isOptional", "matchText", "order")
+      VALUES (${newId}, ${questionId}, ${text}, false, ${videoUrl}, ${imageUrl}, ${isOptional}, ${matchText},
+        (SELECT COALESCE(MAX("order"), -1) + 1 FROM "Answer" WHERE "questionId" = ${questionId}))
     `;
     return data({ success: true });
   }
 
   if (intent === "update_answer") {
     const id = formData.get("id") as string;
+    if (!(await answerInCourse(id))) return data({ error: "Answer not found." }, { status: 404 });
     const text = (formData.get("text") as string)?.trim() || "";
     const matchText = (formData.get("matchText") as string)?.trim() || null;
     const videoUrl = (formData.get("videoUrl") as string)?.trim() || null;
@@ -547,19 +680,23 @@ export async function action({ request, params }: ActionFunctionArgs) {
 
   if (intent === "toggle_answer_correct") {
     const id = formData.get("id") as string;
+    if (!(await answerInCourse(id))) return data({ error: "Answer not found." }, { status: 404 });
     const current = formData.get("current") === "true";
 
-    // For single-choice types (TRUE_FALSE), enforce only one correct answer
+    // Single-choice questions (everything except FILL_BLANK and a
+    // MULTIPLE_CHOICE with "Multiple Correct Answer" on) keep exactly one
+    // correct answer - marking a second one clears the first.
     if (!current) {
       const qInfo = await prisma.$queryRaw<any[]>`
-        SELECT q."questionType", a."questionId"
+        SELECT q."questionType", q."allowMultiple", a."questionId"
         FROM "Answer" a
         JOIN "Question" q ON q.id = a."questionId"
         WHERE a.id = ${id}
       `;
       const qType = qInfo[0]?.questionType;
       const questionId = qInfo[0]?.questionId;
-      if ((qType === "TRUE_FALSE") && questionId) {
+      const multi = qType === "FILL_BLANK" || (qType === "MULTIPLE_CHOICE" && !!qInfo[0]?.allowMultiple);
+      if (!multi && questionId) {
         await prisma.$executeRaw`
           UPDATE "Answer" SET "isCorrect" = false WHERE "questionId" = ${questionId}
         `;
@@ -572,8 +709,32 @@ export async function action({ request, params }: ActionFunctionArgs) {
     return data({ success: true });
   }
 
+  // Move an answer one step up/down; renumbers the whole question so legacy
+  // rows (all order = 0) become a proper 0..n-1 sequence and gradable.
+  if (intent === "move_answer") {
+    const id = formData.get("id") as string;
+    const dir = formData.get("direction") === "up" ? -1 : 1;
+    if (!(await answerInCourse(id))) return data({ error: "Answer not found." }, { status: 404 });
+    const me = await prisma.answer.findUnique({ where: { id }, select: { questionId: true } });
+    if (!me) return data({ error: "Answer not found." }, { status: 404 });
+    const list = await prisma.answer.findMany({
+      where: { questionId: me.questionId },
+      select: { id: true },
+      orderBy: [{ order: "asc" }, { id: "asc" }],
+    });
+    const idx = list.findIndex((a) => a.id === id);
+    const to = idx + dir;
+    if (idx === -1) return data({ error: "Answer not found." }, { status: 404 });
+    if (to >= 0 && to < list.length) [list[idx], list[to]] = [list[to], list[idx]];
+    await prisma.$transaction(
+      list.map((a, i) => prisma.answer.update({ where: { id: a.id }, data: { order: i } })),
+    );
+    return data({ success: true });
+  }
+
   if (intent === "delete_answer") {
     const id = formData.get("id") as string;
+    if (!(await answerInCourse(id))) return data({ error: "Answer not found." }, { status: 404 });
     await prisma.$executeRaw`DELETE FROM "Answer" WHERE id = ${id}`;
     return data({ success: true });
   }
@@ -614,6 +775,13 @@ function LessonModal({
 }) {
   const [lessonType, setLessonType] = useState(lesson?.lessonType || "VIDEO");
   const dur = secondsToHMS(lesson?.duration);
+  // Own fetcher: the shared page fetcher's stale `data` would close this
+  // modal (or hide its error) based on some earlier, unrelated submission.
+  const lessonFetcher = useFetcher<{ success?: boolean; error?: string }>();
+  useEffect(() => {
+    if (lessonFetcher.state === "idle" && lessonFetcher.data?.success) onClose();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lessonFetcher.state, lessonFetcher.data]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
@@ -629,11 +797,15 @@ function LessonModal({
           </button>
         </div>
 
-        <fetcher.Form
+        <lessonFetcher.Form
           method="post"
           className="flex flex-1 flex-col overflow-hidden"
-          onSubmit={() => setTimeout(onClose, 150)}
         >
+          {lessonFetcher.data?.error && (
+            <div className="mx-6 mt-4 flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5">
+              <AlertCircle size={14} className="shrink-0" /> {lessonFetcher.data.error}
+            </div>
+          )}
           <input type="hidden" name="intent" value={lesson ? "update_lesson" : "create_lesson"} />
           <input type="hidden" name="moduleId" value={moduleId} />
           {lesson && <input type="hidden" name="lessonId" value={lesson.id} />}
@@ -819,13 +991,13 @@ function LessonModal({
             </button>
             <button
               type="submit"
-              disabled={fetcher.state === "submitting"}
+              disabled={lessonFetcher.state !== "idle"}
               className="px-5 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
             >
-              {fetcher.state === "submitting" ? "Saving…" : lesson ? "Update Lesson" : "Add Lesson"}
+              {lessonFetcher.state !== "idle" ? "Saving…" : lesson ? "Update Lesson" : "Add Lesson"}
             </button>
           </div>
-        </fetcher.Form>
+        </lessonFetcher.Form>
       </div>
     </div>
   );
@@ -954,6 +1126,7 @@ function AnswerRow({ ans, questionType, questionId }: { ans: any; questionType: 
   const toggleFetcher = useFetcher();
   const deleteFetcher = useFetcher();
   const editFetcher   = useFetcher();
+  const moveFetcher   = useFetcher();
 
   // Optimistic correct state
   const pendingCorrect = toggleFetcher.state !== "idle"
@@ -989,6 +1162,15 @@ function AnswerRow({ ans, questionType, questionId }: { ans: any; questionType: 
         {ans.isOptional && <span className="text-[10px] text-gray-400 italic shrink-0">optional</span>}
         {ans.videoUrl  && <span className="text-[10px] text-blue-500 shrink-0">▶ video</span>}
         {ans.imageUrl  && <span className="text-[10px] text-green-500 shrink-0">🖼</span>}
+
+        {questionType === "ORDERING" && (
+          <moveFetcher.Form method="post" className="flex items-center shrink-0">
+            <input type="hidden" name="intent" value="move_answer" />
+            <input type="hidden" name="id" value={ans.id} />
+            <button type="submit" name="direction" value="up" title="Move up" className="text-gray-400 hover:text-gray-700 p-0.5"><ChevronUp size={13} /></button>
+            <button type="submit" name="direction" value="down" title="Move down" className="text-gray-400 hover:text-gray-700 p-0.5"><ChevronDown size={13} /></button>
+          </moveFetcher.Form>
+        )}
 
         <button type="button" onClick={() => setExpanded(v => !v)} className="text-gray-400 hover:text-gray-600 p-0.5 shrink-0">
           {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
@@ -1059,9 +1241,15 @@ function AnswerRow({ ans, questionType, questionId }: { ans: any; questionType: 
 }
 
 function AddAnswerRow({ questionId, questionType }: { questionId: string; questionType: string }) {
-  const addFetcher = useFetcher();
+  const addFetcher = useFetcher<{ success?: boolean }>();
+  const formRef = useRef<HTMLFormElement>(null);
+  // Clear the inputs once the option is saved - otherwise a second click on
+  // "Add" re-submits the same text and creates a duplicate.
+  useEffect(() => {
+    if (addFetcher.state === "idle" && addFetcher.data?.success) formRef.current?.reset();
+  }, [addFetcher.state, addFetcher.data]);
   return (
-    <addFetcher.Form method="post" className="space-y-1.5 mt-1">
+    <addFetcher.Form ref={formRef} method="post" className="space-y-1.5 mt-1">
       <input type="hidden" name="intent" value="create_answer" />
       <input type="hidden" name="questionId" value={questionId} />
       <div className="flex gap-2">
@@ -1088,9 +1276,9 @@ function QuestionConditionsPanel({ question, fetcher }: { question: any; fetcher
   const [answerRequired, setAnswerRequired] = useState<boolean>(question.answerRequired ?? false);
   const [allowMultiple, setAllowMultiple] = useState<boolean>(question.allowMultiple ?? false);
   const [randomizeAnswers, setRandomizeAnswers] = useState<boolean>(question.randomizeAnswers ?? false);
-  const [points, setPoints] = useState<number>(question.points ?? 1);
+  const [points, setPoints] = useState<string>(String(question.points ?? 1));
 
-  function save(overrides?: Partial<{ answerRequired: boolean; allowMultiple: boolean; randomizeAnswers: boolean; points: number }>) {
+  function save(overrides?: Partial<{ answerRequired: boolean; allowMultiple: boolean; randomizeAnswers: boolean; points: string }>) {
     const vals = { answerRequired, allowMultiple, randomizeAnswers, points, ...overrides };
     const fd = new FormData();
     fd.append("intent", "update_question");
@@ -1098,7 +1286,7 @@ function QuestionConditionsPanel({ question, fetcher }: { question: any; fetcher
     fd.append("title", question.title ?? "");
     fd.append("description", question.description ?? "");
     fd.append("questionType", question.questionType);
-    fd.append("points", String(vals.points));
+    fd.append("points", String(Math.max(0, parseInt(String(vals.points), 10) || 0)));
     fd.append("answerRequired", String(vals.answerRequired));
     fd.append("allowMultiple", String(vals.allowMultiple));
     fd.append("randomizeAnswers", String(vals.randomizeAnswers));
@@ -1139,7 +1327,7 @@ function QuestionConditionsPanel({ question, fetcher }: { question: any; fetcher
           type="number"
           value={points}
           min={0}
-          onChange={(e) => setPoints(Number(e.target.value))}
+          onChange={(e) => setPoints(e.target.value)}
           onBlur={() => save()}
           className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm text-center focus:outline-none focus:border-blue-500"
         />
@@ -1165,14 +1353,24 @@ function QuizModal({
   const [selectedQuestion, setSelectedQuestion] = useState<any | null>(null);
   const [showTypePicker, setShowTypePicker] = useState(false);
   const [pendingClose, setPendingClose] = useState(false);
+  const [hideQuizTime, setHideQuizTime] = useState<boolean>(!!quiz?.hideQuizTime);
+  // Dedicated fetcher for the quiz Details/Settings forms so a stale success
+  // from some other submission can't satisfy the "close after save" guard.
+  const quizFetcher = useFetcher<{ success?: boolean; error?: string }>();
 
-  // Close modal only after a successful save (not on every click)
+  // Close modal only after THIS save succeeded
   useEffect(() => {
-    if (pendingClose && fetcher.state === "idle" && fetcher.data && "success" in fetcher.data) {
+    if (pendingClose && quizFetcher.state === "idle" && quizFetcher.data?.success) {
       setPendingClose(false);
       onClose();
     }
-  }, [fetcher.state, fetcher.data, pendingClose]);
+    if (pendingClose && quizFetcher.state === "idle" && quizFetcher.data?.error) {
+      setPendingClose(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quizFetcher.state, quizFetcher.data, pendingClose]);
+
+  const quizError = quizFetcher.state === "idle" ? quizFetcher.data?.error : undefined;
 
   // When selectedQuestion updates from fetcher reload, keep it in sync
   const questions: any[] = quiz?.questions ?? [];
@@ -1215,21 +1413,26 @@ function QuizModal({
           <div className="flex flex-1 overflow-hidden min-h-0">
             {/* Left: quiz title + question list */}
             <div className="w-72 shrink-0 border-r border-gray-100 flex flex-col min-h-0">
-              <fetcher.Form method="post" className="p-4 space-y-3 border-b border-gray-100 shrink-0">
+              <quizFetcher.Form method="post" className="p-4 space-y-3 border-b border-gray-100 shrink-0">
                 <input type="hidden" name="intent" value={quiz ? "update_quiz" : "create_quiz"} />
                 <input type="hidden" name="moduleId" value={moduleId} />
                 {quiz && <input type="hidden" name="quizId" value={quiz.id} />}
+                {quizError && (
+                  <div className="flex items-center gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                    <AlertCircle size={12} className="shrink-0" /> {quizError}
+                  </div>
+                )}
                 <textarea name="title" defaultValue={quiz?.title || ""} placeholder="Add quiz title" rows={2}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 resize-none" />
                 <textarea name="summary" defaultValue={quiz?.summary || ""} placeholder="Add a summary" rows={2}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 resize-none" />
                 <div className="flex gap-2">
                   <button type="button" onClick={onClose} className="flex-1 px-3 py-1.5 text-xs text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50">Cancel</button>
-                  <button type="submit" disabled={fetcher.state === "submitting"}
+                  <button type="submit" disabled={quizFetcher.state !== "idle"}
                     className="flex-1 px-3 py-1.5 text-xs text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
-                    onClick={() => setPendingClose(true)}>Ok</button>
+                    onClick={() => setPendingClose(true)}>{quizFetcher.state !== "idle" ? "Saving…" : "Ok"}</button>
                 </div>
-              </fetcher.Form>
+              </quizFetcher.Form>
 
               {/* Questions header + type picker — outside scroll area so dropdown isn't clipped */}
               <div className="px-3 pt-3 pb-1 shrink-0 relative">
@@ -1360,10 +1563,23 @@ function QuizModal({
                           </span>
                         </div>
                         <div className="space-y-2">
+                          {syncedQuestion.questionType === "ORDERING" && (
+                            (() => {
+                              const orders = (syncedQuestion.answers || []).map((a: any) => Number(a.order));
+                              const gradable = orders.length > 1 && new Set(orders).size === orders.length;
+                              return gradable ? (
+                                <p className="text-[11px] text-gray-500">Answers are shown in the correct order. Use the arrows to change it.</p>
+                              ) : (
+                                <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                                  Correct order not set yet - use the arrows to arrange the answers. Until then this question goes to manual review.
+                                </p>
+                              );
+                            })()
+                          )}
                           {(syncedQuestion.answers || []).map((ans: any) => (
-                            <AnswerRow key={ans.id} ans={ans} questionType={syncedQuestion.questionType} fetcher={fetcher} questionId={syncedQuestion.id} />
+                            <AnswerRow key={ans.id} ans={ans} questionType={syncedQuestion.questionType} questionId={syncedQuestion.id} />
                           ))}
-                          <AddAnswerRow questionId={syncedQuestion.id} questionType={syncedQuestion.questionType} fetcher={fetcher} />
+                          <AddAnswerRow questionId={syncedQuestion.id} questionType={syncedQuestion.questionType} />
                         </div>
                       </div>
                     )}
@@ -1404,7 +1620,7 @@ function QuizModal({
                     </div>
 
                     {/* Conditions */}
-                    <QuestionConditionsPanel question={syncedQuestion} fetcher={fetcher} />
+                    <QuestionConditionsPanel key={syncedQuestion.id} question={syncedQuestion} fetcher={fetcher} />
                   </div>
                 </>
               ) : (
@@ -1422,11 +1638,15 @@ function QuizModal({
 
         {activeTab === "settings" && (
           <div className="flex-1 overflow-y-auto min-h-0">
-            <fetcher.Form method="post" className="p-6 space-y-6" onSubmit={() => setPendingClose(true)}>
+            <quizFetcher.Form method="post" className="p-6 space-y-6" onSubmit={() => setPendingClose(true)}>
+              {quizError && (
+                <div className="flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5">
+                  <AlertCircle size={14} className="shrink-0" /> {quizError}
+                </div>
+              )}
               <input type="hidden" name="intent" value={quiz ? "update_quiz" : "create_quiz"} />
               <input type="hidden" name="moduleId" value={moduleId} />
               {quiz && <input type="hidden" name="quizId" value={quiz.id} />}
-              <input type="hidden" name="title" value={quiz?.title || "Quiz"} />
 
               {/* Basic Settings */}
               <div className="bg-gray-50 rounded-xl border border-gray-200 overflow-hidden">
@@ -1447,8 +1667,16 @@ function QuizModal({
                     </div>
                     <div className="flex items-center justify-between pt-6">
                       <label className="text-sm font-medium text-gray-700">Hide Quiz Time</label>
-                      <input type="hidden" name="hideQuizTime" value={quiz?.hideQuizTime ? "true" : "false"} />
-                      <div className="w-10 h-5 bg-gray-200 rounded-full" />
+                      <input type="hidden" name="hideQuizTime" value={hideQuizTime ? "true" : "false"} />
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={hideQuizTime}
+                        onClick={() => setHideQuizTime((v) => !v)}
+                        className={`relative w-10 h-5 rounded-full transition-colors ${hideQuizTime ? "bg-blue-600" : "bg-gray-200"}`}
+                      >
+                        <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${hideQuizTime ? "translate-x-5" : "translate-x-0.5"}`} />
+                      </button>
                     </div>
                   </div>
 
@@ -1514,11 +1742,11 @@ function QuizModal({
               </div>
 
               <div className="flex justify-end">
-                <button type="submit" disabled={fetcher.state === "submitting"} className="px-6 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60">
-                  {fetcher.state === "submitting" ? "Saving…" : "Save Settings"}
+                <button type="submit" disabled={quizFetcher.state !== "idle"} className="px-6 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60">
+                  {quizFetcher.state !== "idle" ? "Saving…" : "Save Settings"}
                 </button>
               </div>
-            </fetcher.Form>
+            </quizFetcher.Form>
           </div>
         )}
       </div>
@@ -1691,7 +1919,7 @@ function BasicsStep({ course, fetcher }: { course: any; fetcher: any }) {
         {/* Visibility */}
         <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
           <label className="block text-sm font-semibold text-gray-900">Visibility</label>
-          <select name="status" defaultValue={course.status} className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+          <select key={course.status} name="status" defaultValue={course.status} className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
             <option value="PUBLISHED">Public</option>
             <option value="DRAFT">Draft</option>
           </select>
@@ -1803,26 +2031,24 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
     const draggedId = dragLesson.current.id;
     dragLesson.current = null;
 
-    setLocalModules((prev) =>
-      prev.map((m) => {
-        if (m.id !== moduleId) return m;
-        const lessons = [...m.lessons];
-        const fromIdx = lessons.findIndex((l: any) => l.id === draggedId);
-        const toIdx = lessons.findIndex((l: any) => l.id === targetLessonId);
-        if (fromIdx === -1 || toIdx === -1) return m;
-        const [moved] = lessons.splice(fromIdx, 1);
-        lessons.splice(toIdx, 0, moved);
-        const reordered = lessons.map((l: any, i: number) => ({ ...l, order: i }));
+    // Compute outside setState - updaters must be pure (StrictMode runs them
+    // twice, which used to fire two reorder requests).
+    const m = localModules.find((x) => x.id === moduleId);
+    if (!m) return;
+    const lessons = [...m.lessons];
+    const fromIdx = lessons.findIndex((l: any) => l.id === draggedId);
+    const toIdx = lessons.findIndex((l: any) => l.id === targetLessonId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    const [moved] = lessons.splice(fromIdx, 1);
+    lessons.splice(toIdx, 0, moved);
+    const reordered = lessons.map((l: any, i: number) => ({ ...l, order: i }));
 
-        // Submit new order to server
-        const fd = new FormData();
-        fd.append("intent", "reorder_lessons");
-        fd.append("items", JSON.stringify(reordered.map((l: any) => ({ id: l.id, order: l.order }))));
-        fetcher.submit(fd, { method: "post" });
+    setLocalModules((prev) => prev.map((x) => (x.id === moduleId ? { ...x, lessons: reordered } : x)));
 
-        return { ...m, lessons: reordered };
-      })
-    );
+    const fd = new FormData();
+    fd.append("intent", "reorder_lessons");
+    fd.append("items", JSON.stringify(reordered.map((l: any) => ({ id: l.id, order: l.order }))));
+    fetcher.submit(fd, { method: "post" });
   };
 
   const handleLessonDragEnd = () => {
@@ -1849,22 +2075,20 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
     const draggedId = dragModule.current;
     dragModule.current = null;
 
-    setLocalModules((prev) => {
-      const modules = [...prev];
-      const fromIdx = modules.findIndex((m) => m.id === draggedId);
-      const toIdx = modules.findIndex((m) => m.id === targetModuleId);
-      if (fromIdx === -1 || toIdx === -1) return prev;
-      const [moved] = modules.splice(fromIdx, 1);
-      modules.splice(toIdx, 0, moved);
-      const reordered = modules.map((m, i) => ({ ...m, order: i }));
+    const modules = [...localModules];
+    const fromIdx = modules.findIndex((m) => m.id === draggedId);
+    const toIdx = modules.findIndex((m) => m.id === targetModuleId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    const [moved] = modules.splice(fromIdx, 1);
+    modules.splice(toIdx, 0, moved);
+    const reordered = modules.map((m, i) => ({ ...m, order: i }));
 
-      const fd = new FormData();
-      fd.append("intent", "reorder_modules");
-      fd.append("items", JSON.stringify(reordered.map((m) => ({ id: m.id, order: m.order }))));
-      fetcher.submit(fd, { method: "post" });
+    const fd = new FormData();
+    fd.append("intent", "reorder_modules");
+    fd.append("items", JSON.stringify(reordered.map((m) => ({ id: m.id, order: m.order }))));
+    fetcher.submit(fd, { method: "post" });
 
-      return reordered;
-    });
+    setLocalModules(reordered);
   };
 
   const handleModuleDragEnd = () => {
@@ -1972,10 +2196,10 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
                         <div
                           key={lesson.id}
                           draggable
-                          onDragStart={() => handleLessonDragStart(lesson.id, module.id)}
-                          onDragOver={(e) => handleLessonDragOver(e, lesson.id)}
-                          onDrop={(e) => handleLessonDrop(e, lesson.id, module.id)}
-                          onDragEnd={handleLessonDragEnd}
+                          onDragStart={(e) => { e.stopPropagation(); handleLessonDragStart(lesson.id, module.id); }}
+                          onDragOver={(e) => { e.stopPropagation(); handleLessonDragOver(e, lesson.id); }}
+                          onDrop={(e) => { e.stopPropagation(); handleLessonDrop(e, lesson.id, module.id); }}
+                          onDragEnd={(e) => { e.stopPropagation(); handleLessonDragEnd(); }}
                           className={`flex items-center gap-3 px-5 py-3 group transition-colors select-none
                             ${isDragging ? "opacity-40 bg-gray-50" : "hover:bg-gray-50"}
                             ${isDragOver ? "border-t-2 border-blue-500" : ""}
@@ -2089,7 +2313,11 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
         <LessonModal
           moduleId={lessonModal.moduleId}
           moduleName={lessonModal.moduleName}
-          lesson={lessonModal.lesson}
+          lesson={
+            lessonModal.lesson
+              ? (localModules.flatMap((m: any) => m.lessons).find((l: any) => l.id === lessonModal.lesson.id) ?? lessonModal.lesson)
+              : undefined
+          }
           fetcher={fetcher}
           onClose={() => setLessonModal(null)}
         />
@@ -2098,7 +2326,13 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
         <QuizModal
           moduleId={quizModal.moduleId}
           moduleName={quizModal.moduleName}
-          quiz={quizModal.quiz}
+          // Always the freshest copy: after create_question/create_answer the
+          // loader revalidates and the new rows must show up inside the open modal.
+          quiz={
+            quizModal.quiz
+              ? (localModules.flatMap((m: any) => m.quizzes).find((q: any) => q.id === quizModal.quiz.id) ?? quizModal.quiz)
+              : undefined
+          }
           fetcher={fetcher}
           onClose={() => setQuizModal(null)}
         />
@@ -2110,7 +2344,10 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
 // ── Step 3: Additional ────────────────────────────────────────────────────────
 
 function AdditionalStep({ course, fetcher }: { course: any; fetcher: any }) {
-  const totalSeconds = 0; // could compute from lessons
+  // Derived from lesson durations - there is no separate stored value.
+  const totalSeconds = (course.modules ?? [])
+    .flatMap((m: any) => m.lessons ?? [])
+    .reduce((sum: number, l: any) => sum + (Number(l.duration) || 0), 0);
   const totalHours = Math.floor(totalSeconds / 3600);
   const totalMins = Math.floor((totalSeconds % 3600) / 60);
 
@@ -2149,11 +2386,9 @@ function AdditionalStep({ course, fetcher }: { course: any; fetcher: any }) {
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">Total Course Duration</label>
           <div className="flex gap-3 items-center">
-            <input type="number" name="durationHours" defaultValue={totalHours} min={0} className="w-28 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
-            <span className="text-sm text-gray-500">hour(s)</span>
-            <input type="number" name="durationMins" defaultValue={totalMins} min={0} max={59} className="w-28 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
-            <span className="text-sm text-gray-500">min(s)</span>
+            <span className="text-sm font-semibold text-gray-900">{totalHours} hour(s) {totalMins} min(s)</span>
           </div>
+          <p className="text-xs text-gray-400 mt-1">Calculated from the duration of each lesson in the curriculum.</p>
         </div>
 
         <div>
@@ -2246,23 +2481,24 @@ export default function CourseBuilder() {
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          {/* Save as Draft */}
+          {/* Save as Draft — always targets DRAFT; no-op when already a draft */}
           <fetcher.Form method="post">
-            <input type="hidden" name="intent" value="toggle_status" />
-            <input type="hidden" name="current" value={course.status} />
+            <input type="hidden" name="intent" value="set_status" />
+            <input type="hidden" name="status" value="DRAFT" />
             <button
               type="submit"
-              className="flex items-center gap-1.5 text-sm text-gray-600 border border-gray-300 hover:bg-gray-50 px-3 py-1.5 rounded-lg transition-colors font-medium"
+              disabled={!isPublished}
+              className="flex items-center gap-1.5 text-sm text-gray-600 border border-gray-300 hover:bg-gray-50 px-3 py-1.5 rounded-lg transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Cloud size={14} />
-              {isPublished ? "Save as Draft" : "Save as Draft"}
+              {isPublished ? "Save as Draft" : "Draft"}
             </button>
           </fetcher.Form>
 
-          {/* Publish / Unpublish */}
+          {/* Publish / Unpublish — explicit target status */}
           <fetcher.Form method="post">
-            <input type="hidden" name="intent" value="toggle_status" />
-            <input type="hidden" name="current" value={course.status} />
+            <input type="hidden" name="intent" value="set_status" />
+            <input type="hidden" name="status" value={isPublished ? "DRAFT" : "PUBLISHED"} />
             <button
               type="submit"
               className={`flex items-center gap-1.5 text-sm font-semibold px-4 py-1.5 rounded-lg transition-colors ${

@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { Link, Form } from "react-router";
 import {
   LayoutDashboard,
-  Search,
+  GraduationCap,
+  FolderOpen,
   Award,
-  BookOpen,
-  Settings,
+  ClipboardList,
   HelpCircle,
   LogOut,
   Key,
@@ -17,12 +17,13 @@ import {
 
 export type StudentNavItem =
   | "dashboard"
+  | "my-courses"
+  | "watch"
+  | "resources"
+  | "help"
   | "browse"
-  | "content"
   | "certificates"
   | "quiz-history"
-  | "settings"
-  | "help"
   | "signout";
 
 interface StudentSidebarProps {
@@ -90,9 +91,9 @@ export function StudentSidebar({
       <div className="px-6 py-6 border-b border-white/10">
         <Link to="/student" className="inline-flex items-center group">
           <img
-            src="/White_center.avif"
+            src="/std-dashboard-img/Logo.png"
             alt="Teach Me Like a Tot"
-            className="h-20 w-auto object-contain"
+            className="h-32 w-auto object-contain"
           />
         </Link>
       </div>
@@ -106,24 +107,36 @@ export function StudentSidebar({
           active={active === "dashboard"}
         />
         <NavItem
-          icon={Search}
-          label="Browse Courses"
-          to="/catalog"
-          active={active === "browse"}
+          icon={GraduationCap}
+          label="My Course"
+          to="/student#my-courses"
+          active={active === "my-courses"}
         />
         <a
           href="https://www.youtube.com/@TeachMeLikeATot"
           target="_blank"
           rel="noopener noreferrer"
           className={`${activeBase} ${
-            active === "content"
+            active === "watch"
               ? "bg-brand-green-dark text-white font-semibold"
               : "text-white/75 hover:bg-brand-green-dark hover:text-white"
           }`}
         >
           <Youtube size={18} />
-          Content
+          Watch &amp; Learn
         </a>
+        <NavItem
+          icon={FolderOpen}
+          label="Resources"
+          to="/student/resources"
+          active={active === "resources"}
+        />
+        <NavItem
+          icon={ClipboardList}
+          label="Quiz History"
+          to="/student/quiz-history"
+          active={active === "quiz-history"}
+        />
         {certificatesEnabled ? (
           <NavItem
             icon={Award}
@@ -134,13 +147,6 @@ export function StudentSidebar({
         ) : (
           <NavItem icon={Award} label="Certificates" disabled />
         )}
-        <NavItem
-          icon={BookOpen}
-          label="Quiz History"
-          to="/student/quiz-history"
-          active={active === "quiz-history"}
-        />
-        <NavItem icon={Settings} label="Settings" disabled />
         <NavItem
           icon={HelpCircle}
           label="Help & Support"
@@ -189,9 +195,9 @@ export function StudentMobileTopbar() {
     <div className="lg:hidden bg-brand-navy-deeper border-b border-white/10 px-5 py-4 flex items-center justify-between">
       <Link to="/student" className="flex items-center">
         <img
-          src="/White_center.avif"
+          src="/std-dashboard-img/Logo.png"
           alt="Teach Me Like a Tot"
-          className="h-10 w-auto object-contain"
+          className="h-14 w-auto object-contain"
         />
       </Link>
       <Form method="post" action="/auth/logout">

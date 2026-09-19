@@ -24,7 +24,16 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   const buffer = Buffer.from(await file.arrayBuffer());
-  const url = await uploadToCloudinary(buffer, file.name);
+  let url: string;
+  try {
+    url = await uploadToCloudinary(buffer, file.name);
+  } catch (e) {
+    console.error("[upload] Cloudinary upload failed:", e);
+    return data(
+      { error: "Upload failed. Check the CLOUDINARY_* settings and try again." },
+      { status: 502 },
+    );
+  }
 
   return data({ url });
 }

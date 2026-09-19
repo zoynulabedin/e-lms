@@ -43,17 +43,35 @@ export async function loader({ request }: LoaderFunctionArgs) {
   // Fetch all published courses for category counts + filtered list in parallel
   const [allPublished, courses] = await Promise.all([
     prisma.course.findMany({
-      where: { status: "PUBLISHED" },
+      where: { status: "PUBLISHED", isPublic: true },
       select: { category: true },
     }),
     prisma.course.findMany({
       where: {
+        // "Public Course" toggle in the builder: PUBLISHED but not public is
+        // an unlisted course (reachable by link / licence, hidden from catalog).
         status: "PUBLISHED",
+        isPublic: true,
         ...(categoryFilter ? { category: categoryFilter } : {}),
         ...searchWhere,
       },
       orderBy: { createdAt: "desc" },
-      include: {
+      // Public page: only card fields. embedUrl/videoUrl/introVideoUrl and
+      // shopifyProductId must never reach anonymous visitors.
+      select: {
+        id: true,
+        title: true,
+        summary: true,
+        description: true,
+        category: true,
+        instructor: true,
+        courseType: true,
+        price: true,
+        status: true,
+        contentType: true,
+        thumbnailUrl: true,
+        difficulty: true,
+        createdAt: true,
         _count: { select: { progress: true, modules: true } },
       },
     }),
@@ -84,7 +102,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         select: { courseId: true },
       }),
       prisma.progress.count({
-        where: { userId: user.id, isCompleted: true },
+        where: { userId: user.id, completedAt: { not: null } },
       }),
     ]);
     progresses.forEach((p) => enrolledCourseIds.add(p.courseId));
@@ -115,26 +133,27 @@ export async function action({ request }: ActionFunctionArgs) {
   if (intent === "enroll") {
     const course = await prisma.course.findUnique({ where: { id: courseId } });
     if (!course || course.status !== "PUBLISHED") {
-      return data({ error: "Course not found." }, { status: 404 });
+      return data({ error: "Course not found.", courseId }, { status: 404 });
     }
     if (course.courseType !== "FREE") {
       return data(
-        { error: "This course requires a license key." },
+        { error: "This course requires a license key.", courseId },
         { status: 403 },
       );
     }
 
-    await prisma.enrollment.upsert({
-      where: { userId_courseId: { userId: user.id, courseId } },
-      update: {},
-      create: { userId: user.id, courseId },
-    });
-
-    await prisma.progress.upsert({
-      where: { userId_courseId: { userId: user.id, courseId } },
-      update: {},
-      create: { userId: user.id, courseId },
-    });
+    await prisma.$transaction([
+      prisma.enrollment.upsert({
+        where: { userId_courseId: { userId: user.id, courseId } },
+        update: {},
+        create: { userId: user.id, courseId },
+      }),
+      prisma.progress.upsert({
+        where: { userId_courseId: { userId: user.id, courseId } },
+        update: {},
+        create: { userId: user.id, courseId },
+      }),
+    ]);
 
     return redirect(`/student/course/${courseId}`);
   }
@@ -186,6 +205,7 @@ export default function Catalog() {
 
       {/* Search */}
       <Form method="get" className="mb-6">
+        {categoryFilter && <input type="hidden" name="category" value={categoryFilter} />}
         <div className="relative max-w-md">
           <Search
             size={16}
@@ -408,6 +428,12 @@ function CourseCard({
 }) {
   const isFree = course.courseType === "FREE";
   const isStoryline = course.contentType === "STORYLINE";
+  const mine = fetcher.formData?.get("courseId") === course.id;
+  const busy = mine && fetcher.state !== "idle";
+  const enrollError =
+    fetcher.state === "idle" && fetcher.data && "error" in fetcher.data && fetcher.data.courseId === course.id
+      ? (fetcher.data.error as string)
+      : null;
 
   return (
     <div className="bg-white rounded-2xl border border-brand-beige-dark overflow-hidden hover:border-brand-navy/30 transition-colors group flex flex-col">
@@ -474,10 +500,14 @@ function CourseCard({
                 <input type="hidden" name="intent" value="enroll" />
                 <button
                   type="submit"
-                  className="w-full flex items-center justify-center gap-2 bg-brand-green-dark hover:bg-brand-green text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
+                  disabled={busy}
+                  className="w-full flex items-center justify-center gap-2 bg-brand-green-dark hover:bg-brand-green disabled:opacity-60 text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
                 >
-                  <Gift size={14} /> Enroll for Free
+                  <Gift size={14} /> {busy ? "Enrolling…" : "Enroll for Free"}
                 </button>
+                {enrollError && (
+                  <p className="mt-2 text-xs text-red-600">{enrollError}</p>
+                )}
               </fetcher.Form>
             ) : (
               <Link

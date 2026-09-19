@@ -7,7 +7,16 @@ import {
   createSession,
   createSessionCookie,
   getSessionUser,
+  DUMMY_HASH,
 } from "../utils/auth.server";
+import { rateLimitResponse, recordFailure } from "../utils/rate-limit.server";
+
+/** Only same-origin relative paths are honoured - never "//evil" or "https://…". */
+function safeRedirect(to: string | null, fallback: string): string {
+  if (!to || !to.startsWith("/") || to.startsWith("//") || to.startsWith("/\\")) return fallback;
+  return to;
+}
+
 import { Eye, EyeOff, CheckCircle2, Mail, Lock, ArrowLeft } from "lucide-react";
 import { useState } from "react";
 
@@ -18,7 +27,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
   }
   const url = new URL(request.url);
   const passwordReset = url.searchParams.get("reset") === "1";
-  return data({ passwordReset });
+  const redirectTo = safeRedirect(url.searchParams.get("redirect"), "");
+  return data({ passwordReset, redirectTo });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -31,6 +41,13 @@ export async function action({ request }: ActionFunctionArgs) {
   if (!email || !password) {
     return data({ error: "Email and password are required." }, { status: 400 });
   }
+  const limited = rateLimitResponse("login", request, email);
+  if (limited) return limited;
+
+  const redirectTo = safeRedirect(
+    String(formData.get("redirect") || new URL(request.url).searchParams.get("redirect") || ""),
+    "",
+  );
 
   try {
     const users = await prisma.$queryRaw<any[]>`
@@ -39,7 +56,11 @@ export async function action({ request }: ActionFunctionArgs) {
     `;
     const user = users[0] ?? null;
 
-    if (!user || !(await verifyPassword(password, user.passwordHash))) {
+    const ok = user
+      ? await verifyPassword(password, user.passwordHash)
+      : (await verifyPassword(password, DUMMY_HASH), false);
+    if (!user || !ok) {
+      recordFailure("login", request, email);
       return data({ error: "Invalid email or password." }, { status: 401 });
     }
 
@@ -62,7 +83,8 @@ export async function action({ request }: ActionFunctionArgs) {
     const token = await createSession(user.id, user.role, request);
     const cookie = createSessionCookie(token);
 
-    const destination = user.role === "ADMIN" ? "/?toast=welcome" : "/student?toast=welcome";
+    const destination =
+      redirectTo || (user.role === "ADMIN" ? "/?toast=welcome" : "/student?toast=welcome");
     return redirect(destination, {
       headers: { "Set-Cookie": cookie },
     });
@@ -102,6 +124,8 @@ export default function Login() {
 
   const passwordReset =
     loaderData && "passwordReset" in loaderData ? loaderData.passwordReset : false;
+  const redirectTo =
+    loaderData && "redirectTo" in loaderData ? (loaderData.redirectTo as string) : "";
 
   return (
     <div
@@ -168,6 +192,7 @@ export default function Login() {
               reloadDocument
               onSubmit={() => setIsSubmitting(true)}
             >
+              {redirectTo && <input type="hidden" name="redirect" value={redirectTo} />}
               {passwordReset && (
                 <div className="mb-5 flex items-center gap-2 rounded-lg border border-green-600/20 bg-green-600/10 px-4 py-3 text-sm text-green-800">
                   <CheckCircle2 size={15} className="shrink-0" />
