@@ -30,6 +30,46 @@ Navigate to **Websites & Domains** > **Your Domain** > **Node.js** in Plesk and 
 6. **Application Startup File:** `server.js`
    *Note: We use this custom file because Plesk requires a standalone script and doesn't allow passing CLI arguments to `node_modules` binaries.*
 
+### 2a. Data requests (`…/route.data`) — required for client-side navigation
+
+React Router loads page data for in-app navigation from URLs that end in
+`.data` (e.g. `/student/course/<id>.data`). Because the Document Root is
+`build/client`, Apache/Passenger treats anything with an "extension" as a
+static file and looks for its parent folder inside `build/client`. When that
+folder does not exist (dynamic routes such as `/student/course/…`) Plesk
+answers **500** (`filemng: stat failed: No such file or directory`) instead of
+passing the request to Node.
+
+Two layers of protection:
+
+1. **Placeholder folders (already in the repo).** `public/auth/`,
+   `public/student/course/` and `public/courses/` each contain a `.keep`
+   file, so `npm run build` creates those folders inside `build/client` and
+   the lookup succeeds → request falls through to the Node app. If you add a
+   new dynamic route prefix, add a matching `public/<prefix>/.keep`.
+
+2. **Recommended: tell nginx to send `.data` requests straight to the app.**
+   Plesk → *Websites & Domains* → your domain → *Apache & nginx Settings* →
+   **Additional nginx directives**:
+
+   ```nginx
+   # React Router data requests are API calls, never static files
+   location ~ \.data$ {
+       proxy_pass http://127.0.0.1:7080;
+       proxy_set_header Host $host;
+       proxy_set_header X-Real-IP $remote_addr;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+   }
+   ```
+
+   (`7080` is Plesk's default Apache backend port when nginx is a proxy. If
+   the domain runs on nginx + Passenger only, replace the block with
+   `passenger_enabled on;` inside the same `location`.)
+
+   Also make sure `data` is **not** listed under *Serve static files directly
+   by nginx* → file extensions.
+
 ## 3. Environment Variables
 
 Under the **Custom environment variables** section on the Plesk Node.js page, make sure you configure ALL variables found in your `.env.example` file. 
@@ -38,7 +78,9 @@ Crucial variables include:
 - `NODE_ENV`: `production`
 - `APP_URL`: Your actual live URL (e.g., `https://lms.instructionalgraphics.org`)
 - `DATABASE_URL`: Your production database URL 
-- `SESSION_SECRET`: A secure, random string
+- `JWT_SECRET`: A secure, random string (≥ 16 chars — the app refuses to start in production without it)
+- `TRUST_PROXY`: `true` (Plesk's nginx/Apache sit in front of Node; enables IP-based rate limiting)
+- `ADMIN_EMAIL`: where Shopify order notifications go
 - All other API keys (Resend, Cloudinary, Shopify, etc.)
 
 ## 4. Install Dependencies
@@ -60,8 +102,11 @@ You must run Prisma migrations to prepare the database before the app starts:
 3. Generate the Prisma client and run migrations:
    ```bash
    npx prisma generate
-   npx prisma migrate deploy
+   npm run migrate:prod
    ```
+   `migrate:prod` (= `node scripts/migrate.mjs`) first baselines a database that was
+   historically synced with `prisma db push`, then runs `prisma migrate deploy`.
+   It is safe to run on every deploy; it never drops tables or columns.
 
 ## 6. Start the Server
 
@@ -76,6 +121,7 @@ You must run Prisma migrations to prepare the database before the app starts:
 When you push new code to production, follow these steps:
 1. Pull the latest code to Plesk (via Git extension or manual upload).
 2. If `package.json` changed, click **NPM Install**.
-3. If `schema.prisma` changed, run `npx prisma migrate deploy` via SSH.
+3. If `schema.prisma` changed, run `npm run migrate:prod` via SSH — **the app
+   will 500 on pages that use new columns until this is done.**
 4. **Crucial:** Build the application assets (either locally and upload the new `build/` folder, or run `npm run build` on the server).
 5. Click **Restart App** in the Plesk Node.js interface to load the new server code.
