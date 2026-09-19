@@ -83,18 +83,30 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
 
   if (isRouteErrorResponse(error)) {
     status = error.status;
+    // Loaders/actions throw data({ message }) or data({ error }) with the
+    // human-readable reason - prefer that over a generic line.
+    const detail =
+      error.data && typeof error.data === "object"
+        ? (error.data as { message?: string; error?: string }).message ??
+          (error.data as { message?: string; error?: string }).error
+        : typeof error.data === "string"
+          ? error.data
+          : undefined;
     if (error.status === 404) {
       title = "Page not found";
-      message = "The page you're looking for doesn't exist or has been moved.";
+      message = detail || "The page you're looking for doesn't exist or has been moved.";
     } else if (error.status === 401 || error.status === 403) {
       title = "Access denied";
-      message = "You don't have permission to view this page.";
+      message = detail || "You don't have permission to view this page.";
+    } else if (error.status === 429) {
+      title = "Slow down";
+      message = detail || "Too many requests. Please wait a few minutes and try again.";
     } else if (error.status === 500) {
       title = "Server error";
-      message = error.statusText || message;
+      message = detail || error.statusText || message;
     } else {
       title = `Error ${error.status}`;
-      message = error.statusText || message;
+      message = detail || error.statusText || message;
     }
   } else if (error instanceof Error) {
     message = import.meta.env.DEV ? error.message : message;

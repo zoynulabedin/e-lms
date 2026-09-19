@@ -5,12 +5,15 @@ import {
   GraduationCap,
   FolderOpen,
   HelpCircle,
+  Settings,
   LogOut,
   Key,
   ArrowRight,
   Youtube,
   ChevronDown,
   Mail,
+  Menu,
+  X,
 } from "lucide-react";
 
 export type StudentNavItem =
@@ -22,6 +25,7 @@ export type StudentNavItem =
   | "browse"
   | "certificates"
   | "quiz-history"
+  | "settings"
   | "signout";
 
 interface StudentSidebarProps {
@@ -39,12 +43,14 @@ function NavItem({
   to,
   active = false,
   disabled = false,
+  onClick,
 }: {
   icon: React.ElementType;
   label: string;
   to?: string;
   active?: boolean;
   disabled?: boolean;
+  onClick?: () => void;
 }) {
   const base =
     "relative w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors";
@@ -62,6 +68,7 @@ function NavItem({
   return (
     <Link
       to={to ?? "#"}
+      onClick={onClick}
       className={`${base} ${
         active
           ? "bg-brand-green-dark text-white font-semibold"
@@ -74,47 +81,44 @@ function NavItem({
   );
 }
 
-// ── Sidebar ─────────────────────────────────────────────────────────────────
+// ── Shared sidebar content (desktop aside + mobile drawer) ──────────────────
 
-export function StudentSidebar({
+const NAV_LINK =
+  "relative w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors";
+
+function SidebarContent({
   active,
-  certificatesEnabled = false,
-}: StudentSidebarProps) {
-  const activeBase =
-    "relative w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors";
-
+  onNavigate,
+  showSettings = false,
+}: {
+  active?: StudentNavItem;
+  onNavigate?: () => void;
+  /** The mobile drawer has no top-bar profile menu, so it lists Settings here. */
+  showSettings?: boolean;
+}) {
   return (
-    <aside className="hidden lg:flex w-72 shrink-0 h-screen sticky top-0 bg-brand-navy-deeper border-r border-white/10 flex-col">
-      {/* Logo */}
-      <div className="px-6 py-6 border-b border-white/10">
-        <Link to="/student" className="inline-flex items-center group">
-          <img
-            src="/std-dashboard-img/Logo.png"
-            alt="Teach Me Like a Tot"
-            className="h-32 w-auto object-contain"
-          />
-        </Link>
-      </div>
-
-      {/* Nav */}
-      <nav className="flex-1 min-h-0 overflow-y-auto px-4 py-6 space-y-1">
+    <>
+      <nav className="flex-1 min-h-0 overflow-y-auto px-4 pt-6 pb-6 space-y-1">
         <NavItem
           icon={LayoutDashboard}
           label="Dashboard"
           to="/student"
           active={active === "dashboard"}
+          onClick={onNavigate}
         />
         <NavItem
           icon={GraduationCap}
           label="My Course"
           to="/student#my-courses"
           active={active === "my-courses"}
+          onClick={onNavigate}
         />
         <a
           href="https://www.youtube.com/@TeachMeLikeATot"
           target="_blank"
           rel="noopener noreferrer"
-          className={`${activeBase} ${
+          onClick={onNavigate}
+          className={`${NAV_LINK} ${
             active === "watch"
               ? "bg-brand-green-dark text-white font-semibold"
               : "text-white/75 hover:bg-brand-green-dark hover:text-white"
@@ -128,18 +132,29 @@ export function StudentSidebar({
           label="Resources"
           to="/student/resources"
           active={active === "resources"}
+          onClick={onNavigate}
         />
         <NavItem
           icon={HelpCircle}
           label="Help & Support"
           to="/student/help"
           active={active === "help"}
+          onClick={onNavigate}
         />
+        {showSettings && (
+          <NavItem
+            icon={Settings}
+            label="Settings"
+            to="/student/settings"
+            active={active === "settings"}
+            onClick={onNavigate}
+          />
+        )}
 
         <Form method="post" action="/auth/logout">
           <button
             type="submit"
-            className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium text-white/75 hover:bg-brand-green-dark hover:text-white transition-colors"
+            className={`${NAV_LINK} text-white/75 hover:bg-brand-green-dark hover:text-white`}
           >
             <LogOut size={18} />
             Sign Out
@@ -147,7 +162,7 @@ export function StudentSidebar({
         </Form>
       </nav>
 
-      {/* License key callout — pinned to the bottom of the viewport */}
+      {/* License key callout — pinned to the bottom */}
       <div className="mt-auto shrink-0 mx-4 mb-6 rounded-xl bg-brand-mustard/15 border border-brand-mustard/40 p-4">
         <div className="flex items-center gap-2 mb-2">
           <Key size={16} className="text-brand-mustard" />
@@ -159,38 +174,118 @@ export function StudentSidebar({
         </p>
         <Link
           to="/redeem"
+          onClick={onNavigate}
           className="inline-flex items-center justify-center w-full gap-1.5 bg-brand-mustard hover:bg-brand-mustard/90 text-white text-xs font-semibold px-3 py-2 rounded-lg transition-colors"
         >
           Redeem Key
           <ArrowRight size={12} />
         </Link>
       </div>
+    </>
+  );
+}
 
+// ── Desktop sidebar ─────────────────────────────────────────────────────────
+
+export function StudentSidebar({ active }: StudentSidebarProps) {
+  return (
+    <aside className="hidden lg:flex w-72 shrink-0 h-screen sticky top-0 bg-brand-navy-deeper border-r border-white/10 flex-col">
+      {/* Logo */}
+      <div className="border-b border-white/10">
+        <Link to="/student" className="flex items-center group">
+          <img
+            src="/std-dashboard-img/Logo.png"
+            alt="Teach Me Like a Tot"
+            className="h-32 w-auto object-contain"
+          />
+        </Link>
+      </div>
+      <SidebarContent active={active} />
     </aside>
   );
 }
 
-// ── Mobile top bar (matches sidebar) ───────────────────────────────────────
+// ── Mobile top bar: logo + hamburger that opens the sidebar as a drawer ─────
 
-export function StudentMobileTopbar() {
+export function StudentMobileTopbar({ active }: { active?: StudentNavItem } = {}) {
+  const [open, setOpen] = useState(false);
+
+  // Escape closes; lock page scroll while the drawer is open.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
+
   return (
-    <div className="lg:hidden bg-brand-navy-deeper border-b border-white/10 px-5 py-4 flex items-center justify-between">
-      <Link to="/student" className="flex items-center">
-        <img
-          src="/std-dashboard-img/Logo.png"
-          alt="Teach Me Like a Tot"
-          className="h-14 w-auto object-contain"
-        />
-      </Link>
-      <Form method="post" action="/auth/logout">
+    <>
+      <div className="lg:hidden bg-brand-navy-deeper border-b border-white/10 pr-3 flex items-center justify-between sticky top-0 z-30">
+        <Link to="/student" className="flex items-center">
+          <img
+            src="/std-dashboard-img/Logo.png"
+            alt="Teach Me Like a Tot"
+            className="h-16 w-auto object-contain"
+          />
+        </Link>
         <button
-          type="submit"
-          className="flex items-center gap-1.5 text-white/80 text-sm"
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label="Open menu"
+          aria-expanded={open}
+          aria-controls="student-mobile-nav"
+          className="w-11 h-11 -mr-1 rounded-lg flex items-center justify-center text-white/90 hover:bg-white/10 transition-colors"
         >
-          <LogOut size={16} /> Sign out
+          <Menu size={24} />
         </button>
-      </Form>
-    </div>
+      </div>
+
+      {/* Drawer */}
+      <div
+        className={`lg:hidden fixed inset-0 z-50 ${open ? "" : "pointer-events-none"}`}
+        aria-hidden={!open}
+      >
+        {/* Backdrop */}
+        <div
+          onClick={() => setOpen(false)}
+          className={`absolute inset-0 bg-black/50 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0"}`}
+        />
+        {/* Panel */}
+        <div
+          id="student-mobile-nav"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Menu"
+          className={`absolute inset-y-0 left-0 w-[85vw] max-w-xs bg-brand-navy-deeper border-r border-white/10 shadow-2xl flex flex-col transition-transform duration-200 ease-out ${
+            open ? "translate-x-0" : "-translate-x-full"
+          }`}
+        >
+          <div className="flex items-center justify-between border-b border-white/10 pr-2">
+            <Link to="/student" onClick={() => setOpen(false)} className="flex items-center">
+              <img
+                src="/std-dashboard-img/Logo.png"
+                alt="Teach Me Like a Tot"
+                className="h-20 w-auto object-contain"
+              />
+            </Link>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              aria-label="Close menu"
+              className="w-10 h-10 rounded-lg flex items-center justify-center text-white/80 hover:bg-white/10 transition-colors"
+            >
+              <X size={22} />
+            </button>
+          </div>
+          <SidebarContent active={active} onNavigate={() => setOpen(false)} showSettings />
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -237,7 +332,7 @@ export function StudentTopbar({
           </h1>
         )}
         {subtitle && (
-          <p className="text-brand-navy/60 text-sm mt-0.5 truncate">
+          <p className="text-black text-sm mt-0.5 truncate">
             {subtitle}
           </p>
         )}
@@ -249,16 +344,15 @@ export function StudentTopbar({
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="flex items-center gap-2.5 bg-white hover:bg-white/80 border border-brand-beige-dark rounded-full pl-1 pr-3 py-1 transition-colors"
+          className="flex items-center gap-1.5 bg-white hover:bg-white/80 border border-brand-beige-dark rounded-full pl-1 pr-2 py-1 transition-colors"
           aria-expanded={open}
           aria-haspopup="menu"
+          aria-label={user.name}
+          title={user.name}
         >
           <div className="w-8 h-8 rounded-full bg-brand-navy text-white flex items-center justify-center font-bold text-xs shrink-0">
             {initials}
           </div>
-          <span className="text-brand-navy text-sm font-semibold leading-none">
-            {user.name}
-          </span>
           <ChevronDown
             size={14}
             className={`text-brand-navy/50 transition-transform ${
@@ -277,19 +371,26 @@ export function StudentTopbar({
                 {initials}
               </div>
               <div className="min-w-0">
-                <p className="text-sm font-semibold text-brand-navy truncate">
-                  {user.name}
-                </p>
-                <p className="text-xs text-brand-navy/60 truncate flex items-center gap-1">
-                  <Mail size={11} />
+                <p className="text-sm text-brand-navy truncate flex items-center gap-1.5">
+                  <Mail size={13} className="shrink-0 text-brand-navy/60" />
                   {user.email}
                 </p>
               </div>
             </div>
             <div className="p-1">
+              <Link
+                to="/student/settings"
+                role="menuitem"
+                onClick={() => setOpen(false)}
+                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-brand-navy hover:bg-brand-green-dark hover:text-white font-medium transition-colors"
+              >
+                <Settings size={15} />
+                Settings
+              </Link>
               <Form method="post" action="/auth/logout">
                 <button
                   type="submit"
+                  role="menuitem"
                   className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-brand-navy hover:bg-brand-green-dark hover:text-white font-medium transition-colors"
                 >
                   <LogOut size={15} />

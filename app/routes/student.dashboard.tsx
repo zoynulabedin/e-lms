@@ -17,12 +17,13 @@ import {
   Play,
   Gift,
   Key,
-  Sparkles,
-  Calendar,
-  Hammer,
-  ArrowRight,
-  Youtube,
+  Lock,
+  ExternalLink,
 } from "lucide-react";
+
+const YOUTUBE_URL = "https://www.youtube.com/@TeachMeLikeATot";
+/** Where "Learn More" on a not-yet-purchased course sends the learner. */
+const COURSE_INFO_URL = "https://www.teachmelikeatot.org";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const user = await requireUser(request);
@@ -36,12 +37,12 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const [progresses, enrollments] = await Promise.all([
     prisma.progress.findMany({
       where: { userId: user.id, courseId: { in: accessibleIds } },
-      include: { course: { select: { id: true, title: true, thumbnailUrl: true, courseType: true, category: true } } },
+      include: { course: { select: { id: true, title: true, summary: true, thumbnailUrl: true, courseType: true, category: true } } },
       orderBy: { lastAccessedAt: "desc" },
     }),
     prisma.enrollment.findMany({
       where: { userId: user.id, courseId: { in: accessibleIds } },
-      include: { course: { select: { id: true, title: true, thumbnailUrl: true, courseType: true, category: true } } },
+      include: { course: { select: { id: true, title: true, summary: true, thumbnailUrl: true, courseType: true, category: true } } },
       orderBy: { enrolledAt: "desc" },
     }),
   ]);
@@ -90,24 +91,76 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   const hasCertificates = myCourses.some((c) => c.hasCertificate);
 
-  return { user, myCourses, hasCertificates };
+  // "Pick up where you left off": the first unfinished course, and inside it
+  // the first lesson not yet completed (so the card can say "Module 1 • …").
+  const resumeCourse =
+    myCourses.find((c) => !c.isCompleted && c.completionPercent > 0) ||
+    myCourses.find((c) => !c.isCompleted && c.completionPercent === 0) ||
+    null;
+
+  let resumeNext: { moduleIndex: number; moduleTitle: string; lessonId: string | null } | null = null;
+  if (resumeCourse) {
+    const [modules, done] = await Promise.all([
+      prisma.module.findMany({
+        where: { courseId: resumeCourse.courseId },
+        orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+        select: {
+          title: true,
+          lessons: { orderBy: [{ order: "asc" }, { createdAt: "asc" }], select: { id: true } },
+        },
+      }),
+      prisma.lessonProgress.findMany({
+        where: { userId: user.id, isCompleted: true, lesson: { module: { courseId: resumeCourse.courseId } } },
+        select: { lessonId: true },
+      }),
+    ]);
+    const doneSet = new Set(done.map((d) => d.lessonId));
+    outer: for (let i = 0; i < modules.length; i++) {
+      for (const l of modules[i].lessons) {
+        if (!doneSet.has(l.id)) {
+          resumeNext = { moduleIndex: i + 1, moduleTitle: modules[i].title, lessonId: l.id };
+          break outer;
+        }
+      }
+    }
+    if (!resumeNext && modules.length) {
+      resumeNext = { moduleIndex: 1, moduleTitle: modules[0].title, lessonId: null };
+    }
+  }
+
+  // Display conditions (#4): enrolled courses first, then every other
+  // published course as a "Not Enrolled" tile so the learner can discover it.
+  const owned = new Set(myCourses.map((c) => c.courseId));
+  const others = await prisma.course.findMany({
+    where: { status: "PUBLISHED", isPublic: true, id: { notIn: Array.from(owned) } },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, title: true, summary: true, thumbnailUrl: true, courseType: true, category: true },
+  });
+  const tiles = [
+    ...myCourses.map((c) => ({ ...c, isEnrolled: true as const })),
+    ...others.map((course) => ({
+      courseId: course.id,
+      course,
+      completionPercent: 0,
+      isCompleted: false,
+      hasCertificate: false,
+      lastAccessedAt: null as Date | null,
+      isEnrolled: false as const,
+    })),
+  ];
+
+  return { user, myCourses, tiles, hasCertificates, resumeCourseId: resumeCourse?.courseId ?? null, resumeNext };
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function StudentDashboard() {
-  const { user, myCourses, hasCertificates } = useLoaderData<typeof loader>();
+  const { user, myCourses, tiles, hasCertificates, resumeCourseId, resumeNext } =
+    useLoaderData<typeof loader>();
 
-  const enrolled = myCourses.length;
-  const completed = myCourses.filter((p) => p.isCompleted).length;
-  const active = myCourses.filter(
-    (p) => !p.isCompleted && p.completionPercent > 0,
-  ).length;
-
-  const resume =
-    myCourses.find((c) => !c.isCompleted && c.completionPercent > 0) ||
-    myCourses.find((c) => !c.isCompleted && c.completionPercent === 0) ||
-    null;
+  const resume = resumeCourseId
+    ? myCourses.find((c) => c.courseId === resumeCourseId) ?? null
+    : null;
 
   const firstName = user.name.split(" ")[0];
 
@@ -124,104 +177,48 @@ export default function StudentDashboard() {
 
         {/* ── Main content ─────────────────────────────────────────────────── */}
         <main className="flex-1 min-w-0">
-          <StudentMobileTopbar />
+          <StudentMobileTopbar active="dashboard" />
           <StudentTopbar
             user={user}
             title={`Look who’s back, ${firstName}!`}
             subtitle="Ready for another money “aha!” moment?"
           />
 
-          <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8 lg:py-10">
+          <div className="w-full px-4 sm:px-6 lg:px-8 py-6 sm:py-8 lg:py-10">
 
-            {/* Stats */}
-            <div className="grid grid-cols-3 gap-3 sm:gap-5 mb-10">
-              <StatCard
-                value={enrolled}
-                label="Enrolled"
-                sublabel="Courses"
-                icon={BookOpen}
-                tone="navy"
-              />
-              <StatCard
-                value={completed}
-                label="Completed"
-                sublabel="Courses"
-                icon={CheckCircle2}
-                tone="green"
-              />
-              <StatCard
-                value={active}
-                label="Active"
-                sublabel="Courses"
-                icon={Play}
-                tone="mustard"
+            {/* Greeting for phones/tablets — the desktop top bar carries it on lg+ */}
+            <div className="lg:hidden mb-6">
+              <h1 className="font-display text-2xl sm:text-3xl text-brand-navy leading-tight">
+                Look who’s back, {firstName}!
+              </h1>
+              <p className="text-black text-sm mt-1">Ready for another money “aha!” moment?</p>
+            </div>
+
+            {/* ── Hero row: resume card + narrator ─────────────────────────── */}
+            <div className="flex items-start gap-4 lg:gap-6 mb-4">
+              <div className="flex-1 min-w-0">
+                {resume ? (
+                  <ResumeCard
+                    course={resume}
+                    next={resumeNext}
+                  />
+                ) : (
+                  <StartCard hasCourses={myCourses.length > 0} />
+                )}
+              </div>
+              <img
+                src="/std-dashboard-img/dashboard narrator.png"
+                alt=""
+                aria-hidden="true"
+                className="hidden md:block w-52 lg:w-72 xl:w-[22rem] 2xl:w-96 shrink-0 -mt-4 lg:-mt-8 -mb-16 lg:-mb-24 pointer-events-none select-none"
               />
             </div>
 
-            {/* Pick up where you left off */}
-            {resume && (
-              <div className="mb-10 rounded-2xl overflow-hidden bg-brand-navy shadow-lg relative">
-                {resume.course?.thumbnailUrl && (
-                  <div
-                    className="absolute inset-0 bg-cover bg-center opacity-20"
-                    style={{
-                      backgroundImage: `url(${resume.course.thumbnailUrl})`,
-                    }}
-                  />
-                )}
-                <div className="relative p-6 sm:p-8 flex flex-col sm:flex-row gap-6 items-start sm:items-center">
-                  <div className="w-24 h-24 sm:w-28 sm:h-28 shrink-0 rounded-xl overflow-hidden bg-brand-navy-dark border border-white/10">
-                    {resume.course?.thumbnailUrl ? (
-                      <img
-                        src={resume.course.thumbnailUrl}
-                        alt={resume.course?.title}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        <BookOpen className="text-white/40 w-8 h-8" />
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-semibold tracking-[0.18em] text-brand-mustard mb-2">
-                      PICK UP WHERE YOU LEFT OFF
-                    </p>
-                    <h2 className="font-display text-2xl sm:text-3xl text-white leading-snug line-clamp-2 mb-4">
-                      {resume.course?.title}
-                    </h2>
-                    <div className="flex items-center gap-3 mb-4">
-                      <div className="flex-1 max-w-xs h-2 rounded-full bg-white/15 overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-brand-mustard transition-all"
-                          style={{ width: `${resume.completionPercent}%` }}
-                        />
-                      </div>
-                      <span className="text-white/70 text-xs font-medium whitespace-nowrap">
-                        {resume.completionPercent}% complete
-                      </span>
-                    </div>
-                    <Link
-                      to={`/student/course/${resume.courseId}`}
-                      className="inline-flex items-center gap-2 bg-brand-mustard hover:bg-brand-mustard/90 text-white font-semibold px-6 py-2.5 rounded-xl transition-colors text-sm"
-                    >
-                      <Play size={15} />
-                      {resume.completionPercent > 0
-                        ? "Continue Learning"
-                        : "Start Course"}
-                    </Link>
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* ── Your Learning ────────────────────────────────────────────── */}
+            <section id="my-courses" className="mb-10 scroll-mt-6 relative z-10">
+              <h2 className="font-display text-2xl text-brand-navy mb-4">Your Learning</h2>
 
-            {/* My Courses */}
-            <section id="my-courses" className="mb-10 scroll-mt-6">
-              <div className="mb-5">
-                <h2 className="font-display text-2xl text-brand-navy">My Courses</h2>
-              </div>
-
-              {myCourses.length === 0 ? (
+              {tiles.length === 0 ? (
                 <div className="text-center py-16 border-2 border-dashed border-brand-beige-dark rounded-2xl bg-white">
                   <BookOpen className="mx-auto text-brand-navy/30 w-12 h-12 mb-3" />
                   <p className="text-brand-navy font-medium">No courses yet</p>
@@ -245,77 +242,16 @@ export default function StudentDashboard() {
                   </div>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-                  {myCourses.map((c) => (
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 sm:gap-5">
+                  {tiles.map((c) => (
                     <CourseCard key={c.courseId} c={c} />
                   ))}
                 </div>
               )}
             </section>
 
-            {/* Making Money & Markets Make Sense — YouTube CTA */}
-            <section className="mb-10">
-              <div className="rounded-2xl overflow-hidden bg-brand-green-dark shadow-lg relative">
-                <div className="absolute -top-12 -right-12 w-48 h-48 rounded-full bg-brand-mustard/20 blur-3xl" />
-                <div className="relative p-6 sm:p-8 flex flex-col sm:flex-row gap-6 items-start sm:items-center">
-                  <div className="shrink-0 w-16 h-16 rounded-2xl bg-white/15 border border-white/20 flex items-center justify-center">
-                    <Youtube className="text-white w-8 h-8" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h2 className="font-display text-2xl sm:text-3xl text-white leading-tight mb-2">
-                      Making Money &amp; Markets Make Sense
-                    </h2>
-                    <p className="text-white/85 text-sm sm:text-base leading-relaxed mb-4 max-w-2xl">
-                      Fast, simple videos that turn confusing money topics into
-                      &ldquo;Ohhh&hellip; now I get it.&rdquo;
-                    </p>
-                    <a
-                      href="https://www.youtube.com/@TeachMeLikeATot"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-2 bg-brand-mustard hover:bg-brand-mustard/90 text-white font-semibold px-6 py-2.5 rounded-xl transition-colors text-sm"
-                    >
-                      <Youtube size={16} />
-                      Watch on YouTube
-                    </a>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            {/* What's New */}
-            <section>
-              <h2 className="font-display text-2xl text-brand-navy mb-5">
-                What's New
-              </h2>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <WhatsNewCard
-                  icon={Sparkles}
-                  eyebrow="New Lesson Available"
-                  cta="Watch Latest Lesson"
-                  to={
-                    resume
-                      ? `/student/course/${resume.courseId}`
-                      : "/catalog"
-                  }
-                  tone="green"
-                />
-                <WhatsNewCard
-                  icon={Calendar}
-                  eyebrow="Coming Next"
-                  cta="Preview What's Coming"
-                  to="/catalog"
-                  tone="navy"
-                />
-                <WhatsNewCard
-                  icon={Hammer}
-                  eyebrow="In Development"
-                  cta="Stay Tuned"
-                  to={undefined}
-                  tone="mustard"
-                />
-              </div>
-            </section>
+            {/* ── Watch & Learn ────────────────────────────────────────────── */}
+            <WatchAndLearn />
           </div>
         </main>
       </div>
@@ -323,47 +259,146 @@ export default function StudentDashboard() {
   );
 }
 
-// ── Stat card ─────────────────────────────────────────────────────────────────
+// ── Resume card ───────────────────────────────────────────────────────────────
 
-function StatCard({
-  value,
-  label,
-  sublabel,
-  icon: Icon,
-  tone,
+function ResumeCard({
+  course,
+  next,
 }: {
-  value: number;
-  label: string;
-  sublabel: string;
-  icon: React.ElementType;
-  tone: "navy" | "green" | "mustard";
+  course: any;
+  next: { moduleIndex: number; moduleTitle: string; lessonId: string | null } | null;
 }) {
-  const tones: Record<typeof tone, { iconBg: string; iconColor: string }> = {
-    navy: { iconBg: "bg-brand-navy/10", iconColor: "text-brand-navy" },
-    green: {
-      iconBg: "bg-brand-green/10",
-      iconColor: "text-brand-green-dark",
-    },
-    mustard: {
-      iconBg: "bg-brand-mustard/15",
-      iconColor: "text-brand-mustard",
-    },
-  };
-  const t = tones[tone];
+  const href = next?.lessonId
+    ? `/student/course/${course.courseId}?lesson=${next.lessonId}`
+    : `/student/course/${course.courseId}`;
+
   return (
-    <div className="bg-white rounded-2xl border border-brand-beige-dark p-5 sm:p-6">
-      <div
-        className={`w-10 h-10 rounded-lg ${t.iconBg} flex items-center justify-center mb-3`}
-      >
-        <Icon className={`${t.iconColor} w-5 h-5`} />
+    <div className="relative overflow-hidden rounded-2xl bg-brand-navy-deeper shadow-lg">
+      <ChartDecoration />
+
+      <div className="relative p-4 sm:p-6 flex flex-col sm:flex-row gap-4 sm:gap-6 items-start">
+        {/* Thumbnail */}
+        <div className="w-full sm:w-40 aspect-video sm:aspect-[4/3] shrink-0 rounded-xl overflow-hidden bg-brand-navy-dark border border-white/10">
+          {course.course?.thumbnailUrl ? (
+            <img
+              src={course.course.thumbnailUrl}
+              alt={course.course?.title}
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <BookOpen className="text-white/40 w-8 h-8" />
+            </div>
+          )}
+        </div>
+
+        {/* Copy */}
+        <div className="flex-1 min-w-0">
+          <p className="text-[11px] font-bold tracking-[0.18em] text-brand-mustard mb-1.5">
+            PICK UP WHERE YOU LEFT OFF
+          </p>
+          <h2 className="font-display text-xl sm:text-2xl text-white leading-snug line-clamp-2">
+            {course.course?.title}
+          </h2>
+          {next && (
+            <p className="text-white/70 text-sm mt-1">
+              Module {next.moduleIndex}
+              <span className="mx-1.5">•</span>
+              {next.moduleTitle}
+            </p>
+          )}
+
+          <div className="flex items-center gap-3 mt-4 mb-4">
+            <div className="flex-1 max-w-[220px] h-1.5 rounded-full bg-white/15 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-brand-mustard"
+                style={{ width: `${Math.max(2, course.completionPercent)}%` }}
+              />
+            </div>
+            <span className="text-white/70 text-xs font-medium whitespace-nowrap">
+              {course.completionPercent}% complete
+            </span>
+          </div>
+
+          <Link
+            to={href}
+            className="inline-flex items-center gap-2 bg-brand-mustard hover:bg-brand-mustard/90 text-brand-navy-deeper font-semibold px-5 py-2.5 rounded-lg transition-colors text-sm"
+          >
+            <Play size={14} className="fill-current" />
+            {course.completionPercent > 0 ? "Continue Learning" : "Start Course"}
+          </Link>
+        </div>
       </div>
-      <p className="text-3xl sm:text-4xl font-bold text-brand-navy leading-none">
-        {value}
-      </p>
-      <p className="text-sm font-semibold text-brand-navy mt-2 leading-tight">
-        {label}
-      </p>
-      <p className="text-xs text-brand-navy/60 leading-tight">{sublabel}</p>
+    </div>
+  );
+}
+
+/** Faded candlestick chart in the card's right half (pure SVG, no asset). */
+function ChartDecoration() {
+  const bars = [
+    [12, 40, 18], [30, 52, 22], [48, 34, 26], [66, 60, 16], [84, 44, 30],
+    [102, 70, 20], [120, 56, 24], [138, 80, 14], [156, 64, 28], [174, 90, 18],
+    [192, 74, 22], [210, 100, 16], [228, 84, 26], [246, 110, 20], [264, 96, 24],
+  ];
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 280 140"
+      preserveAspectRatio="xMaxYMax slice"
+      className="absolute inset-y-0 right-0 w-1/2 h-full opacity-[0.18] text-brand-mustard"
+    >
+      {/* rising trend line */}
+      <polyline
+        points="0,120 40,104 80,110 120,86 160,92 200,64 240,70 280,40"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      {bars.map(([x, top, h], i) => (
+        <g key={i} stroke="currentColor" fill={i % 3 === 1 ? "none" : "currentColor"}>
+          <line x1={x + 4} y1={top - 10} x2={x + 4} y2={top + h + 10} strokeWidth="1" />
+          <rect x={x} y={top} width="8" height={h} strokeWidth="1" rx="1" />
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+// ── Start card (no course in progress) ───────────────────────────────────────
+
+function StartCard({ hasCourses }: { hasCourses: boolean }) {
+  return (
+    <div className="relative overflow-hidden rounded-2xl bg-brand-navy-deeper shadow-lg">
+      <ChartDecoration />
+      <div className="relative p-6 sm:p-8">
+        <p className="text-[11px] font-bold tracking-[0.18em] text-brand-mustard mb-1.5">
+          {hasCourses ? "ALL CAUGHT UP" : "LET’S GET STARTED"}
+        </p>
+        <h2 className="font-display text-xl sm:text-2xl text-white leading-snug">
+          {hasCourses
+            ? "You’ve finished everything on your list."
+            : "Pick your first course and start learning."}
+        </h2>
+        <p className="text-white/70 text-sm mt-1 max-w-md">
+          {hasCourses
+            ? "Browse the catalog for your next money “aha!” moment."
+            : "Free courses start instantly — paid courses unlock with a license key."}
+        </p>
+        <div className="flex flex-wrap items-center gap-3 mt-5">
+          <Link
+            to="/catalog"
+            className="inline-flex items-center gap-2 bg-brand-mustard hover:bg-brand-mustard/90 text-brand-navy-deeper font-semibold px-5 py-2.5 rounded-lg transition-colors text-sm"
+          >
+            <Gift size={14} /> Browse Courses
+          </Link>
+          <Link
+            to="/redeem"
+            className="inline-flex items-center gap-2 border border-white/30 hover:border-white text-white font-medium px-5 py-2.5 rounded-lg transition-colors text-sm"
+          >
+            <Key size={14} /> Redeem Key
+          </Link>
+        </div>
+      </div>
     </div>
   );
 }
@@ -372,8 +407,8 @@ function StatCard({
 
 function CourseCard({ c }: { c: any }) {
   return (
-    <div className="bg-white rounded-2xl border border-brand-beige-dark overflow-hidden hover:border-brand-navy/30 transition-colors group">
-      <div className="h-36 bg-brand-beige-dark relative overflow-hidden">
+    <div className="bg-white rounded-2xl border border-brand-beige-dark p-3 hover:border-brand-navy/30 hover:shadow-sm transition-all group flex flex-col">
+      <div className="aspect-video rounded-xl bg-brand-beige-dark relative overflow-hidden">
         {c.course?.thumbnailUrl ? (
           <img
             src={c.course.thumbnailUrl}
@@ -389,47 +424,77 @@ function CourseCard({ c }: { c: any }) {
           </div>
         )}
         {c.isCompleted && (
-          <div className="absolute top-3 right-3 bg-brand-green text-white rounded-full px-2.5 py-1 flex items-center gap-1 shadow-sm">
+          <div className="absolute top-2.5 right-2.5 bg-brand-green text-white rounded-full px-2.5 py-1 flex items-center gap-1 shadow-sm">
             <CheckCircle2 size={11} />
-            <span className="text-[10px] font-semibold uppercase tracking-wider">
-              Done
-            </span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider">Done</span>
           </div>
         )}
         {c.course?.courseType === "FREE" && (
-          <div className="absolute top-3 left-3 bg-brand-green-dark text-white rounded-full px-2.5 py-1 flex items-center gap-1 shadow-sm">
+          <div className="absolute top-2.5 left-2.5 bg-brand-green-dark text-white rounded-full px-2.5 py-1 flex items-center gap-1 shadow-sm">
             <Gift size={10} />
-            <span className="text-[10px] font-semibold uppercase tracking-wider">
-              Free
-            </span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider">Free</span>
           </div>
         )}
       </div>
-      <div className="p-5">
-        <h3 className="font-bold text-brand-navy leading-snug line-clamp-2 mb-3 group-hover:text-brand-mustard transition-colors">
+
+      <div className="px-2 pt-4 pb-2 flex flex-col flex-1">
+        <h3 className="font-bold text-brand-navy leading-snug line-clamp-2 mb-3">
           {c.course?.title}
         </h3>
-        <div className="mb-4">
-          <div className="flex justify-between text-xs text-brand-navy/60 mb-1.5">
-            <span className="font-medium">Progress</span>
-            <span className="font-semibold">{c.completionPercent}%</span>
+
+        {c.isEnrolled ? (
+          <div className="mb-4">
+            <div className="flex justify-between text-xs text-brand-navy/60 mb-1.5">
+              <span className="font-medium">Progress</span>
+              <span className="font-semibold text-brand-navy">{c.completionPercent}%</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-brand-beige-dark overflow-hidden">
+              <div
+                className="h-full rounded-full bg-brand-green transition-all"
+                style={{ width: `${Math.max(2, c.completionPercent)}%` }}
+              />
+            </div>
           </div>
-          <div className="h-1.5 rounded-full bg-brand-beige-dark overflow-hidden">
-            <div
-              className="h-full rounded-full bg-brand-navy transition-all"
-              style={{ width: `${c.completionPercent}%` }}
-            />
+        ) : (
+          <div className="mb-4">
+            {c.course?.summary && (
+              <p className="text-brand-navy/70 text-sm leading-relaxed line-clamp-2 mb-3">
+                {c.course.summary}
+              </p>
+            )}
+            <span className="inline-block text-[11px] font-medium text-brand-navy/60 bg-brand-beige border border-brand-beige-dark rounded-md px-2 py-0.5">
+              Not Enrolled
+            </span>
           </div>
-        </div>
-        <div className="flex items-center justify-between">
-          <Link
-            to={`/student/course/${c.courseId}`}
-            className="flex items-center gap-1.5 bg-brand-navy hover:bg-brand-navy-dark text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
-          >
-            <Play size={13} />{" "}
-            {c.completionPercent > 0 ? "Continue" : "Start"}
-          </Link>
-          {c.isCompleted && (
+        )}
+
+        <div className="mt-auto flex items-center justify-between">
+          {c.isEnrolled ? (
+            <Link
+              to={`/student/course/${c.courseId}`}
+              className="inline-flex items-center gap-1.5 bg-brand-navy-deeper hover:bg-brand-navy text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+            >
+              <Play size={12} className="fill-current" />
+              {c.isCompleted ? "Review" : c.completionPercent > 0 ? "Continue" : "Start"}
+            </Link>
+          ) : c.course?.courseType === "FREE" ? (
+            <Link
+              to={`/student/course/${c.courseId}`}
+              className="inline-flex items-center gap-1.5 bg-brand-green-dark hover:bg-brand-green text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+            >
+              <Gift size={12} /> Start for Free
+            </Link>
+          ) : (
+            <a
+              href={COURSE_INFO_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 bg-brand-navy-deeper hover:bg-brand-navy text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+            >
+              <Lock size={12} /> Learn More
+            </a>
+          )}
+          {c.hasCertificate && (
             <a
               href={`/certificate/${c.courseId}`}
               target="_blank"
@@ -445,72 +510,65 @@ function CourseCard({ c }: { c: any }) {
   );
 }
 
-// ── What's New card ──────────────────────────────────────────────────────────
+// ── Watch & Learn banner ─────────────────────────────────────────────────────
 
-function WhatsNewCard({
-  icon: Icon,
-  eyebrow,
-  cta,
-  to,
-  tone,
-}: {
-  icon: React.ElementType;
-  eyebrow: string;
-  cta: string;
-  to?: string;
-  tone: "navy" | "green" | "mustard";
-}) {
-  const tones: Record<typeof tone, { bg: string; iconBg: string; iconColor: string }> = {
-    navy: {
-      bg: "bg-white border-brand-beige-dark hover:border-brand-navy/40",
-      iconBg: "bg-brand-navy/10",
-      iconColor: "text-brand-navy",
-    },
-    green: {
-      bg: "bg-white border-brand-beige-dark hover:border-brand-green/50",
-      iconBg: "bg-brand-green/10",
-      iconColor: "text-brand-green-dark",
-    },
-    mustard: {
-      bg: "bg-white border-brand-beige-dark hover:border-brand-mustard/50",
-      iconBg: "bg-brand-mustard/15",
-      iconColor: "text-brand-mustard",
-    },
-  };
-  const t = tones[tone];
-
-  const inner = (
-    <>
-      <div
-        className={`w-10 h-10 rounded-lg ${t.iconBg} flex items-center justify-center mb-4`}
-      >
-        <Icon className={`${t.iconColor} w-5 h-5`} />
-      </div>
-      <p className="text-xs font-bold tracking-[0.14em] text-brand-navy/50 mb-1 uppercase">
-        {eyebrow}
-      </p>
-      <p
-        className={`text-sm font-semibold ${
-          to ? "text-brand-navy" : "text-brand-navy/50"
-        } flex items-center gap-1.5`}
-      >
-        {cta}
-        {to && <ArrowRight size={13} className="text-brand-mustard" />}
-      </p>
-    </>
-  );
-
-  if (!to) {
-    return (
-      <div className={`rounded-2xl border p-5 ${t.bg} cursor-not-allowed`}>
-        {inner}
-      </div>
-    );
-  }
-
+function WatchAndLearn() {
   return (
-    <Link to={to} className={`rounded-2xl border p-5 ${t.bg} transition-colors block`}>
-      {inner}
-    </Link>
+    <section className="rounded-2xl bg-[#E4EFE6] border border-brand-green/20 p-4 sm:p-6">
+      <div className="flex flex-col md:flex-row gap-5 md:gap-6 md:items-center">
+        {/* Left: pitch */}
+        <div className="md:w-60 lg:w-72 shrink-0">
+          <div className="flex items-center gap-3 mb-2">
+            <a
+              href={YOUTUBE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-11 h-11 rounded-full bg-brand-green-dark text-white flex items-center justify-center shrink-0 hover:bg-brand-green transition-colors"
+              aria-label="Open the Teach Me Like a Tot YouTube channel"
+            >
+              <Play size={18} className="fill-current ml-0.5" />
+            </a>
+            <h2 className="font-display text-2xl text-brand-navy leading-none">Watch &amp; Learn</h2>
+          </div>
+          <p className="text-brand-navy/70 text-sm leading-relaxed mb-4">
+            Quick money and market lessons when you have a few minutes.
+          </p>
+          <a
+            href={YOUTUBE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 bg-brand-navy-deeper hover:bg-brand-navy text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
+          >
+            Visit YouTube Channel <ExternalLink size={14} />
+          </a>
+        </div>
+
+        {/* Middle: latest videos strip */}
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-brand-navy/70 mb-2">Latest Videos</p>
+          {/* On phones the 3-up strip would be unreadably small, so it scrolls sideways at a legible size */}
+          <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0 scrollbar-none">
+            <a href={YOUTUBE_URL} target="_blank" rel="noopener noreferrer" className="block group">
+              <img
+                src="/std-dashboard-img/YT thumbnail.png"
+                alt="Latest videos: The Mutual Funds vs. ETFs Debate, Tax Implications from Investing, Importance of Renter’s Insurance"
+                className="h-auto min-w-[640px] sm:min-w-0 w-full rounded-lg group-hover:opacity-90 transition-opacity"
+              />
+            </a>
+          </div>
+        </div>
+
+        {/* Right: tagline */}
+        <div className="hidden xl:block shrink-0 w-32 text-right">
+          <p className="font-display italic text-brand-navy/80 text-lg leading-snug -rotate-3">
+            Real Topics.
+            <br />
+            Real Life.
+            <br />
+            Real You.
+          </p>
+        </div>
+      </div>
+    </section>
   );
 }

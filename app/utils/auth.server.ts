@@ -118,6 +118,12 @@ function getTokenFromRequest(request: Request): string | null {
   return cookies[COOKIE_NAME] || null;
 }
 
+/** SHA-256 of the current request's session token (how sessions are stored), or null. */
+export function getCurrentSessionTokenHash(request: Request): string | null {
+  const token = getTokenFromRequest(request);
+  return token ? hashToken(token) : null;
+}
+
 // ─── Device info extraction ───────────────────────────────────────────────────
 
 export function getDeviceInfo(request: Request): {

@@ -126,7 +126,7 @@ export default function StudentResources() {
         />
 
         <main className="flex-1 min-w-0">
-          <StudentMobileTopbar />
+          <StudentMobileTopbar active="resources" />
           <StudentTopbar user={user} />
 
           <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8 lg:py-10">

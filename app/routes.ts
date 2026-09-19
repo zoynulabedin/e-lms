@@ -25,6 +25,7 @@ export default [
   route("student/quiz-history", "routes/student.quiz-history.tsx"),
   route("student/help", "routes/student.help.tsx"),
   route("student/resources", "routes/student.resources.tsx"),
+  route("student/settings", "routes/student.settings.tsx"),
   route("student/certificates", "routes/student.certificates.tsx"),
 
   // ─── Certificate (raw HTML response) ───────────────────────────────
@@ -54,4 +55,9 @@ export default [
     route("settings", "routes/settings.tsx"),
     route("quiz-review", "routes/quiz-review.tsx"),
   ]),
+
+  // ─── Fallbacks (must stay last) ─────────────────────────────────────────
+  // Browser/tool probes get a bare 404; everything else gets the 404 page.
+  route(".well-known/*", "routes/well-known.ts"),
+  route("*", "routes/$.tsx"),
 ] satisfies RouteConfig;
