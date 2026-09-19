@@ -4,8 +4,6 @@ import {
   LayoutDashboard,
   GraduationCap,
   FolderOpen,
-  Award,
-  ClipboardList,
   HelpCircle,
   LogOut,
   Key,
@@ -131,22 +129,6 @@ export function StudentSidebar({
           to="/student/resources"
           active={active === "resources"}
         />
-        <NavItem
-          icon={ClipboardList}
-          label="Quiz History"
-          to="/student/quiz-history"
-          active={active === "quiz-history"}
-        />
-        {certificatesEnabled ? (
-          <NavItem
-            icon={Award}
-            label="Certificates"
-            to="/student/certificates"
-            active={active === "certificates"}
-          />
-        ) : (
-          <NavItem icon={Award} label="Certificates" disabled />
-        )}
         <NavItem
           icon={HelpCircle}
           label="Help & Support"

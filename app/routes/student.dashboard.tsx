@@ -127,8 +127,8 @@ export default function StudentDashboard() {
           <StudentMobileTopbar />
           <StudentTopbar
             user={user}
-            title={`Welcome back, ${firstName}!`}
-            subtitle="Continue learning where you left off."
+            title={`Look who’s back, ${firstName}!`}
+            subtitle="Ready for another money “aha!” moment?"
           />
 
           <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8 lg:py-10">
