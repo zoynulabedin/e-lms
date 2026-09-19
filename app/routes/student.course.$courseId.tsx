@@ -132,16 +132,6 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   if (!hasAccess)
     throw data({ message: "You don't have access to this course." }, { status: 403 });
 
-  // A published FREE course opened by link counts as enrolling in it - that
-  // is what puts it on the dashboard / resources page.
-  if (!enrollment && !license && course.courseType === "FREE") {
-    await prisma.enrollment.upsert({
-      where: { userId_courseId: { userId: user.id, courseId } },
-      update: {},
-      create: { userId: user.id, courseId },
-    });
-  }
-
   await prisma.progress.upsert({
     where: { userId_courseId: { userId: user.id, courseId } },
     update: { lastAccessedAt: new Date() },

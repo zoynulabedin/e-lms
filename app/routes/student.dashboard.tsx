@@ -236,8 +236,8 @@ export default function StudentDashboard() {
                   <BookOpen className="mx-auto text-brand-navy/30 w-12 h-12 mb-3" />
                   <p className="text-brand-navy font-medium">No courses yet</p>
                   <p className="text-brand-navy/60 text-sm mt-1">
-                    Browse free courses or use a license key to unlock a paid
-                    course.
+                    Enter the license key from your purchase to unlock your
+                    first course.
                   </p>
                   <div className="flex items-center justify-center gap-3 mt-4">
                     <Link
@@ -395,7 +395,7 @@ function StartCard({ hasCourses }: { hasCourses: boolean }) {
         <p className="text-white/70 text-sm mt-1 max-w-md">
           {hasCourses
             ? "Browse the catalog for your next money “aha!” moment."
-            : "Free courses start instantly — paid courses unlock with a license key."}
+            : "Every course unlocks with the license key from your purchase."}
         </p>
         <div className="flex flex-wrap items-center gap-3 mt-5">
           <Link

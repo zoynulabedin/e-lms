@@ -3,6 +3,7 @@ import { useLoaderData, useFetcher, Link } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { getSessionUser } from "../utils/auth.server";
+import { getAccessibleCourseIds } from "../utils/access.server";
 import {
   BookOpen,
   Gift,
@@ -12,6 +13,7 @@ import {
   Video,
   Key,
   Search,
+  Lock,
 } from "lucide-react";
 import { Form } from "react-router";
 import { useState } from "react";
@@ -21,6 +23,9 @@ import {
   StudentTopbar,
 } from "../components/StudentSidebar";
 import { Toast } from "../components/Toast";
+
+/** Where "Learn More" sends a learner who has not unlocked a course yet. */
+const STORE_URL = "https://instructionalgraphics.org/collections/all-products";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const user = await getSessionUser(request);
@@ -88,25 +93,17 @@ export async function loader({ request }: LoaderFunctionArgs) {
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => b.count - a.count);
 
-  // If user is logged in, get their enrollments + certificates count
+  // If user is logged in: which courses they hold a licence for + certificates
   let enrolledCourseIds: Set<string> = new Set();
   let hasCertificates = false;
   if (user) {
-    const [progresses, enrollments, completedCount] = await Promise.all([
-      prisma.progress.findMany({
-        where: { userId: user.id },
-        select: { courseId: true },
-      }),
-      prisma.enrollment.findMany({
-        where: { userId: user.id },
-        select: { courseId: true },
-      }),
+    const [accessible, completedCount] = await Promise.all([
+      getAccessibleCourseIds(user.id),
       prisma.progress.count({
         where: { userId: user.id, completedAt: { not: null } },
       }),
     ]);
-    progresses.forEach((p) => enrolledCourseIds.add(p.courseId));
-    enrollments.forEach((e) => enrolledCourseIds.add(e.courseId));
+    enrolledCourseIds = new Set(accessible);
     hasCertificates = completedCount > 0;
   }
 
@@ -131,31 +128,12 @@ export async function action({ request }: ActionFunctionArgs) {
   const intent = formData.get("intent") as string;
 
   if (intent === "enroll") {
-    const course = await prisma.course.findUnique({ where: { id: courseId } });
-    if (!course || course.status !== "PUBLISHED") {
-      return data({ error: "Course not found.", courseId }, { status: 404 });
-    }
-    if (course.courseType !== "FREE") {
-      return data(
-        { error: "This course requires a license key.", courseId },
-        { status: 403 },
-      );
-    }
-
-    await prisma.$transaction([
-      prisma.enrollment.upsert({
-        where: { userId_courseId: { userId: user.id, courseId } },
-        update: {},
-        create: { userId: user.id, courseId },
-      }),
-      prisma.progress.upsert({
-        where: { userId_courseId: { userId: user.id, courseId } },
-        update: {},
-        create: { userId: user.id, courseId },
-      }),
-    ]);
-
-    return redirect(`/student/course/${courseId}`);
+    // Self-service enrolment is switched off: every course is unlocked with a
+    // licence key only (bought in the store, or issued by an admin).
+    return data(
+      { error: "This course is unlocked with a license key.", courseId },
+      { status: 403 },
+    );
   }
 
   return data({ error: "Unknown action." }, { status: 400 });
@@ -198,8 +176,8 @@ export default function Catalog() {
           Learn at Your Own Pace
         </h1>
         <p className="text-brand-navy/60 mt-2 max-w-2xl">
-          Browse our library of professional courses. Free courses available
-          instantly — paid courses require a license key.
+          Browse our library of professional courses. Every course unlocks
+          with a license key from your purchase.
         </p>
       </div>
 
@@ -493,37 +471,24 @@ function CourseCard({
             >
               <Play size={14} /> Continue Learning
             </Link>
-          ) : isFree ? (
-            user ? (
-              <fetcher.Form method="post">
-                <input type="hidden" name="courseId" value={course.id} />
-                <input type="hidden" name="intent" value="enroll" />
-                <button
-                  type="submit"
-                  disabled={busy}
-                  className="w-full flex items-center justify-center gap-2 bg-brand-green-dark hover:bg-brand-green disabled:opacity-60 text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
-                >
-                  <Gift size={14} /> {busy ? "Enrolling…" : "Enroll for Free"}
-                </button>
-                {enrollError && (
-                  <p className="mt-2 text-xs text-red-600">{enrollError}</p>
-                )}
-              </fetcher.Form>
-            ) : (
-              <Link
-                to="/auth/login?redirect=/catalog"
+          ) : (
+            // Locked until a licence key is redeemed - free or paid.
+            <div className="space-y-2">
+              <a
+                href={STORE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="w-full flex items-center justify-center gap-2 bg-brand-navy hover:bg-brand-navy-dark text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
               >
-                Sign in to Enroll
+                <Lock size={14} /> Learn More
+              </a>
+              <Link
+                to="/redeem"
+                className="w-full flex items-center justify-center gap-2 text-brand-navy/70 hover:text-brand-navy text-xs font-semibold transition-colors"
+              >
+                <Key size={12} /> Have a license key? Redeem it
               </Link>
-            )
-          ) : (
-            <Link
-              to="/redeem"
-              className="w-full flex items-center justify-center gap-2 bg-brand-mustard hover:bg-brand-mustard/90 text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
-            >
-              <Key size={14} /> Redeem License Key
-            </Link>
+            </div>
           )}
         </div>
       </div>

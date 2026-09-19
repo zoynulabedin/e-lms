@@ -4,25 +4,26 @@ import { prisma } from "./db.server";
 /**
  * Single source of truth for "can this user open this course?".
  *
- * - PAID course  → only an ACTIVE license grants access. An Enrollment row is
- *                  created on redeem but is NOT enough on its own, so revoking
- *                  the license takes effect immediately.
- * - FREE course  → PUBLISHED courses are open to everyone; a user who enrolled
- *                  before a course was unpublished keeps access.
+ * A course is unlocked ONLY by an ACTIVE licence (a redeemed key) - whether it
+ * was bought in the store or handed out by an admin as a bulk key. The course
+ * type (FREE / PAID) only affects how it is presented in the catalog; it never
+ * grants access by itself, so a learner who redeemed one course sees every
+ * other course locked. Enrollment rows are bookkeeping created on redeem and
+ * are deliberately NOT enough on their own, so revoking a licence takes
+ * effect immediately.
  *
- * Used by the student course loader/action, the dashboard, and the resources
- * page so the rule can't drift between them.
+ * Used by the student course loader/action, the dashboard, the catalog and
+ * the resources page so the rule can't drift between them.
  */
 
 type CourseShape = { courseType: string; status: string };
 
 export function computeCourseAccess(
-  course: CourseShape,
+  _course: CourseShape,
   license: { id: string } | null,
-  enrollment: { id: string } | null,
+  _enrollment: { id: string } | null,
 ): boolean {
-  if (course.courseType === "PAID") return !!license;
-  return course.status === "PUBLISHED" || !!enrollment;
+  return !!license;
 }
 
 export async function getCourseAccess(userId: string, courseId: string) {
@@ -62,29 +63,15 @@ export async function requireCourseAccess(userId: string, courseId: string) {
 }
 
 /**
- * Ids of every course the user is entitled to open right now. Progress rows
- * are deliberately ignored — they only record that a course was visited.
+ * Ids of every course the user is entitled to open right now: exactly the
+ * courses they hold an ACTIVE licence for. Progress/enrollment rows are
+ * deliberately ignored - they only record history.
  */
 export async function getAccessibleCourseIds(userId: string): Promise<string[]> {
-  const [licenses, enrollments] = await Promise.all([
-    prisma.license.findMany({
-      where: { userId, status: "ACTIVE" },
-      select: { courseId: true },
-    }),
-    prisma.enrollment.findMany({
-      where: { userId },
-      select: {
-        courseId: true,
-        course: { select: { courseType: true, status: true } },
-      },
-    }),
-  ]);
-
-  const ids = new Set<string>(licenses.map((l) => l.courseId));
-  for (const e of enrollments) {
-    if (computeCourseAccess(e.course, null, { id: "enrolled" })) {
-      ids.add(e.courseId);
-    }
-  }
-  return Array.from(ids);
+  const licenses = await prisma.license.findMany({
+    where: { userId, status: "ACTIVE" },
+    select: { courseId: true },
+    distinct: ["courseId"],
+  });
+  return licenses.map((l) => l.courseId);
 }
