@@ -20,6 +20,7 @@ import {
   Gift,
   Key,
   Lock,
+  Video,
   ExternalLink,
 } from "lucide-react";
 
@@ -134,7 +135,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   // published course as a "Not Enrolled" tile so the learner can discover it.
   const owned = new Set(myCourses.map((c) => c.courseId));
   const others = await prisma.course.findMany({
-    where: { status: "PUBLISHED", isPublic: true, id: { notIn: Array.from(owned) } },
+    where: { status: "PUBLISHED", id: { notIn: Array.from(owned) } },
     orderBy: { createdAt: "asc" },
     select: { id: true, title: true, summary: true, thumbnailUrl: true, courseType: true, category: true },
   });
@@ -447,6 +448,11 @@ function CourseCard({ c }: { c: any }) {
             <span className="text-[10px] font-semibold uppercase tracking-wider">Free</span>
           </div>
         )}
+        {!c.isEnrolled && (
+          <div className="absolute top-2.5 right-2.5 w-8 h-8 rounded-full bg-brand-navy-deeper/85 text-white flex items-center justify-center shadow-sm">
+            <Lock size={14} />
+          </div>
+        )}
       </div>
 
       <div className="px-2 pt-4 pb-2 flex flex-col flex-1">
@@ -486,17 +492,18 @@ function CourseCard({ c }: { c: any }) {
               to={`/student/course/${c.courseId}`}
               className="inline-flex items-center gap-1.5 bg-brand-navy-deeper hover:bg-brand-navy text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
             >
-              <Play size={12} className="fill-current" />
-              {c.isCompleted ? "Review" : c.completionPercent > 0 ? "Continue" : "Start"}
+              <Video size={13} /> Continue
             </Link>
           ) : c.course?.courseType === "FREE" ? (
+            // Free course: "Learn More" opens it (which enrols the learner).
             <Link
               to={`/student/course/${c.courseId}`}
-              className="inline-flex items-center gap-1.5 bg-brand-green-dark hover:bg-brand-green text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+              className="inline-flex items-center gap-1.5 bg-brand-navy-deeper hover:bg-brand-navy text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
             >
-              <Gift size={12} /> Start for Free
+              <Lock size={12} /> Learn More
             </Link>
           ) : (
+            // Paid course: "Learn More" goes to the site where it can be purchased.
             <a
               href={COURSE_INFO_URL}
               target="_blank"
