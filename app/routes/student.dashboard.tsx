@@ -10,6 +10,8 @@ import type { LoaderFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireUser } from "../utils/auth.server";
 import { getAccessibleCourseIds } from "../utils/access.server";
+import { getLatestVideos, type YouTubeVideo } from "../utils/youtube.server";
+import { useState } from "react";
 import {
   BookOpen,
   CheckCircle2,
@@ -149,13 +151,23 @@ export async function loader({ request }: LoaderFunctionArgs) {
     })),
   ];
 
-  return { user, myCourses, tiles, hasCertificates, resumeCourseId: resumeCourse?.courseId ?? null, resumeNext };
+  const latestVideos = await getLatestVideos(3);
+
+  return {
+    user,
+    myCourses,
+    tiles,
+    hasCertificates,
+    resumeCourseId: resumeCourse?.courseId ?? null,
+    resumeNext,
+    latestVideos,
+  };
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function StudentDashboard() {
-  const { user, myCourses, tiles, hasCertificates, resumeCourseId, resumeNext } =
+  const { user, myCourses, tiles, hasCertificates, resumeCourseId, resumeNext, latestVideos } =
     useLoaderData<typeof loader>();
 
   const resume = resumeCourseId
@@ -251,7 +263,7 @@ export default function StudentDashboard() {
             </section>
 
             {/* ── Watch & Learn ────────────────────────────────────────────── */}
-            <WatchAndLearn />
+            <WatchAndLearn videos={latestVideos} />
           </div>
         </main>
       </div>
@@ -512,7 +524,7 @@ function CourseCard({ c }: { c: any }) {
 
 // ── Watch & Learn banner ─────────────────────────────────────────────────────
 
-function WatchAndLearn() {
+function WatchAndLearn({ videos }: { videos: YouTubeVideo[] }) {
   return (
     <section className="rounded-2xl bg-[#E4EFE6] border border-brand-green/20 p-4 sm:p-6">
       <div className="flex flex-col md:flex-row gap-5 md:gap-6 md:items-center">
@@ -543,18 +555,13 @@ function WatchAndLearn() {
           </a>
         </div>
 
-        {/* Middle: latest videos strip */}
+        {/* Middle: latest videos — real YouTube players (click to play inline) */}
         <div className="flex-1 min-w-0">
           <p className="text-xs font-semibold text-brand-navy/70 mb-2">Latest Videos</p>
-          {/* On phones the 3-up strip would be unreadably small, so it scrolls sideways at a legible size */}
-          <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0 scrollbar-none">
-            <a href={YOUTUBE_URL} target="_blank" rel="noopener noreferrer" className="block group">
-              <img
-                src="/std-dashboard-img/YT thumbnail.png"
-                alt="Latest videos: The Mutual Funds vs. ETFs Debate, Tax Implications from Investing, Importance of Renter’s Insurance"
-                className="h-auto min-w-[640px] sm:min-w-0 w-full rounded-lg group-hover:opacity-90 transition-opacity"
-              />
-            </a>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+            {videos.map((v) => (
+              <VideoTile key={v.id} video={v} />
+            ))}
           </div>
         </div>
 
@@ -570,5 +577,58 @@ function WatchAndLearn() {
         </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * "Lite" YouTube embed: shows the thumbnail with a play button and only loads
+ * the (heavy) iframe player after the learner clicks - keeps the dashboard
+ * fast and avoids three YouTube players spinning up on every visit.
+ */
+function VideoTile({ video }: { video: YouTubeVideo }) {
+  const [playing, setPlaying] = useState(false);
+
+  return (
+    <div className="min-w-0">
+      <div className="relative aspect-video rounded-lg overflow-hidden bg-black shadow-sm">
+        {playing ? (
+          <iframe
+            src={`https://www.youtube-nocookie.com/embed/${video.id}?autoplay=1&rel=0&modestbranding=1`}
+            title={video.title}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowFullScreen
+            className="absolute inset-0 w-full h-full"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setPlaying(true)}
+            aria-label={`Play: ${video.title}`}
+            className="group absolute inset-0 w-full h-full"
+          >
+            <img
+              src={video.thumbnail}
+              alt=""
+              loading="lazy"
+              className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
+            />
+            <span className="absolute inset-0 bg-black/10 group-hover:bg-black/20 transition-colors" />
+            <span className="absolute inset-0 flex items-center justify-center">
+              <span className="w-11 h-11 rounded-full bg-brand-navy-deeper/90 text-white flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
+                <Play size={18} className="fill-current ml-0.5" />
+              </span>
+            </span>
+          </button>
+        )}
+      </div>
+      <a
+        href={video.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="block mt-2 text-xs sm:text-[13px] font-semibold text-brand-navy leading-snug line-clamp-2 hover:text-brand-green-dark transition-colors"
+      >
+        {video.title}
+      </a>
+    </div>
   );
 }
