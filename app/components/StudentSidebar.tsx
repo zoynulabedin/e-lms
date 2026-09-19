@@ -86,7 +86,7 @@ export function StudentSidebar({
     "relative w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors";
 
   return (
-    <aside className="hidden lg:flex w-72 shrink-0 min-h-screen bg-brand-navy-deeper border-r border-white/10 flex-col">
+    <aside className="hidden lg:flex w-72 shrink-0 h-screen sticky top-0 bg-brand-navy-deeper border-r border-white/10 flex-col">
       {/* Logo */}
       <div className="px-6 py-6 border-b border-white/10">
         <Link to="/student" className="inline-flex items-center group">
@@ -99,7 +99,7 @@ export function StudentSidebar({
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 px-4 py-6 space-y-1">
+      <nav className="flex-1 min-h-0 overflow-y-auto px-4 py-6 space-y-1">
         <NavItem
           icon={LayoutDashboard}
           label="Dashboard"
@@ -165,8 +165,8 @@ export function StudentSidebar({
         </Form>
       </nav>
 
-      {/* License key callout */}
-      <div className="mx-4 mb-6 rounded-xl bg-brand-mustard/15 border border-brand-mustard/40 p-4">
+      {/* License key callout — pinned to the bottom of the viewport */}
+      <div className="mt-auto shrink-0 mx-4 mb-6 rounded-xl bg-brand-mustard/15 border border-brand-mustard/40 p-4">
         <div className="flex items-center gap-2 mb-2">
           <Key size={16} className="text-brand-mustard" />
           <p className="text-sm font-bold text-white">Have a License Key?</p>
