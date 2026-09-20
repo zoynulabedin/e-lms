@@ -127,6 +127,7 @@ model ShopifyOrder {
 
 model Course {
   id                String       @id @default(uuid())
+  iconSet           String? // "market" | "money" - which module icon set the sidebar uses
   title             String
   summary           String? // Short one-liner description
   description       String? // Long rich-text description

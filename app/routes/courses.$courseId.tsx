@@ -6,6 +6,7 @@ import { randomUUID } from "crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../utils/db.server";
 import { requireAdmin } from "../utils/auth.server";
+import { isIconSet, iconSetImages } from "../utils/module-icons";
 import { recomputeCourseProgressForAllUsers } from "../utils/progress.server";
 import { normalizeModuleOrder } from "../utils/curriculum.server";
 import { useState, useRef, useEffect } from "react";
@@ -137,9 +138,10 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     difficulty: string | null; isQA: boolean;
     whatYouLearn: string | null; targetAudience: string | null;
     materialsIncluded: string | null; requirements: string | null;
+    iconSet: string | null;
   }>>`
     SELECT difficulty, "isQA", "whatYouLearn", "targetAudience",
-           "materialsIncluded", requirements
+           "materialsIncluded", requirements, "iconSet"
     FROM "Course" WHERE id = ${courseId}
   `;
 
@@ -230,6 +232,8 @@ export async function action({ request, params }: ActionFunctionArgs) {
     const instructor = (formData.get("instructor") as string)?.trim() || null;
     const difficulty = (formData.get("difficulty") as string) || null;
     const isQA = formData.get("isQA") === "true";
+    const iconSetRaw = String(formData.get("iconSet") || "");
+    const iconSet = iconSetRaw === "market" || iconSetRaw === "money" ? iconSetRaw : null;
     const isPublicCourse = formData.get("isPublicCourse") === "true";
     const contentTypeRaw = (formData.get("contentType") as string) || "STORYLINE";
     const courseTypeRaw = (formData.get("courseType") as string) || "FREE";
@@ -265,6 +269,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
         instructor = ${instructor},
         difficulty = ${difficulty},
         "isQA" = ${isQA},
+        "iconSet" = ${iconSet},
         "contentType" = ${contentType}::"ContentType",
         "courseType" = ${courseType}::"CourseType",
         price = ${finalPrice},
@@ -1760,6 +1765,7 @@ function BasicsStep({ course, fetcher }: { course: any; fetcher: any }) {
   const [courseType, setCourseType] = useState<string>(course.courseType || "FREE");
   const [contentType, setContentType] = useState<string>(course.contentType || "STORYLINE");
   const [isQA, setIsQA] = useState<boolean>(course.isQA ?? false);
+  const [iconSet, setIconSet] = useState<string>(course.iconSet ?? "");
   const [isPublicCourse, setIsPublicCourse] = useState<boolean>(course.isPublic ?? false);
 
   const titleSlug = course.title.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
@@ -1924,6 +1930,47 @@ function BasicsStep({ course, fetcher }: { course: any; fetcher: any }) {
             <option value="DRAFT">Draft</option>
           </select>
           <p className="text-[11px] text-gray-400">Last updated on {new Date(course.updatedAt).toLocaleDateString("en-US", { day: "numeric", month: "long", year: "numeric" })}</p>
+        </div>
+
+        {/* Module icons */}
+        <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
+          <label className="block text-sm font-semibold text-gray-900">Module Icons</label>
+          <p className="text-[11px] text-gray-500 -mt-1">
+            Shown beside each module in the course player. Icons are applied in module order.
+          </p>
+          <input type="hidden" name="iconSet" value={iconSet} />
+          <div className="space-y-1.5">
+            {([
+              { value: "", label: "Default (generic icons)" },
+              { value: "market", label: "Markets set" },
+              { value: "money", label: "Money set" },
+            ] as const).map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setIconSet(opt.value)}
+                className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-left text-sm transition-colors ${
+                  iconSet === opt.value
+                    ? "border-blue-500 bg-blue-50 text-blue-900 font-medium"
+                    : "border-gray-200 hover:border-gray-300 text-gray-700"
+                }`}
+              >
+                <span
+                  className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 ${
+                    iconSet === opt.value ? "border-blue-600 bg-blue-600" : "border-gray-300"
+                  }`}
+                />
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {isIconSet(iconSet) && (
+            <div className="flex flex-wrap gap-1.5 pt-1 p-2 rounded-lg" style={{ background: "#001A38" }}>
+              {iconSetImages(iconSet).map((src, i) => (
+                <img key={src} src={src} alt={`Module ${i + 1}`} title={`Module ${i + 1}`} className="w-6 h-6 object-contain" />
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Featured Image */}

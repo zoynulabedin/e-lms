@@ -5,6 +5,15 @@ import { prisma } from "../utils/db.server";
 import { requireUser } from "../utils/auth.server";
 import { computeCourseAccess, requireCourseAccess } from "../utils/access.server";
 import { recomputeCourseProgress } from "../utils/progress.server";
+import { moduleIcon, GETTING_STARTED_ICON } from "../utils/module-icons";
+
+/** Cream highlight + navy text used for the lesson/quiz currently playing. */
+const ACTIVE_BG = "#F5E7C8";
+const ACTIVE_FG = "#001A38";
+/** Light course-player header. */
+const HEADER_BG = "#FCF9F7";
+/** Footer lesson-navigation buttons. */
+const GOLD = "#BE924C";
 import { randomUUID } from "crypto";
 import { Prisma } from "@prisma/client";
 import {
@@ -24,11 +33,12 @@ import {
   RefreshCw,
   CheckCircle2,
   Check,
+  PlayCircle,
+  BookOpen,
   Award,
   RotateCcw,
   Maximize2,
   Lock,
-  Bookmark,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { HlsPlayer } from "../components/HlsPlayer";
@@ -356,6 +366,25 @@ export async function action({ request, params }: ActionFunctionArgs) {
       update: { completionPercent: newPercent, isCompleted, completedAt, lastAccessedAt: new Date() },
       create: { userId: user.id, courseId, completionPercent: newPercent, isCompleted, completedAt },
     });
+    return data({ ok: true });
+  }
+
+  // Undo an accidental "Mark as complete".
+  if (intent === "uncomplete_lesson") {
+    const lessonId = formData.get("lessonId") as string;
+    const lesson = lessonId
+      ? await prisma.lesson.findFirst({
+          where: { id: lessonId, module: { courseId } },
+          select: { id: true },
+        })
+      : null;
+    if (!lesson)
+      return data({ error: "Lesson not found in this course." }, { status: 400 });
+    await prisma.lessonProgress.updateMany({
+      where: { userId: user.id, lessonId },
+      data: { isCompleted: false, completedAt: null },
+    });
+    await recomputeCourseProgress(user.id, courseId);
     return data({ ok: true });
   }
 
@@ -1216,8 +1245,10 @@ export default function CourseViewer() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [expandedModules, setExpandedModules] = useState<Set<string>>(
-    new Set(course.modules.map((m: any) => m.id)),
+  // True accordion: exactly one module open at a time. Opens on the module
+  // that holds the lesson/quiz being viewed.
+  const [openModuleId, setOpenModuleId] = useState<string | null>(
+    () => activeItem?.module?.id ?? course.modules[0]?.id ?? null,
   );
 
   const completedSet = new Set(completedLessonIds);
@@ -1253,10 +1284,25 @@ export default function CourseViewer() {
     fetcher.submit(fd, { method: "post" });
   };
 
+  const markLessonIncomplete = (lessonId: string) => {
+    lessonDoneRef.current = null; // allow the watch handler to re-complete later
+    const fd = new FormData();
+    fd.append("intent", "uncomplete_lesson");
+    fd.append("lessonId", lessonId);
+    fetcher.submit(fd, { method: "post" });
+  };
+
   // Flat (no-module) courses report a course-level watch percent; modular
   // courses mark the current lesson complete instead. One submission per
   // lesson - the server derives the course percent from all lessons/quizzes.
   const lessonDoneRef = useRef<string | null>(null);
+  // Storyline tells us when the learner reaches the last slide of the scene
+  // (postMessage { action: "lessonComplete" }). Until then "Next Lesson" stays
+  // hidden so nobody skips half a lesson. Non-Storyline lessons are always ready.
+  const [reachedLessonEnd, setReachedLessonEnd] = useState(false);
+  useEffect(() => {
+    setReachedLessonEnd(false);
+  }, [currentLesson?.id, currentQuiz?.id]);
   // Latest values readable from long-lived event handlers without making
   // them effect dependencies (a re-subscribe would reset the 5 % throttle).
   const completedSetRef = useRef(completedSet);
@@ -1297,6 +1343,10 @@ export default function CourseViewer() {
         if (msg?.type === "progress" && typeof msg.percent === "number") {
           reportWatchProgress(Math.round(msg.percent));
         }
+        // Final slide of the Storyline scene reached.
+        if (msg?.action === "lessonComplete" || msg?.type === "lessonComplete") {
+          setReachedLessonEnd(true);
+        }
       } catch { /* non-JSON */ }
     };
     window.addEventListener("message", handler);
@@ -1334,14 +1384,13 @@ export default function CourseViewer() {
     }
   };
 
-  const toggleModule = (id: string) => {
-    setExpandedModules((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+  const toggleModule = (id: string) =>
+    setOpenModuleId((current) => (current === id ? null : id));
+
+  // Follow navigation: opening a lesson from elsewhere expands its module.
+  useEffect(() => {
+    if (activeItem?.module?.id) setOpenModuleId(activeItem.module.id);
+  }, [activeItem?.module?.id]);
 
   const itemNavUrl = (item: { type: string; item: any } | null) => {
     if (!item) return "#";
@@ -1353,21 +1402,21 @@ export default function CourseViewer() {
   const isLessonDone = currentLesson ? completedSet.has(currentLesson.id) : false;
 
   return (
-    <div className="h-screen flex overflow-hidden bg-brand-navy-dark">
+    <div className="h-screen flex overflow-hidden bg-brand-navy-deeper">
 
       {/* ── Sidebar ────────────────────────────────────────────────────────────── */}
       {hasModules && (
         <aside
           className="w-[360px] shrink-0 flex flex-col overflow-hidden"
-          style={{ background: "var(--color-brand-navy-dark)" }}
+          style={{ background: "var(--color-brand-navy-deeper)" }}
         >
           {/* Module list */}
           <div
             className="flex-1 overflow-y-auto"
-            style={{ scrollbarWidth: "thin", scrollbarColor: "#3b82f6 transparent" }}
+            style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(255,255,255,0.2) transparent" }}
           >
             {course.modules.map((module: any, moduleIdx: number) => {
-              const expanded = expandedModules.has(module.id);
+              const expanded = openModuleId === module.id;
               const moduleLessons: any[] = module.lessons;
               const moduleQuizzes: any[] = quizzesModuleMap[module.id] || [];
               const totalInModule = moduleLessons.length + moduleQuizzes.length;
@@ -1386,23 +1435,31 @@ export default function CourseViewer() {
                   {/* Module header */}
                   <button
                     onClick={() => toggleModule(module.id)}
+                    aria-expanded={expanded}
                     className="w-full flex items-center gap-3 px-4 py-3.5 text-left transition-colors"
-                    style={{ background: "var(--color-brand-navy)" }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = "#2c4a78")}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-brand-navy)")}
+                    style={{ background: "var(--color-brand-navy-deeper)" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-brand-navy-deeper)")}
                   >
-                    <Lock size={17} className="text-blue-400 shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="font-bold text-white text-[15px] leading-snug">
-                        {module.title}
-                      </p>
-                      <p className="text-slate-400 text-[13px] mt-0.5">
-                        {totalInModule} episode{totalInModule !== 1 ? "s" : ""}
-                      </p>
-                    </div>
+                    {(() => {
+                      // Module 1 of a course is the intro / "Getting Started"
+                      // section, so it gets the dedicated icon.
+                      const src =
+                        moduleIdx === 0
+                          ? (moduleIcon(course.iconSet, 0) ?? GETTING_STARTED_ICON)
+                          : moduleIcon(course.iconSet, moduleIdx);
+                      return src ? (
+                        <img src={src} alt="" aria-hidden="true" className="w-[22px] h-[22px] object-contain shrink-0" />
+                      ) : (
+                        <BookOpen size={20} className="shrink-0" style={{ color: "#7FB3E8" }} />
+                      );
+                    })()}
+                    <p className="flex-1 min-w-0 font-bold text-white text-[16px] leading-snug">
+                      {module.title}
+                    </p>
                     {expanded
-                      ? <ChevronUp size={15} className="text-slate-400 shrink-0" />
-                      : <ChevronDown size={15} className="text-slate-400 shrink-0" />}
+                      ? <ChevronUp size={16} className="shrink-0" style={{ color: "rgba(255,255,255,0.55)" }} />
+                      : <ChevronDown size={16} className="shrink-0" style={{ color: "rgba(255,255,255,0.55)" }} />}
                   </button>
 
                   {/* Item list */}
@@ -1418,40 +1475,42 @@ export default function CourseViewer() {
                             <Link
                               key={`lesson-${lesson.id}`}
                               to={`/student/course/${course.id}?lesson=${lesson.id}`}
-                              className="flex items-center gap-3 px-4 py-3.5 transition-colors group"
+                              className="flex items-center gap-3 px-4 py-3 transition-colors group"
                               style={{
-                                borderBottom: "1px solid rgba(255,255,255,0.04)",
-                                background: isActive ? "rgba(59,130,246,0.12)" : undefined,
+                                borderBottom: "1px solid rgba(255,255,255,0.05)",
+                                background: isActive ? ACTIVE_BG : undefined,
                               }}
                               onMouseEnter={(e) => {
-                                if (!isActive) e.currentTarget.style.background = "rgba(255,255,255,0.04)";
+                                if (!isActive) e.currentTarget.style.background = "rgba(255,255,255,0.05)";
                               }}
                               onMouseLeave={(e) => {
                                 if (!isActive) e.currentTarget.style.background = "";
                               }}
                             >
-                              {/* Completion checkbox */}
-                              <div
-                                className="shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors"
-                                style={{
-                                  borderColor: isDone ? "#22c55e" : "rgba(255,255,255,0.25)",
-                                  background: isDone ? "#22c55e" : "transparent",
-                                }}
-                              >
-                                {isDone && <Check size={10} className="text-white" strokeWidth={3} />}
-                              </div>
-
-                              {/* Bookmark */}
-                              <Bookmark
-                                size={13}
-                                className="shrink-0"
-                                style={{ color: isActive ? "#60a5fa" : "rgba(255,255,255,0.3)" }}
-                              />
+                              {/* Status: green tick when done, play icon otherwise */}
+                              {isDone ? (
+                                <span
+                                  className="shrink-0 w-[26px] h-[26px] rounded-full flex items-center justify-center"
+                                  style={{ background: "#22c55e" }}
+                                >
+                                  <Check size={14} className="text-white" strokeWidth={3} />
+                                </span>
+                              ) : (
+                                <PlayCircle
+                                  size={26}
+                                  strokeWidth={1.75}
+                                  className="shrink-0"
+                                  style={{ color: isActive ? ACTIVE_FG : "#ffffff" }}
+                                />
+                              )}
 
                               {/* Title */}
                               <p
                                 className="flex-1 text-[15px] leading-snug min-w-0"
-                                style={{ color: isActive ? "#ffffff" : "rgba(255,255,255,0.75)" }}
+                                style={{
+                                  color: isActive ? ACTIVE_FG : "rgba(255,255,255,0.85)",
+                                  fontWeight: isActive ? 700 : 400,
+                                }}
                               >
                                 {lesson.title}
                               </p>
@@ -1460,7 +1519,11 @@ export default function CourseViewer() {
                               {lesson.duration ? (
                                 <span
                                   className="shrink-0 text-[13px] tabular-nums px-2 py-0.5 rounded font-mono"
-                                  style={{ background: "#1a2a40", color: "#94a3b8" }}
+                                  style={
+                                    isActive
+                                      ? { background: "rgba(0,26,56,0.10)", color: "rgba(0,26,56,0.65)" }
+                                      : { background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.6)" }
+                                  }
                                 >
                                   {formatDuration(lesson.duration)}
                                 </span>
@@ -1479,47 +1542,49 @@ export default function CourseViewer() {
                           <Link
                             key={`quiz-${quiz.id}`}
                             to={`/student/course/${course.id}?quiz=${quiz.id}`}
-                            className="flex items-center gap-3 px-4 py-3.5 transition-colors group"
+                            className="flex items-center gap-3 px-4 py-3 transition-colors group"
                             style={{
-                              borderBottom: "1px solid rgba(255,255,255,0.04)",
-                              background: isActive ? "rgba(168,85,247,0.12)" : undefined,
+                              borderBottom: "1px solid rgba(255,255,255,0.05)",
+                              background: isActive ? ACTIVE_BG : undefined,
                             }}
                             onMouseEnter={(e) => {
-                              if (!isActive) e.currentTarget.style.background = "rgba(255,255,255,0.04)";
+                              if (!isActive) e.currentTarget.style.background = "rgba(255,255,255,0.05)";
                             }}
                             onMouseLeave={(e) => {
                               if (!isActive) e.currentTarget.style.background = "";
                             }}
                           >
-                            {/* Completion checkbox */}
-                            <div
-                              className="shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center"
-                              style={{
-                                borderColor: passed ? "#22c55e" : "rgba(255,255,255,0.25)",
-                                background: passed ? "#22c55e" : "transparent",
-                              }}
-                            >
-                              {passed && <Check size={10} className="text-white" strokeWidth={3} />}
-                            </div>
-
-                            {/* Bookmark */}
-                            <Bookmark
-                              size={13}
-                              className="shrink-0"
-                              style={{ color: isActive ? "#c084fc" : "rgba(255,255,255,0.3)" }}
-                            />
+                            {/* Status: green tick when passed, play icon otherwise */}
+                            {passed ? (
+                              <span
+                                className="shrink-0 w-[26px] h-[26px] rounded-full flex items-center justify-center"
+                                style={{ background: "#22c55e" }}
+                              >
+                                <Check size={14} className="text-white" strokeWidth={3} />
+                              </span>
+                            ) : (
+                              <PlayCircle
+                                size={26}
+                                strokeWidth={1.75}
+                                className="shrink-0"
+                                style={{ color: isActive ? ACTIVE_FG : "#ffffff" }}
+                              />
+                            )}
 
                             {/* Title + attempt */}
                             <div className="flex-1 min-w-0">
                               <p
                                 className="text-[15px] leading-snug"
-                                style={{ color: isActive ? "#e9d5ff" : "rgba(255,255,255,0.75)" }}
+                                style={{
+                                  color: isActive ? ACTIVE_FG : "rgba(255,255,255,0.85)",
+                                  fontWeight: isActive ? 700 : 400,
+                                }}
                               >
                                 {quiz.title}
                               </p>
                               {attempt && (
                                 <span
-                                  className="text-[12px] font-medium"
+                                  className="text-[13px] font-medium"
                                   style={{ color: attempt.isPassed ? "#4ade80" : "#f87171" }}
                                 >
                                   {attempt.isPassed ? "Passed" : "Failed"} ·{" "}
@@ -1532,8 +1597,12 @@ export default function CourseViewer() {
 
                             {/* Quiz badge */}
                             <span
-                              className="shrink-0 text-[12px] font-semibold px-2 py-0.5 rounded"
-                              style={{ background: "rgba(168,85,247,0.2)", color: "#c084fc" }}
+                              className="shrink-0 text-[13px] font-semibold px-2 py-0.5 rounded"
+                              style={
+                                isActive
+                                  ? { background: "rgba(0,26,56,0.10)", color: "rgba(0,26,56,0.7)" }
+                                  : { background: "rgba(255,255,255,0.10)", color: "rgba(255,255,255,0.7)" }
+                              }
                             >
                               Quiz
                             </span>
@@ -1550,96 +1619,124 @@ export default function CourseViewer() {
       )}
 
       {/* ── Main content ──────────────────────────────────────────────────────── */}
-      <div className="flex-1 flex flex-col overflow-hidden bg-brand-navy-dark">
+      <div className="flex-1 flex flex-col overflow-hidden bg-brand-navy-deeper">
 
-        {/* ── Blue top bar ─────────────────────────────────────────────────────── */}
-        <header className="shrink-0 bg-brand-navy flex items-center px-4 h-14 gap-3 z-20">
-          {/* Back */}
-          <Link
-            to="/student"
-            className="flex items-center justify-center w-8 h-8 rounded-lg hover:bg-white/15 text-white transition-colors shrink-0"
-          >
-            <ChevronLeft size={20} />
+        {/* ── Top bar ──────────────────────────────────────────────────────────── */}
+        <header
+          className="shrink-0 flex items-center gap-3 px-4 h-16 z-20 border-b"
+          style={{ background: HEADER_BG, borderColor: "rgba(0,26,56,0.10)" }}
+        >
+          {/* Logo → dashboard */}
+          <Link to="/student" className="shrink-0" title="Back to dashboard">
+            <img
+              src="/std-dashboard-img/Logo.png"
+              alt="Teach Me Like a Tot"
+              className="h-12 w-auto object-contain"
+            />
           </Link>
 
-          {/* Course/lesson title */}
-          <div className="flex-1 min-w-0">
-            <p className="text-white font-semibold text-sm truncate">
+          {/* Learn. Grow. Do More. */}
+          <img
+            src="/std-dashboard-img/Learn Grow Text.png"
+            alt="Learn. Grow. Do More."
+            className="hidden lg:block h-9 w-auto object-contain mx-auto"
+          />
+
+          <div className="flex-1 min-w-0 lg:hidden">
+            <p className="font-semibold text-[15px] truncate" style={{ color: ACTIVE_FG }}>
               {activeItem ? activeItem.item.title : course.title}
             </p>
-            {activeItem && (
-              <p className="text-blue-200 text-xs truncate">{course.title}</p>
-            )}
           </div>
 
-          {/* Progress */}
-          <div className="hidden sm:flex items-center gap-2 shrink-0">
-            <span className="text-blue-100 text-xs">
-              Your Progress:{" "}
-              <strong className="text-white">{completedCount}</strong>{" "}
-              of{" "}
-              <strong className="text-white">{totalLessons}</strong>{" "}
-              <span className="text-blue-200">({completionPercent}%)</span>
-            </span>
-          </div>
-
-          {/* Mark complete button */}
-          {currentLesson && !isLessonDone && (
-            <button
-              onClick={() => markLessonComplete(currentLesson.id)}
-              className="flex items-center gap-1.5 text-white border border-white/40 hover:bg-white/15 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors shrink-0"
-            >
-              <CheckCircle2 size={13} />
-              <span className="hidden sm:inline">MARK AS COMPLETE</span>
-            </button>
-          )}
-          {currentLesson && isLessonDone && (
-            <div className="flex items-center gap-1.5 text-white bg-white/15 rounded-lg px-3 py-1.5 text-xs font-semibold shrink-0">
-              <Check size={13} />
-              <span className="hidden sm:inline">COMPLETED</span>
+          {/* Right cluster */}
+          <div className="flex items-center gap-3 shrink-0 ml-auto">
+            {/* Progress */}
+            <div className="hidden sm:block text-right">
+              <p className="text-[13px]" style={{ color: "rgba(0,26,56,0.75)" }}>
+                Your Progress: <strong style={{ color: ACTIVE_FG }}>{completedCount}</strong> of{" "}
+                <strong style={{ color: ACTIVE_FG }}>{totalLessons}</strong> ({completionPercent}%)
+              </p>
+              <div className="mt-1 h-1.5 w-36 ml-auto rounded-full overflow-hidden" style={{ background: "rgba(0,26,56,0.12)" }}>
+                <div className="h-full rounded-full" style={{ width: `${completionPercent}%`, background: "#2c795a" }} />
+              </div>
             </div>
-          )}
 
-          {/* Fullscreen */}
-          {!currentQuiz && (
-            <button
-              onClick={toggleFullscreen}
-              title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
-              className="text-white/70 hover:text-white p-1.5 rounded hover:bg-white/15 transition-colors shrink-0"
-            >
-              <Maximize2 size={14} />
-            </button>
-          )}
+            {/* Mark complete / incomplete */}
+            {currentLesson && !isLessonDone && (
+              <button
+                onClick={() => markLessonComplete(currentLesson.id)}
+                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-semibold transition-colors shrink-0"
+                style={{ border: "1px solid rgba(0,26,56,0.25)", color: ACTIVE_FG }}
+              >
+                <CheckCircle2 size={14} />
+                <span className="hidden sm:inline">MARK AS COMPLETE</span>
+              </button>
+            )}
+            {currentLesson && isLessonDone && (
+              <button
+                onClick={() => markLessonIncomplete(currentLesson.id)}
+                title="Clicked by mistake? Undo it."
+                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-semibold transition-colors shrink-0 group"
+                style={{ background: "rgba(44,121,90,0.12)", color: "#1f5a42" }}
+              >
+                <Check size={14} className="group-hover:hidden" />
+                <RotateCcw size={14} className="hidden group-hover:block" />
+                <span className="hidden sm:inline group-hover:hidden">COMPLETED</span>
+                <span className="hidden sm:group-hover:inline">MARK AS INCOMPLETE</span>
+              </button>
+            )}
 
-          {/* Restart storyline */}
-          {isStoryline && (
-            <button
-              onClick={() => iframeRef.current?.contentWindow?.location.reload()}
-              title="Restart"
-              className="text-white/70 hover:text-white p-1.5 rounded hover:bg-white/15 transition-colors shrink-0"
-            >
-              <RotateCcw size={14} />
-            </button>
-          )}
+            {/* Utility links */}
+            <div className="hidden md:flex items-center gap-2 text-[13px] font-semibold tracking-wide" style={{ color: "rgba(0,26,56,0.7)" }}>
+              <Link to="/student" className="hover:underline">DASHBOARD</Link>
+            </div>
 
-          {/* Certificate */}
-          {isCompleted && (
+            {/* Fullscreen */}
+            {!currentQuiz && (
+              <button
+                onClick={toggleFullscreen}
+                title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+                className="p-1.5 rounded transition-colors shrink-0 hover:bg-black/5"
+                style={{ color: "rgba(0,26,56,0.6)" }}
+              >
+                <Maximize2 size={16} />
+              </button>
+            )}
+
+            {/* Restart storyline */}
+            {isStoryline && (
+              <button
+                onClick={() => iframeRef.current?.contentWindow?.location.reload()}
+                title="Restart"
+                className="p-1.5 rounded transition-colors shrink-0 hover:bg-black/5"
+                style={{ color: "rgba(0,26,56,0.6)" }}
+              >
+                <RotateCcw size={16} />
+              </button>
+            )}
+
+            {/* Certificate */}
+            {isCompleted && (
+              <Link
+                to={`/certificate/${course.id}`}
+                className="flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-lg transition-colors font-semibold shrink-0"
+                style={{ background: "rgba(198,148,69,0.15)", color: "#8a6320" }}
+              >
+                <Award size={13} />
+                <span className="hidden sm:inline">Certificate</span>
+              </Link>
+            )}
+
+            {/* Close */}
             <Link
-              to={`/certificate/${course.id}`}
-              className="flex items-center gap-1.5 text-xs text-amber-300 bg-amber-300/15 hover:bg-amber-300/25 border border-amber-300/40 px-3 py-1.5 rounded-lg transition-colors font-semibold shrink-0"
+              to="/student"
+              title="Close course"
+              className="p-1.5 rounded transition-colors shrink-0 hover:bg-black/5"
+              style={{ color: "rgba(0,26,56,0.6)" }}
             >
-              <Award size={12} />
-              <span className="hidden sm:inline">Certificate</span>
+              <X size={18} />
             </Link>
-          )}
-
-          {/* Close */}
-          <Link
-            to="/student"
-            className="text-white/60 hover:text-white p-1.5 rounded hover:bg-white/15 transition-colors shrink-0"
-          >
-            <X size={18} />
-          </Link>
+          </div>
         </header>
 
         {/* ── Content area ─────────────────────────────────────────────────────── */}
@@ -1815,7 +1912,7 @@ export default function CourseViewer() {
 
           {/* ── Bottom nav bar ───────────────────────────────────────────────── */}
           {activeItem && (
-            <div className="shrink-0 border-t" style={{ background: "var(--color-brand-navy-dark)", borderColor: "rgba(255,255,255,0.06)" }}>
+            <div className="shrink-0 border-t" style={{ background: "var(--color-brand-navy-deeper)", borderColor: "rgba(255,255,255,0.08)" }}>
               {/* Description strip */}
               {((currentLesson?.content && currentLesson.lessonType !== "TEXT") ||
                 (course.description && !currentLesson)) && (
@@ -1823,7 +1920,7 @@ export default function CourseViewer() {
                   className="px-5 py-2.5 border-b max-h-20 overflow-y-auto"
                   style={{ borderColor: "rgba(255,255,255,0.06)" }}
                 >
-                  <p className="text-xs leading-relaxed" style={{ color: "rgba(255,255,255,0.5)" }}>
+                  <p className="text-[13px] leading-relaxed" style={{ color: "rgba(255,255,255,0.55)" }}>
                     {currentLesson?.content || course.description}
                   </p>
                 </div>
@@ -1831,81 +1928,83 @@ export default function CourseViewer() {
 
               {/* Navigation */}
               <div className="px-5 py-3 flex items-center gap-4">
-                {/* Prev */}
-                <div className="flex-1 flex justify-start">
+                {/* Previous lesson */}
+                <div className="flex-1 flex justify-start min-w-0">
                   {prevItem ? (
-                    <Link to={itemNavUrl(prevItem)} className="flex items-center gap-2 group max-w-xs">
-                      <div
-                        className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors shrink-0"
-                        style={{ background: "rgba(255,255,255,0.08)" }}
+                    <Link to={itemNavUrl(prevItem)} className="group min-w-0 max-w-[260px]">
+                      <span
+                        className="flex items-center gap-2 rounded-lg px-4 py-2 text-[15px] font-semibold transition-colors"
+                        style={{ border: `1px solid ${GOLD}`, color: "#ffffff" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(190,146,76,0.18)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                       >
-                        <ChevronLeft size={16} style={{ color: "rgba(255,255,255,0.5)" }} />
-                      </div>
-                      <div className="hidden sm:block min-w-0">
-                        <p className="text-[12px] uppercase tracking-wider" style={{ color: "rgba(255,255,255,0.3)" }}>Previous</p>
-                        <p className="text-xs truncate max-w-[160px]" style={{ color: "rgba(255,255,255,0.6)" }}>
-                          {prevItem.item.title}
-                        </p>
-                      </div>
+                        <ChevronLeft size={16} /> Previous Lesson
+                      </span>
+                      <span
+                        className="hidden sm:block text-[13px] truncate mt-1 px-1"
+                        style={{ color: "rgba(255,255,255,0.55)" }}
+                      >
+                        {prevItem.item.title}
+                      </span>
                     </Link>
-                  ) : (
-                    <div className="w-8 h-8 rounded-lg flex items-center justify-center opacity-20" style={{ background: "rgba(255,255,255,0.08)" }}>
-                      <ChevronLeft size={16} style={{ color: "rgba(255,255,255,0.5)" }} />
-                    </div>
-                  )}
+                  ) : null}
                 </div>
 
-                {/* Center */}
-                <div className="flex items-center gap-3 shrink-0">
-                  <span className="text-xs" style={{ color: "rgba(255,255,255,0.3)" }}>
+                {/* Centre: position */}
+                <div className="flex flex-col items-center shrink-0">
+                  <span className="text-[15px] font-semibold" style={{ color: "#ffffff" }}>
                     {currentItemNumber} / {totalItems}
                   </span>
-                  {currentQuiz && (
-                    <span
-                      className="flex items-center gap-1 text-[13px] font-semibold px-2.5 py-1 rounded-lg"
-                      style={{ background: "rgba(168,85,247,0.2)", color: "#c084fc" }}
-                    >
-                      <HelpCircle size={11} /> Quiz
-                    </span>
-                  )}
+                  <span
+                    className="text-[13px] uppercase tracking-wider"
+                    style={{ color: "rgba(255,255,255,0.45)" }}
+                  >
+                    Lesson Navigation
+                  </span>
                 </div>
 
-                {/* Next */}
-                <div className="flex-1 flex justify-end">
-                  {nextItem ? (
+                {/* Next lesson — for Storyline lessons only once the learner
+                    reaches the final slide of the scene. */}
+                <div className="flex-1 flex justify-end min-w-0">
+                  {nextItem && (isStoryline ? reachedLessonEnd || isLessonDone : true) ? (
                     <Link
                       to={itemNavUrl(nextItem)}
                       onClick={() => {
                         if (currentLesson && !completedSet.has(currentLesson.id)) markLessonComplete(currentLesson.id);
                       }}
-                      className="flex items-center gap-2 group max-w-xs"
+                      className="group min-w-0 max-w-[260px] text-right animate-in fade-in duration-300"
                     >
-                      <div className="hidden sm:block min-w-0 text-right">
-                        <p className="text-[12px] uppercase tracking-wider" style={{ color: "rgba(255,255,255,0.3)" }}>Next</p>
-                        <p className="text-xs truncate max-w-[160px]" style={{ color: "rgba(255,255,255,0.6)" }}>
-                          {nextItem.item.title}
-                        </p>
-                      </div>
-                      <div className="w-8 h-8 rounded-lg bg-brand-navy hover:bg-brand-navy-dark flex items-center justify-center transition-colors shrink-0 shadow-lg">
-                        <ChevronLeft size={16} className="text-white rotate-180" />
-                      </div>
+                      <span
+                        className="flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-[15px] font-semibold transition-opacity"
+                        style={{ background: GOLD, color: "#001A38" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.9")}
+                        onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
+                      >
+                        Next Lesson <ChevronLeft size={16} className="rotate-180" />
+                      </span>
+                      <span
+                        className="hidden sm:block text-[13px] truncate mt-1 px-1"
+                        style={{ color: "rgba(255,255,255,0.55)" }}
+                      >
+                        {nextItem.item.title}
+                      </span>
                     </Link>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      {isCompleted && (
-                        <Link
-                          to={`/certificate/${course.id}`}
-                          className="flex items-center gap-1.5 text-xs font-medium px-4 py-2 rounded-lg transition-colors"
-                          style={{ background: "rgba(251,191,36,0.15)", color: "#fbbf24", border: "1px solid rgba(251,191,36,0.3)" }}
-                        >
-                          <Award size={13} /> Get Certificate
-                        </Link>
-                      )}
-                      <div className="w-8 h-8 rounded-lg flex items-center justify-center opacity-20" style={{ background: "rgba(255,255,255,0.08)" }}>
-                        <ChevronLeft size={16} className="text-white rotate-180" />
-                      </div>
-                    </div>
-                  )}
+                  ) : nextItem ? (
+                    <span
+                      className="hidden sm:block text-[13px] text-right max-w-[260px]"
+                      style={{ color: "rgba(255,255,255,0.35)" }}
+                    >
+                      Finish this lesson to continue
+                    </span>
+                  ) : isCompleted ? (
+                    <Link
+                      to={`/certificate/${course.id}`}
+                      className="flex items-center gap-1.5 text-[15px] font-semibold px-4 py-2 rounded-lg transition-colors"
+                      style={{ background: GOLD, color: "#001A38" }}
+                    >
+                      <Award size={15} /> Get Certificate
+                    </Link>
+                  ) : null}
                 </div>
               </div>
             </div>
