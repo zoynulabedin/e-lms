@@ -86,8 +86,16 @@ function newErrorId(): string {
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   const navigate = useNavigate();
   const location = useLocation();
-  // One id per error instance - useMemo keeps it stable across re-renders.
-  const errorId = useMemo(newErrorId, [error]);
+  // entry.server's handleError already stamped server-thrown errors with an
+  // id and logged it; reuse that so the code on screen matches the log line.
+  // Errors that never touched the server (render/hydration) get a fresh id.
+  const errorId = useMemo(() => {
+    const stamped =
+      error && typeof error === "object"
+        ? (error as { __errorId?: string }).__errorId
+        : undefined;
+    return stamped ?? newErrorId();
+  }, [error]);
 
   let status = 500;
   let title = "Something went wrong";
@@ -154,12 +162,12 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   // during client-side navigation.
   useMemo(() => {
     if (!isUnexpected) return;
+    const stamped =
+      error && typeof error === "object" && (error as { __errorId?: string }).__errorId;
+    // Server errors are already logged by handleError in entry.server.
+    if (stamped) return;
     const where = `${location.pathname}${location.search}`;
-    if (typeof document === "undefined") {
-      console.error(`[app] ${errorId} unhandled error at ${where}:`, error);
-    } else {
-      console.error(`[app] ${errorId} error at ${where}:`, error);
-    }
+    console.error(`[app] ${errorId} error at ${where}:`, error);
   }, [errorId, isUnexpected, location.pathname, location.search, error]);
 
   const statusColors: Record<number, string> = {
