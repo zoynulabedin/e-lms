@@ -1,5 +1,0 @@
-# Placeholder so this folder exists in build/client.
-# Plesk (Apache+Passenger) stats the parent folder of any URL ending in an
-# extension - React Router data requests look like /student/course/<id>.data -
-# and returns 500 when the folder is missing instead of passing the request
-# to the Node app. See PLESK_DEPLOYMENT.md.
