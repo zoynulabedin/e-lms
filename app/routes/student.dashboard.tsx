@@ -154,12 +154,20 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   // Admin-picked videos win; with none configured we fall back to the
   // channel's latest uploads so the section is never empty.
-  const curated = await prisma.watchVideo.findMany({
-    where: { isActive: true },
-    orderBy: [{ order: "asc" }, { createdAt: "asc" }],
-    take: 3,
-    select: { videoId: true, title: true },
-  });
+  // A missing WatchVideo table means migrations have not been applied yet.
+  // The dashboard is the learner's home page, so degrade to the channel feed
+  // instead of taking the whole page down over an optional section.
+  const curated = await prisma.watchVideo
+    .findMany({
+      where: { isActive: true },
+      orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+      take: 3,
+      select: { videoId: true, title: true },
+    })
+    .catch((err: unknown) => {
+      console.error("[dashboard] WatchVideo lookup failed:", err);
+      return [] as Array<{ videoId: string; title: string }>;
+    });
   const latestVideos: YouTubeVideo[] =
     curated.length > 0
       ? curated.map((v) => toVideo({ id: v.videoId, title: v.title }))

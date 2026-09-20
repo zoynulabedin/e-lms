@@ -13,7 +13,7 @@
  */
 import "dotenv/config";
 import { execSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import pg from "pg";
 
 const { Pool } = pg;
@@ -39,10 +39,19 @@ const run = (cmd) => {
   execSync(cmd, { stdio: "inherit" });
 };
 
-// The prisma CLI lives in node_modules (it is a runtime dependency so that
-// production installs keep it); call it directly instead of via `npx`, which
-// would try to download it when the local copy is missing.
-const PRISMA = "node node_modules/prisma/build/index.js";
+// Prefer the locally installed prisma CLI (it is a runtime dependency, so a
+// production `npm ci --omit=dev` keeps it). If the install predates that
+// change the folder is missing, so fall back to npx, which fetches it.
+const LOCAL_PRISMA = "node_modules/prisma/build/index.js";
+const PRISMA = existsSync(LOCAL_PRISMA)
+  ? `node ${LOCAL_PRISMA}`
+  : "npx --yes prisma@7";
+if (!existsSync(LOCAL_PRISMA)) {
+  console.warn(
+    "[migrate] prisma is not installed locally - falling back to npx. " +
+      "Run `npm install` on the server to avoid this.",
+  );
+}
 
 const pool = new Pool({ connectionString: url });
 try {
