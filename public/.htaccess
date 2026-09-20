@@ -1,28 +1,28 @@
-# ─── CORS for HLS video (all browsers) ───────────────────────────────────────
-<IfModule mod_headers.c>
-    # Allow the LMS origin to load media
-    Header always set Access-Control-Allow-Origin "*"
-    Header always set Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
-    Header always set Access-Control-Allow-Headers "Range, Content-Type, Accept-Encoding"
-    Header always set Access-Control-Expose-Headers "Content-Length, Content-Range, Content-Type"
+# ─────────────────────────────────────────────────────────────────────────────
+# Served from build/client when Plesk's Document Root points there.
+#
+# React Router fetches page data from URLs ending in ".data"
+# (/student.data, /student/course/<id>.data). Those are API calls handled by
+# Node — there is no such file on disk. Apache must hand them to Passenger
+# instead of answering "file not found".
+#
+# Harmless anywhere else: Vite/Docker never read this file.
+# ─────────────────────────────────────────────────────────────────────────────
 
-    # Handle OPTIONS preflight
+# Never redirect /student to /student/ — a trailing slash makes Apache look for
+# a directory index and 500 before the app is reached.
+DirectorySlash Off
+
+<IfModule mod_passenger.c>
+    # Let the Node app answer anything that is not a real file in this folder.
+    PassengerEnabled on
+</IfModule>
+
+<IfModule mod_rewrite.c>
     RewriteEngine On
-    RewriteCond %{REQUEST_METHOD} OPTIONS
-    RewriteRule ^(.*)$ $1 [R=204,L]
-</IfModule>
-
-# ─── MIME types for HLS ───────────────────────────────────────────────────────
-<IfModule mod_mime.c>
-    AddType application/vnd.apple.mpegurl .m3u8
-    AddType video/mp2t .ts
-    AddType video/mp4 .mp4
-</IfModule>
-
-# ─── Cache control for HLS segments ──────────────────────────────────────────
-<IfModule mod_expires.c>
-    ExpiresActive On
-    ExpiresByType application/vnd.apple.mpegurl "access plus 0 seconds"
-    ExpiresByType video/mp2t "access plus 1 hour"
-    ExpiresByType video/mp4 "access plus 1 hour"
+    # Requests for files that do not exist stop rewriting here so Passenger
+    # (not Apache's file handler) produces the response.
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^ - [L,PT]
 </IfModule>

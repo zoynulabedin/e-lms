@@ -23,46 +23,62 @@ Navigate to **Websites & Domains** > **Your Domain** > **Node.js** in Plesk and 
 1. **Node.js Version:** `22.x` or `23.x` (Matching your local development environment)
 2. **Package Manager:** `npm`
 3. **Application Mode:** `production`
-4. **Document Root:** `/lms.instructionalgraphics.org` — the same as the Application Root.
-   *See §2a below: pointing it at `build/client` makes Apache serve that folder
-   directly and breaks `/student/` and every `.data` request.*
+4. **Document Root:** `/lms.instructionalgraphics.org/build/client`
+   *Serves built assets directly and keeps the source out of the web root.
+   §2a below adds the one nginx rule this needs.*
 5. **Application Root:** `/lms.instructionalgraphics.org` 
    *Important: Point this to the root of the project, NOT the `/build` folder.*
 6. **Application Startup File:** `server.js`
    *Note: We use this custom file because Plesk requires a standalone script and doesn't allow passing CLI arguments to `node_modules` binaries.*
 
-### 2a. Document Root — important
+### 2a. `.data` requests — required, or the app 500s
 
-Pointing the Document Root at `build/client` makes Apache serve that folder
-directly, and **any URL that matches a real file or folder in it never reaches
-the Node app**. Two symptoms come from this:
+React Router fetches page data for in-app navigation from URLs ending in
+`.data`:
 
-* `GET /student/` → **500**, because `build/client/student/` exists as a folder
-  with no `index.html` (Apache also redirects `/student` → `/student/` when the
-  folder exists, so the whole dashboard breaks).
-* `GET /student/course/<id>.data` → **500**
-  (`filemng: stat failed: No such file or directory`), because React Router
-  fetches page data from URLs ending in `.data` and Apache looks for that file
-  on disk.
+```
+/student.data
+/student/course/<id>.data
+```
 
-Pick **one** of the two fixes below.
+With the Document Root set to `build/client`, the web server looks for those
+files on disk, does not find them, and answers **500** without ever reaching
+Node:
 
-**Fix A — Document Root = application root (simplest, recommended)**
+```
+Unable to find the file .../build/client/student.data at the specified location
+```
 
-| Setting | Value |
+The first page load works (that is a normal document request); every click
+inside the app fails. Fix it in Plesk — **the app cannot fix this itself.**
+
+#### If "Additional nginx directives" is missing from the page
+
+That field only appears when the subscription's service plan allows custom
+directives. As the Plesk admin: **Service Plans → (the plan) → Permissions →
+"Ability to manage additional nginx directives"** (and the Apache equivalent),
+apply it to the subscription, then reload the Apache & nginx Settings page.
+
+If you cannot enable it, the repo ships two `.htaccess` files that do the same
+job through Apache — nothing to paste anywhere:
+
+| File | Used when |
 | --- | --- |
-| Application Root | `/lms.instructionalgraphics.org` |
-| Document Root | `/lms.instructionalgraphics.org` ← *not* `build/client` |
+| `public/.htaccess` → `build/client/.htaccess` | Document Root = `build/client` (current setup) |
+| `.htaccess` (project root) | Document Root = application root |
 
-Nothing in the project root matches an app URL, so every request reaches
-Passenger and `react-router-serve` serves the built assets itself (it already
-does this in development and in the Docker image). Slightly less static-file
-performance, no routing surprises.
+They set `DirectorySlash Off`, turn Passenger on for the folder, and let
+requests that are not real files fall through to Node. They need
+`AllowOverride` to be enabled for the domain (Plesk default). Re-upload
+`build/` after building so `build/client/.htaccess` is present.
 
-**Fix B — keep `build/client` and add nginx rules**
+#### Recommended: send `.data` to the app
 
-Plesk → *Websites & Domains* → your domain → *Apache & nginx Settings* →
-**Additional nginx directives**:
+Plesk → *Websites & Domains* → your domain → *Apache & nginx Settings*:
+
+1. Under **Serve static files directly by nginx**, make sure `data` is **not**
+   in the extension list.
+2. Add to **Additional nginx directives**:
 
 ```nginx
 # React Router data requests are API calls, never static files
@@ -75,10 +91,36 @@ location ~ \.data$ {
 }
 ```
 
-…and make sure `data` is not listed under *Serve static files directly by
-nginx* → file extensions. With this fix you must also never create a folder in
-`public/` whose name matches an app route (`public/student/`, `public/auth/`, …) —
-that is what caused the `/student/` 500 above.
+`7080` is Plesk's default Apache backend port. If the domain runs nginx +
+Passenger without Apache, replace the body with `passenger_enabled on;`.
+
+3. Restart the app.
+
+Keep the Document Root on `build/client` — it contains only built assets, so
+nothing private is exposed.
+
+#### ⚠️ Never create a folder in `public/` named after a route
+
+`public/student/` would become `build/client/student/`, and Apache then treats
+`/student` as a static directory: it redirects to `/student/`, finds no
+`index.html`, and returns 500 — the whole dashboard breaks. This happened once;
+that is why there are no such folders in `public/`.
+
+#### Alternative: Document Root = application root
+
+Setting the Document Root to `/lms.instructionalgraphics.org` also makes every
+request reach Node (nothing in the project root matches an app URL), but it
+**publishes the whole project folder over HTTP** — `/package.json`,
+`/prisma/schema.prisma`, `/app/utils/auth.server.ts`, possibly `/.env`. Only
+use this if you also add deny rules:
+
+```nginx
+location ~ ^/(app|prisma|scripts|node_modules|build/server)/ { deny all; }
+location ~ ^/(package(-lock)?\.json|tsconfig\.json|.*\.ts|.*\.tsx)$ { deny all; }
+location ~ /\. { deny all; }
+```
+
+The nginx `.data` rule above is simpler and safer.
 
 ## 3. Environment Variables
 

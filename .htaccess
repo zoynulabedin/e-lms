@@ -1,0 +1,30 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Only used if Plesk's Document Root is set to the APPLICATION ROOT instead of
+# build/client. In that setup the whole project folder sits inside the web
+# root, so everything that is not a public asset must be denied explicitly.
+#
+# With Document Root = build/client this file is never read.
+# ─────────────────────────────────────────────────────────────────────────────
+
+DirectorySlash Off
+
+<IfModule mod_passenger.c>
+    PassengerEnabled on
+</IfModule>
+
+# Dotfiles (.env, .git, …)
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+# Source, config and lockfiles
+<FilesMatch "\.(ts|tsx|jsx|mjs|cjs|prisma|sql|md|log|lock|yml|yaml)$">
+    Require all denied
+</FilesMatch>
+<FilesMatch "^(package(-lock)?\.json|tsconfig\.json|server\.js|vite\.config\..*|react-router\.config\..*|prisma\.config\..*)$">
+    Require all denied
+</FilesMatch>
+
+# Whole folders that must never be reachable over HTTP
+RedirectMatch 404 ^/(app|prisma|scripts|node_modules|\.react-router)(/|$)
+RedirectMatch 404 ^/build/server(/|$)
