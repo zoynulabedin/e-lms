@@ -11,6 +11,7 @@
  * Safe to run on every start: with a baseline in place it is just
  * `prisma migrate deploy`.
  */
+import "dotenv/config";
 import { execSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import pg from "pg";
@@ -38,6 +39,11 @@ const run = (cmd) => {
   execSync(cmd, { stdio: "inherit" });
 };
 
+// The prisma CLI lives in node_modules (it is a runtime dependency so that
+// production installs keep it); call it directly instead of via `npx`, which
+// would try to download it when the local copy is missing.
+const PRISMA = "node node_modules/prisma/build/index.js";
+
 const pool = new Pool({ connectionString: url });
 try {
   const { rows } = await pool.query(
@@ -51,11 +57,11 @@ try {
     const present = new Set(readdirSync("prisma/migrations"));
     for (const name of BASELINE_MIGRATIONS) {
       if (!present.has(name)) continue;
-      run(`npx prisma migrate resolve --applied ${name}`);
+      run(`${PRISMA} migrate resolve --applied ${name}`);
     }
   }
 } finally {
   await pool.end();
 }
 
-run("npx prisma migrate deploy");
+run(`${PRISMA} migrate deploy`);

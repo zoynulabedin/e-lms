@@ -5,8 +5,10 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  useLocation,
   useNavigate,
 } from "react-router";
+import { useMemo } from "react";
 
 import type { Route } from "./+types/root";
 import "./app.css";
@@ -72,14 +74,28 @@ export default function App() {
   return <Outlet />;
 }
 
+/** Short, readable id so a user can quote it and we can grep the log for it. */
+function newErrorId(): string {
+  const rnd =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID().replace(/-/g, "")
+      : Math.random().toString(16).slice(2);
+  return rnd.slice(0, 8).toUpperCase();
+}
+
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   const navigate = useNavigate();
+  const location = useLocation();
+  // One id per error instance - useMemo keeps it stable across re-renders.
+  const errorId = useMemo(newErrorId, [error]);
 
   let status = 500;
   let title = "Something went wrong";
   let message = "An unexpected error occurred. Please try again.";
   let showStack = false;
   let stack: string | undefined;
+  // Only genuine crashes get an id + log line; 404/403 are normal traffic.
+  let isUnexpected = false;
 
   if (isRouteErrorResponse(error)) {
     status = error.status;
@@ -109,10 +125,42 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
       message = detail || error.statusText || message;
     }
   } else if (error instanceof Error) {
-    message = import.meta.env.DEV ? error.message : message;
-    stack = import.meta.env.DEV ? error.stack : undefined;
-    showStack = !!stack;
+    // Prisma schema-drift errors are a deploy mistake, not a bug: say so
+    // plainly rather than "an unexpected error occurred". No data is exposed.
+    const code = (error as { code?: string }).code;
+    const text = `${error.message} ${(error as { meta?: unknown }).meta ? JSON.stringify((error as { meta?: any }).meta) : ""}`;
+    const schemaDrift =
+      code === "P2021" ||
+      code === "P2022" ||
+      /does not exist in the current database|column .* does not exist|relation .* does not exist/i.test(text);
+
+    isUnexpected = !schemaDrift;
+
+    if (schemaDrift) {
+      title = "Database is out of date";
+      message =
+        "The app was deployed but its database migrations have not been applied yet. " +
+        "Run `npm run migrate:prod` on the server (or just restart the app — it migrates on boot) and reload this page.";
+      showStack = false;
+    } else {
+      message = import.meta.env.DEV ? error.message : message;
+      stack = import.meta.env.DEV ? error.stack : undefined;
+      showStack = !!stack;
+    }
   }
+
+  // Log once, with enough context to find the request in the host's log.
+  // Runs on the server for document requests and in the browser for errors
+  // during client-side navigation.
+  useMemo(() => {
+    if (!isUnexpected) return;
+    const where = `${location.pathname}${location.search}`;
+    if (typeof document === "undefined") {
+      console.error(`[app] ${errorId} unhandled error at ${where}:`, error);
+    } else {
+      console.error(`[app] ${errorId} error at ${where}:`, error);
+    }
+  }, [errorId, isUnexpected, location.pathname, location.search, error]);
 
   const statusColors: Record<number, string> = {
     404: "text-blue-400",
@@ -132,7 +180,19 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
         <h1 className="text-2xl font-bold text-white mb-3">{title}</h1>
 
         {/* Message */}
-        <p className="text-slate-400 text-sm mb-8 leading-relaxed">{message}</p>
+        <p className="text-slate-400 text-sm mb-4 leading-relaxed">{message}</p>
+
+        {/* Reference for support */}
+        {isUnexpected && (
+          <p className="text-slate-500 text-xs mb-8">
+            Reference:{" "}
+            <code className="font-mono text-slate-400 bg-white/5 border border-white/10 rounded px-1.5 py-0.5">
+              {errorId}
+            </code>
+            <span className="block mt-1">Quote this code when reporting the problem.</span>
+          </p>
+        )}
+        {!isUnexpected && <div className="mb-8" />}
 
         {/* Actions */}
         <div className="flex items-center justify-center gap-3">
