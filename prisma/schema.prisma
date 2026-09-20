@@ -100,6 +100,21 @@ model UserSession {
   @@index([userId, isActive])
 }
 
+// ─── Watch & Learn video (student dashboard) ──────────────────────────────────
+// Admin-curated videos for the "Watch & Learn" strip. When no active rows
+// exist the dashboard falls back to the channel's latest uploads (RSS).
+model WatchVideo {
+  id        String   @id @default(uuid())
+  videoId   String // YouTube video id, e.g. "rdmWpQ0cm_0"
+  title     String
+  order     Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, order])
+}
+
 // ─── Shopify webhook idempotency ───────────────────────────────────────────────
 // One row per processed order. Inserted in the same transaction as the
 // licences, so a retried/duplicate delivery hits the unique key and is dropped.

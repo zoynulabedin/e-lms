@@ -11,6 +11,71 @@ export const YOUTUBE_CHANNEL_HANDLE = "TeachMeLikeATot";
 export const YOUTUBE_CHANNEL_ID = "UCJrFcN5lRfzUQnvCu5Zoeqw";
 export const YOUTUBE_CHANNEL_URL = `https://www.youtube.com/@${YOUTUBE_CHANNEL_HANDLE}`;
 
+/**
+ * Pulls the 11-character video id out of anything an admin is likely to
+ * paste: watch/share/embed/shorts/live URLs, a full <iframe> snippet, or the
+ * bare id itself. Returns null when nothing looks like a video id.
+ */
+export function parseYouTubeId(input: string): string | null {
+  const raw = (input ?? "").trim();
+  if (!raw) return null;
+
+  // Bare id
+  if (/^[A-Za-z0-9_-]{11}$/.test(raw)) return raw;
+
+  // <iframe src="..."> — pull the src out first
+  const iframeSrc = raw.match(/src\s*=\s*["']([^"']+)["']/i)?.[1];
+  const candidate = iframeSrc ?? raw;
+
+  const patterns = [
+    /[?&]v=([A-Za-z0-9_-]{11})/,          // watch?v=ID
+    /youtu\.be\/([A-Za-z0-9_-]{11})/,     // youtu.be/ID
+    /\/embed\/([A-Za-z0-9_-]{11})/,       // /embed/ID
+    /\/shorts\/([A-Za-z0-9_-]{11})/,      // /shorts/ID
+    /\/live\/([A-Za-z0-9_-]{11})/,        // /live/ID
+    /\/v\/([A-Za-z0-9_-]{11})/,           // /v/ID
+  ];
+  for (const re of patterns) {
+    const m = candidate.match(re);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+/**
+ * Video title straight from YouTube's public oEmbed endpoint, so the admin
+ * doesn't have to type it. Returns null if the video is private/unavailable.
+ */
+export async function fetchVideoTitle(videoId: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(
+      `https://www.youtube.com/oembed?url=${encodeURIComponent(
+        `https://www.youtube.com/watch?v=${videoId}`,
+      )}&format=json`,
+      { signal: controller.signal },
+    );
+    if (!res.ok) return null;
+    const json = (await res.json()) as { title?: string };
+    return json.title?.trim() || null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function toVideo(v: { id: string; title: string; publishedAt?: string }): YouTubeVideo {
+  return {
+    id: v.id,
+    title: v.title,
+    publishedAt: v.publishedAt ?? "",
+    thumbnail: `https://i.ytimg.com/vi/${v.id}/hqdefault.jpg`,
+    url: `https://www.youtube.com/watch?v=${v.id}`,
+  };
+}
+
 export type YouTubeVideo = {
   id: string;
   title: string;

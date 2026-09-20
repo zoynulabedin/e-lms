@@ -52,6 +52,7 @@ export default [
     route("users", "routes/users.tsx"),
     route("sessions", "routes/sessions.tsx"),
     route("reports", "routes/reports.tsx"),
+    route("watch-videos", "routes/watch-videos.tsx"),
     route("settings", "routes/settings.tsx"),
     route("quiz-review", "routes/quiz-review.tsx"),
   ]),

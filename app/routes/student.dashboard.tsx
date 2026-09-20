@@ -10,7 +10,7 @@ import type { LoaderFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireUser } from "../utils/auth.server";
 import { getAccessibleCourseIds } from "../utils/access.server";
-import { getLatestVideos, type YouTubeVideo } from "../utils/youtube.server";
+import { getLatestVideos, toVideo, type YouTubeVideo } from "../utils/youtube.server";
 import { useState } from "react";
 import {
   BookOpen,
@@ -152,7 +152,18 @@ export async function loader({ request }: LoaderFunctionArgs) {
     })),
   ];
 
-  const latestVideos = await getLatestVideos(3);
+  // Admin-picked videos win; with none configured we fall back to the
+  // channel's latest uploads so the section is never empty.
+  const curated = await prisma.watchVideo.findMany({
+    where: { isActive: true },
+    orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+    take: 3,
+    select: { videoId: true, title: true },
+  });
+  const latestVideos: YouTubeVideo[] =
+    curated.length > 0
+      ? curated.map((v) => toVideo({ id: v.videoId, title: v.title }))
+      : await getLatestVideos(3);
 
   return {
     user,
