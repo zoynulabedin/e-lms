@@ -124,9 +124,20 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     prisma.enrollment.findUnique({
       where: { userId_courseId: { userId: user.id, courseId } },
     }),
+    // Explicit select: an `include` pulls every scalar column, so a column
+     // added by a migration that has not been applied yet would take the whole
+     // player down. Listing fields also keeps unused course data off the wire.
     prisma.course.findUnique({
       where: { id: courseId },
-      include: {
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        contentType: true,
+        courseType: true,
+        status: true,
+        embedUrl: true,
+        videoUrl: true,
         modules: {
           orderBy: { order: "asc" },
           include: { lessons: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] } },
@@ -136,6 +147,13 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   ]);
 
   if (!course) throw data({ message: "Course not found." }, { status: 404 });
+
+  // Module icon set — read separately so a not-yet-migrated database only
+  // costs the icons, not the whole page.
+  const iconSet = await prisma
+    .$queryRaw<Array<{ iconSet: string | null }>>`SELECT "iconSet" FROM "Course" WHERE id = ${courseId}`
+    .then((rows) => rows[0]?.iconSet ?? null)
+    .catch(() => null);
 
   const hasAccess = computeCourseAccess(course, license, enrollment);
 
@@ -316,7 +334,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   const totalLessons = lessonItems.length;
 
   return {
-    course,
+    course: { ...course, iconSet },
     progress,
     quizzesModuleMap,
     activeItem,

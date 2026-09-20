@@ -25,12 +25,24 @@ import {
 
 export async function loader({ request }: LoaderFunctionArgs) {
   await requireAdmin(request);
-  const [videos, latest] = await Promise.all([
-    prisma.watchVideo.findMany({ orderBy: [{ order: "asc" }, { createdAt: "asc" }] }),
+  const [videosResult, latest] = await Promise.all([
+    // The table arrives with a migration; say so plainly rather than 500ing.
+    prisma.watchVideo
+      .findMany({ orderBy: [{ order: "asc" }, { createdAt: "asc" }] })
+      .then((rows) => ({ rows, ready: true }))
+      .catch((err: unknown) => {
+        console.error("[watch-videos] WatchVideo table unavailable:", err);
+        return { rows: [] as Awaited<ReturnType<typeof prisma.watchVideo.findMany>>, ready: false };
+      }),
     // Shown as one-click suggestions from the channel.
     getLatestVideos(6).catch(() => []),
   ]);
-  return { videos, latest, channelUrl: YOUTUBE_CHANNEL_URL };
+  return {
+    videos: videosResult.rows,
+    tableReady: videosResult.ready,
+    latest,
+    channelUrl: YOUTUBE_CHANNEL_URL,
+  };
 }
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -125,7 +137,7 @@ export async function action({ request }: ActionFunctionArgs) {
 type Result = { error?: string; success?: string };
 
 export default function WatchVideosPage() {
-  const { videos, latest, channelUrl } = useLoaderData<typeof loader>();
+  const { videos, tableReady, latest, channelUrl } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<Result>();
   const result = fetcher.data;
   const busy = fetcher.state !== "idle";
@@ -153,6 +165,18 @@ export default function WatchVideosPage() {
           Open channel <ExternalLink size={13} />
         </a>
       </div>
+
+      {!tableReady && (
+        <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 text-amber-900 rounded-lg px-4 py-3 text-sm">
+          <AlertCircle size={15} className="shrink-0 mt-0.5" />
+          <span>
+            <strong>Database not migrated yet.</strong> The table that stores these videos does not
+            exist on this server. Run <code className="font-mono">npm run migrate:prod</code> (or
+            restart the app — it migrates on boot). Until then the student dashboard shows the
+            channel&rsquo;s latest uploads automatically.
+          </span>
+        </div>
+      )}
 
       {result?.error && (
         <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">

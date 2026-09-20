@@ -38,7 +38,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
     // Top courses by license count
     prisma.course.findMany({
       take: 5,
-      include: {
+      // Explicit select: see the note in routes/courses.tsx.
+      select: {
+        id: true,
+        title: true,
         _count: {
           select: { licenses: true, progress: { where: { isCompleted: true } } },
         },

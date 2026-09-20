@@ -58,7 +58,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
     }),
     prisma.course.findMany({
       take: 5,
-      include: {
+      // Explicit select: see the note in routes/courses.tsx.
+      select: {
+        id: true,
+        title: true,
+        price: true,
         _count: { select: { licenses: true, progress: true } },
       },
       orderBy: { licenses: { _count: "desc" } },

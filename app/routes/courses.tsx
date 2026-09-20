@@ -24,7 +24,19 @@ export async function loader({ request }: LoaderFunctionArgs) {
   await requireAdmin(request);
   const courses = await prisma.course.findMany({
     orderBy: { createdAt: "desc" },
-    include: {
+    // Explicit select (not `include`): `include` would pull every scalar
+    // column, so a column from an unapplied migration would 500 this page.
+    select: {
+      id: true,
+      title: true,
+      summary: true,
+      category: true,
+      instructor: true,
+      courseType: true,
+      price: true,
+      status: true,
+      contentType: true,
+      thumbnailUrl: true,
       _count: { select: { licenses: true, progress: true, modules: true } },
     },
   });

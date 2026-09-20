@@ -121,10 +121,29 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   await requireAdmin(request);
   const { courseId } = params;
 
-  // Base course + modules + lessons (old fields — known by stale client)
+  // Explicit select: an `include` pulls every scalar column, so a column added
+  // by a migration that has not been applied yet would 500 the whole builder.
+  // Fields added later are read separately below and tolerate being absent.
   const course = await prisma.course.findUnique({
     where: { id: courseId },
-    include: {
+    select: {
+      id: true,
+      title: true,
+      summary: true,
+      description: true,
+      category: true,
+      instructor: true,
+      courseType: true,
+      price: true,
+      shopifyProductId: true,
+      status: true,
+      contentType: true,
+      embedUrl: true,
+      videoUrl: true,
+      introVideoUrl: true,
+      thumbnailUrl: true,
+      isPublic: true,
+      updatedAt: true,
       modules: {
         orderBy: { order: "asc" },
         include: { lessons: { orderBy: { order: "asc" } } },
@@ -138,12 +157,18 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     difficulty: string | null; isQA: boolean;
     whatYouLearn: string | null; targetAudience: string | null;
     materialsIncluded: string | null; requirements: string | null;
-    iconSet: string | null;
   }>>`
     SELECT difficulty, "isQA", "whatYouLearn", "targetAudience",
-           "materialsIncluded", requirements, "iconSet"
+           "materialsIncluded", requirements
     FROM "Course" WHERE id = ${courseId}
   `;
+
+  // Added by a later migration: read it on its own so the builder still opens
+  // on a server whose migrations have not been applied yet.
+  const iconSet = await prisma
+    .$queryRaw<Array<{ iconSet: string | null }>>`SELECT "iconSet" FROM "Course" WHERE id = ${courseId}`
+    .then((rows) => rows[0]?.iconSet ?? null)
+    .catch(() => null);
 
   // Quizzes with questions + answers via $queryRaw
   const quizRows = await prisma.$queryRaw<Array<any>>`
