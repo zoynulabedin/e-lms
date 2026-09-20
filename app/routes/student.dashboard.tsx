@@ -154,20 +154,26 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   // Admin-picked videos win; with none configured we fall back to the
   // channel's latest uploads so the section is never empty.
-  // A missing WatchVideo table means migrations have not been applied yet.
-  // The dashboard is the learner's home page, so degrade to the channel feed
-  // instead of taking the whole page down over an optional section.
-  const curated = await prisma.watchVideo
-    .findMany({
+  // try/catch, not .catch(): if the generated Prisma client predates the
+  // WatchVideo model, `prisma.watchVideo` is undefined and `.findMany()`
+  // throws SYNCHRONOUSLY — before any .catch() could be attached. A missing
+  // table throws asynchronously. This handles both, so the learner's home
+  // page degrades to the channel feed instead of returning 500.
+  let curated: Array<{ videoId: string; title: string }> = [];
+  try {
+    curated = await prisma.watchVideo.findMany({
       where: { isActive: true },
       orderBy: [{ order: "asc" }, { createdAt: "asc" }],
       take: 3,
       select: { videoId: true, title: true },
-    })
-    .catch((err: unknown) => {
-      console.error("[dashboard] WatchVideo lookup failed:", err);
-      return [] as Array<{ videoId: string; title: string }>;
     });
+  } catch (err) {
+    console.error(
+      "[dashboard] WatchVideo unavailable (stale Prisma client or missing table) —",
+      "run `npx prisma generate && npm run migrate:prod`:",
+      err,
+    );
+  }
   const latestVideos: YouTubeVideo[] =
     curated.length > 0
       ? curated.map((v) => toVideo({ id: v.videoId, title: v.title }))

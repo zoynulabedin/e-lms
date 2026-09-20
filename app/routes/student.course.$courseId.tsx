@@ -39,6 +39,11 @@ import {
   RotateCcw,
   Maximize2,
   Lock,
+  Paperclip,
+  BookMarked,
+  Link2,
+  ExternalLink,
+  Search,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { HlsPlayer } from "../components/HlsPlayer";
@@ -302,6 +307,41 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     }
   }
 
+  // Resources and glossary for THIS course. The access check above has already
+  // passed, so anything read here is something the learner holds a licence for;
+  // a resource attached to a different course is never fetched. Both tolerate a
+  // server whose migrations/client predate the feature.
+  const [resources, glossary] = await Promise.all([
+    prisma.courseResource
+      .findMany({
+        where: { courseId, isActive: true },
+        orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          kind: true,
+          lessonId: true,
+          fileName: true,
+          fileSize: true,
+        },
+      })
+      .catch((err: unknown) => {
+        console.error("[course] CourseResource unavailable:", err);
+        return [] as never[];
+      }),
+    prisma.glossaryTerm
+      .findMany({
+        where: { courseId },
+        orderBy: [{ term: "asc" }],
+        select: { id: true, term: true, definition: true },
+      })
+      .catch((err: unknown) => {
+        console.error("[course] GlossaryTerm unavailable:", err);
+        return [] as never[];
+      }),
+  ]);
+
   const url = new URL(request.url);
   const lessonId = url.searchParams.get("lesson");
   const quizId = url.searchParams.get("quiz");
@@ -335,6 +375,8 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 
   return {
     course: { ...course, iconSet },
+    resources,
+    glossary,
     progress,
     quizzesModuleMap,
     activeItem,
@@ -1241,11 +1283,229 @@ function QuizPlayer({ quiz }: { quiz: any }) {
   return <QuizAttemptForm key={attemptKey} quiz={quiz} onRetake={() => setAttemptKey((k) => k + 1)} />;
 }
 
+
+// -- Glossary / Resources drawer ----------------------------------------------
+
+type DrawerResource = {
+  id: string;
+  title: string;
+  description: string | null;
+  kind: string;
+  lessonId: string | null;
+  fileName: string | null;
+  fileSize: number | null;
+};
+
+function drawerBytes(n: number | null) {
+  if (!n) return null;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function CourseDrawer({
+  open,
+  onClose,
+  resources,
+  glossary,
+  lessonTitles,
+}: {
+  open: null | "glossary" | "resources";
+  onClose: () => void;
+  resources: DrawerResource[];
+  glossary: Array<{ id: string; term: string; definition: string }>;
+  lessonTitles: Record<string, string>;
+}) {
+  const [q, setQ] = useState("");
+
+  // Reset the filter each time the drawer is opened, and let Escape close it.
+  useEffect(() => {
+    if (!open) return;
+    setQ("");
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const needle = q.trim().toLowerCase();
+  const terms = needle
+    ? glossary.filter(
+        (t) =>
+          t.term.toLowerCase().includes(needle) ||
+          t.definition.toLowerCase().includes(needle),
+      )
+    : glossary;
+  const files = needle
+    ? resources.filter(
+        (r) =>
+          r.title.toLowerCase().includes(needle) ||
+          (r.description ?? "").toLowerCase().includes(needle),
+      )
+    : resources;
+
+  const isGlossary = open === "glossary";
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div
+        className="absolute inset-0 bg-black/40"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label={isGlossary ? "Glossary" : "Resources"}
+        className="relative w-full max-w-md h-full flex flex-col shadow-2xl"
+        style={{ background: HEADER_BG }}
+      >
+        <div
+          className="flex items-center gap-2 px-5 h-16 shrink-0 border-b"
+          style={{ borderColor: "rgba(0,26,56,0.10)" }}
+        >
+          {isGlossary ? (
+            <BookMarked size={18} style={{ color: ACTIVE_FG }} />
+          ) : (
+            <Paperclip size={18} style={{ color: ACTIVE_FG }} />
+          )}
+          <h2 className="font-semibold text-[17px]" style={{ color: ACTIVE_FG }}>
+            {isGlossary ? "Glossary" : "Resources"}
+          </h2>
+          <span className="text-[13px]" style={{ color: "rgba(0,26,56,0.5)" }}>
+            ({isGlossary ? glossary.length : resources.length})
+          </span>
+          <button
+            onClick={onClose}
+            title="Close"
+            className="ml-auto p-1.5 rounded hover:bg-black/5 transition-colors"
+            style={{ color: "rgba(0,26,56,0.6)" }}
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        {(isGlossary ? glossary.length : resources.length) > 6 && (
+          <div className="px-5 pt-4 shrink-0">
+            <div className="relative">
+              <Search
+                size={15}
+                className="absolute left-3 top-1/2 -translate-y-1/2"
+                style={{ color: "rgba(0,26,56,0.4)" }}
+              />
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder={isGlossary ? "Search terms\u2026" : "Search resources\u2026"}
+                className="w-full rounded-lg bg-white py-2 pl-9 pr-3 text-sm focus:outline-none"
+                style={{ border: "1px solid rgba(0,26,56,0.18)", color: ACTIVE_FG }}
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          {isGlossary ? (
+            terms.length === 0 ? (
+              <p className="text-sm py-8 text-center" style={{ color: "rgba(0,26,56,0.5)" }}>
+                No matching terms.
+              </p>
+            ) : (
+              <dl className="space-y-4">
+                {terms.map((t) => (
+                  <div
+                    key={t.id}
+                    className="rounded-xl bg-white p-4"
+                    style={{ border: "1px solid rgba(0,26,56,0.10)" }}
+                  >
+                    <dt className="font-semibold text-[15px]" style={{ color: ACTIVE_FG }}>
+                      {t.term}
+                    </dt>
+                    <dd
+                      className="text-sm mt-1 leading-relaxed"
+                      style={{ color: "rgba(0,26,56,0.72)" }}
+                    >
+                      {t.definition}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            )
+          ) : files.length === 0 ? (
+            <p className="text-sm py-8 text-center" style={{ color: "rgba(0,26,56,0.5)" }}>
+              No matching resources.
+            </p>
+          ) : (
+            <ul className="space-y-3">
+              {files.map((r) => {
+                const isLink = r.kind === "LINK";
+                const size = drawerBytes(r.fileSize);
+                const where = r.lessonId ? lessonTitles[r.lessonId] : null;
+                return (
+                  <li key={r.id}>
+                    {/* Always /student/resource/<id>: the request re-checks the
+                        licence, so the storage URL never reaches the page. */}
+                    <a
+                      href={`/student/resource/${r.id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-start gap-3 rounded-xl bg-white p-4 hover:shadow-sm transition-shadow"
+                      style={{ border: "1px solid rgba(0,26,56,0.10)" }}
+                    >
+                      <span
+                        className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+                        style={{ background: "rgba(198,148,69,0.15)", color: "#8a6320" }}
+                      >
+                        {isLink ? <Link2 size={16} /> : <FileText size={16} />}
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <span
+                          className="block font-semibold text-[15px] leading-tight"
+                          style={{ color: ACTIVE_FG }}
+                        >
+                          {r.title}
+                        </span>
+                        {r.description && (
+                          <span
+                            className="block text-xs mt-0.5"
+                            style={{ color: "rgba(0,26,56,0.6)" }}
+                          >
+                            {r.description}
+                          </span>
+                        )}
+                        <span
+                          className="block text-[11px] mt-1 truncate"
+                          style={{ color: "rgba(0,26,56,0.45)" }}
+                        >
+                          {where ?? "Whole course"}
+                          {size ? ` \u00b7 ${size}` : ""}
+                        </span>
+                      </span>
+                      <span className="shrink-0 pt-1" style={{ color: "rgba(0,26,56,0.5)" }}>
+                        {isLink ? <ExternalLink size={15} /> : <Download size={15} />}
+                      </span>
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
 // ── CourseViewer ──────────────────────────────────────────────────────────────
 
 export default function CourseViewer() {
   const {
     course,
+    resources,
+    glossary,
     progress,
     quizzesModuleMap,
     activeItem,
@@ -1261,6 +1521,17 @@ export default function CourseViewer() {
 
   const fetcher = useFetcher();
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [drawer, setDrawer] = useState<null | "glossary" | "resources">(null);
+
+  // lessonId -> "Module > Lesson", so a resource attached to a lesson can say
+  // where it belongs without another round-trip.
+  const lessonTitles = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const m of course.modules) {
+      for (const l of m.lessons) map[l.id] = `${m.title} \u203a ${l.title}`;
+    }
+    return map;
+  }, [course.modules]);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   // True accordion: exactly one module open at a time. Opens on the module
@@ -1704,9 +1975,47 @@ export default function CourseViewer() {
               </button>
             )}
 
-            {/* Utility links */}
-            <div className="hidden md:flex items-center gap-2 text-[13px] font-semibold tracking-wide" style={{ color: "rgba(0,26,56,0.7)" }}>
+            {/* Utility links. GLOSSARY and RESOURCES only appear when this
+                course actually has entries — an empty drawer is worse than no
+                link at all. */}
+            <div className="hidden md:flex items-center gap-3 text-[13px] font-semibold tracking-wide" style={{ color: "rgba(0,26,56,0.7)" }}>
+              {glossary.length > 0 && (
+                <button type="button" onClick={() => setDrawer("glossary")} className="hover:underline">
+                  GLOSSARY
+                </button>
+              )}
+              {resources.length > 0 && (
+                <button type="button" onClick={() => setDrawer("resources")} className="hover:underline">
+                  RESOURCES
+                </button>
+              )}
               <Link to="/student" className="hover:underline">DASHBOARD</Link>
+            </div>
+
+            {/* Same two, icon-only, for the narrow header on phones. */}
+            <div className="flex md:hidden items-center gap-1">
+              {glossary.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setDrawer("glossary")}
+                  title="Glossary"
+                  className="p-1.5 rounded transition-colors hover:bg-black/5"
+                  style={{ color: "rgba(0,26,56,0.6)" }}
+                >
+                  <BookMarked size={16} />
+                </button>
+              )}
+              {resources.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setDrawer("resources")}
+                  title="Resources"
+                  className="p-1.5 rounded transition-colors hover:bg-black/5"
+                  style={{ color: "rgba(0,26,56,0.6)" }}
+                >
+                  <Paperclip size={16} />
+                </button>
+              )}
             </div>
 
             {/* Fullscreen */}
@@ -1756,6 +2065,15 @@ export default function CourseViewer() {
             </Link>
           </div>
         </header>
+
+        {/* ── Glossary / Resources drawer ──────────────────────────────────── */}
+        <CourseDrawer
+          open={drawer}
+          onClose={() => setDrawer(null)}
+          resources={resources}
+          glossary={glossary}
+          lessonTitles={lessonTitles}
+        />
 
         {/* ── Content area ─────────────────────────────────────────────────────── */}
         <div className="flex-1 overflow-hidden flex flex-col">

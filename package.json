@@ -3,13 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "react-router build",
+    "build": "prisma generate && react-router build",
     "dev": "react-router dev",
     "start": "node --env-file=.env node_modules/.bin/react-router-serve ./build/server/index.js",
     "typecheck": "react-router typegen && tsc",
     "migrate:dev": "node --env-file=.env node_modules/.bin/prisma migrate dev",
-    "migrate:deploy": "node --env-file=.env node_modules/.bin/prisma migrate deploy",
-    "migrate:prod": "node --env-file=.env scripts/migrate.mjs",
+    "migrate:deploy": "prisma migrate deploy",
+    "migrate:prod": "node scripts/migrate.mjs",
+    "setup": "prisma generate && node scripts/migrate.mjs",
     "doctor": "node scripts/doctor.mjs",
     "report": "node scripts/report.mjs"
   },

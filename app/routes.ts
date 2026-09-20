@@ -25,6 +25,7 @@ export default [
   route("student/quiz-history", "routes/student.quiz-history.tsx"),
   route("student/help", "routes/student.help.tsx"),
   route("student/resources", "routes/student.resources.tsx"),
+  route("student/resource/:resourceId", "routes/student.resource.$resourceId.tsx"),
   route("student/settings", "routes/student.settings.tsx"),
   route("student/certificates", "routes/student.certificates.tsx"),
 

@@ -30,6 +30,7 @@ if (!url) {
 const pool = new Pool({ connectionString: url });
 const ok = (m) => console.log(`  ✓ ${m}`);
 const bad = (m) => console.log(`  ✗ ${m}`);
+const firstLine = (m) => String(m).split(String.fromCharCode(10))[0];
 const head = (m) => console.log(`\n${m}\n${"-".repeat(m.length)}`);
 
 let problems = 0;
@@ -94,6 +95,38 @@ try {
     } else {
       ok("all migrations applied");
     }
+  }
+
+  // ── Generated Prisma client ───────────────────────────────────────────────
+  // The #1 cause of a route-specific 500 after a deploy: `prisma migrate
+  // deploy` updates the DATABASE, but the generated client still describes the
+  // schema as it was when `prisma generate` last ran. A model missing from the
+  // client makes `prisma.thatModel` undefined, and `undefined.findMany()` is a
+  // synchronous TypeError that no .catch() can intercept.
+  head("Generated Prisma client");
+  try {
+    const { PrismaClient } = await import("@prisma/client");
+    const { PrismaPg } = await import("@prisma/adapter-pg");
+    const client = new PrismaClient({ adapter: new PrismaPg(new Pool({ connectionString: url })) });
+    const required = [
+      "user", "course", "module", "lesson", "quiz", "question", "answer",
+      "license", "enrollment", "progress", "lessonProgress", "userSession",
+      "passwordReset", "quizAttempt", "quizAttemptAnswer",
+      "watchVideo", "shopifyOrder",
+    ];
+    const missing = required.filter((m) => typeof client[m] !== "object");
+    if (missing.length === 0) {
+      ok(`all ${required.length} models present`);
+    } else {
+      problems++;
+      for (const m of missing) bad(`model "${m}" MISSING from the generated client`);
+      console.log("  → the client is stale. Run: npx prisma generate   (then restart the app)");
+    }
+    await client.$disconnect();
+  } catch (e) {
+    problems++;
+    bad(`could not load the generated client: ${firstLine(e.message)}`);
+    console.log("  → run: npx prisma generate");
   }
 
   // ── Schema the app depends on ─────────────────────────────────────────────

@@ -66,20 +66,64 @@ export async function loader({ request }: LoaderFunctionArgs) {
       })
     : [];
 
+  // Resources the admin attached to the course itself. Scoped to the courses
+  // this learner holds a licence for — another course's files are never even
+  // fetched, let alone rendered. Tolerates a server that has not migrated yet.
+  const extras = courseIds.length
+    ? await prisma.courseResource
+        .findMany({
+          where: { courseId: { in: courseIds }, isActive: true },
+          orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            courseId: true,
+            title: true,
+            description: true,
+            kind: true,
+            fileName: true,
+            fileType: true,
+            fileSize: true,
+            lesson: { select: { title: true } },
+          },
+        })
+        .catch((err: unknown) => {
+          console.error("[resources] CourseResource unavailable:", err);
+          return [] as never[];
+        })
+    : [];
+
   // Flatten to course → downloads, dropping courses with nothing to download.
+  // Every href points at /student/resource/<id>, which re-checks the licence on
+  // each request — the storage URL is never serialized into the page.
   const courseResources = courses
     .map((course) => ({
       id: course.id,
       title: course.title,
       thumbnailUrl: course.thumbnailUrl,
-      downloads: course.modules.flatMap((m) =>
-        m.lessons.map((l) => ({
-          id: l.id,
-          title: l.title,
-          resourceUrl: l.resourceUrl,
-          moduleTitle: m.title,
-        })),
-      ),
+      downloads: [
+        ...extras
+          .filter((r) => r.courseId === course.id)
+          .map((r) => ({
+            id: r.id,
+            title: r.title,
+            kind: r.kind,
+            href: `/student/resource/${r.id}`,
+            label: r.lesson?.title ?? r.description ?? "Course resource",
+            typeHint: r.fileName ?? r.fileType ?? null,
+            lessonId: null as string | null,
+          })),
+        ...course.modules.flatMap((m) =>
+          m.lessons.map((l) => ({
+            id: l.id,
+            title: l.title,
+            kind: "FILE",
+            href: l.resourceUrl ? `/student/resource/${l.id}` : null,
+            label: m.title,
+            typeHint: l.resourceUrl,
+            lessonId: l.id as string | null,
+          })),
+        ),
+      ],
     }))
     .filter((c) => c.downloads.length > 0);
 
@@ -243,8 +287,12 @@ function CourseResourceGroup({
     downloads: Array<{
       id: string;
       title: string;
-      resourceUrl: string | null;
-      moduleTitle: string;
+      kind: string;
+      /** Always /student/resource/<id> — never a raw storage URL. */
+      href: string | null;
+      label: string;
+      typeHint: string | null;
+      lessonId: string | null;
     }>;
   };
 }) {
@@ -284,21 +332,26 @@ function CourseResourceGroup({
       {/* Files */}
       <ul className="divide-y divide-brand-beige-dark">
         {course.downloads.map((file) => {
-          const type = fileTypeLabel(file.resourceUrl);
+          const type = fileTypeLabel(file.typeHint);
+          const isLink = file.kind === "LINK";
           return (
             <li
               key={file.id}
               className="flex items-center gap-4 px-5 sm:px-6 py-4"
             >
               <div className="w-10 h-10 rounded-lg bg-brand-mustard/15 flex items-center justify-center shrink-0">
-                <FileText className="text-brand-mustard" size={18} />
+                {isLink ? (
+                  <ExternalLink className="text-brand-mustard" size={18} />
+                ) : (
+                  <FileText className="text-brand-mustard" size={18} />
+                )}
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-brand-navy font-semibold text-sm sm:text-base truncate">
                   {file.title}
                 </p>
                 <p className="text-brand-navy/55 text-xs mt-0.5 truncate">
-                  {file.moduleTitle}
+                  {file.label}
                   {type && (
                     <>
                       {" · "}
@@ -310,21 +363,23 @@ function CourseResourceGroup({
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <Link
-                  to={`/student/course/${course.id}?lesson=${file.id}`}
-                  className="hidden md:inline-flex items-center px-3 py-2 rounded-lg text-xs font-semibold text-brand-navy/70 hover:bg-brand-beige transition-colors"
-                >
-                  View in course
-                </Link>
-                {file.resourceUrl ? (
+                {file.lessonId && (
+                  <Link
+                    to={`/student/course/${course.id}?lesson=${file.lessonId}`}
+                    className="hidden md:inline-flex items-center px-3 py-2 rounded-lg text-xs font-semibold text-brand-navy/70 hover:bg-brand-beige transition-colors"
+                  >
+                    View in course
+                  </Link>
+                )}
+                {file.href ? (
                   <a
-                    href={file.resourceUrl}
+                    href={file.href}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1.5 bg-brand-navy hover:bg-brand-navy-dark text-white text-xs font-semibold px-3.5 py-2 rounded-lg transition-colors"
                   >
-                    <Download size={14} />
-                    Download
+                    {isLink ? <ExternalLink size={14} /> : <Download size={14} />}
+                    {isLink ? "Open" : "Download"}
                   </a>
                 ) : (
                   <span

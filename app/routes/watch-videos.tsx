@@ -25,15 +25,19 @@ import {
 
 export async function loader({ request }: LoaderFunctionArgs) {
   await requireAdmin(request);
+  // try/catch covers both failure modes: a stale generated client (throws
+  // synchronously, see the note in student.dashboard.tsx) and a table the
+  // migration has not created yet (throws asynchronously).
+  const loadVideos = async () => {
+    try {
+      return { rows: await prisma.watchVideo.findMany({ orderBy: [{ order: "asc" }, { createdAt: "asc" }] }), ready: true };
+    } catch (err) {
+      console.error("[watch-videos] WatchVideo unavailable:", err);
+      return { rows: [] as Awaited<ReturnType<typeof prisma.watchVideo.findMany>>, ready: false };
+    }
+  };
   const [videosResult, latest] = await Promise.all([
-    // The table arrives with a migration; say so plainly rather than 500ing.
-    prisma.watchVideo
-      .findMany({ orderBy: [{ order: "asc" }, { createdAt: "asc" }] })
-      .then((rows) => ({ rows, ready: true }))
-      .catch((err: unknown) => {
-        console.error("[watch-videos] WatchVideo table unavailable:", err);
-        return { rows: [] as Awaited<ReturnType<typeof prisma.watchVideo.findMany>>, ready: false };
-      }),
+    loadVideos(),
     // Shown as one-click suggestions from the channel.
     getLatestVideos(6).catch(() => []),
   ]);
@@ -47,6 +51,19 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
 export async function action({ request }: ActionFunctionArgs) {
   await requireAdmin(request);
+  // Every branch below writes to WatchVideo. Refuse up front with a useful
+  // message when the model is not in the generated client / the table is not
+  // in the database, instead of throwing an opaque TypeError.
+  if (!(prisma as { watchVideo?: unknown }).watchVideo) {
+    return data(
+      {
+        error:
+          "This server's Prisma client does not know the WatchVideo model yet. " +
+          "Run `npx prisma generate && npm run migrate:prod` and restart the app.",
+      },
+      { status: 503 },
+    );
+  }
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "");
 
@@ -170,10 +187,11 @@ export default function WatchVideosPage() {
         <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 text-amber-900 rounded-lg px-4 py-3 text-sm">
           <AlertCircle size={15} className="shrink-0 mt-0.5" />
           <span>
-            <strong>Database not migrated yet.</strong> The table that stores these videos does not
-            exist on this server. Run <code className="font-mono">npm run migrate:prod</code> (or
-            restart the app — it migrates on boot). Until then the student dashboard shows the
-            channel&rsquo;s latest uploads automatically.
+            <strong>Watch &amp; Learn storage is unavailable.</strong> Either the generated Prisma
+            client predates this feature or the table has not been created. Run{" "}
+            <code className="font-mono">npx prisma generate &amp;&amp; npm run migrate:prod</code> and
+            restart the app. Until then the student dashboard shows the channel&rsquo;s latest
+            uploads automatically.
           </span>
         </div>
       )}

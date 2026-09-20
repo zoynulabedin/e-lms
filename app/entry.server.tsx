@@ -116,8 +116,19 @@ export function handleError(
   }
 
   const url = new URL(request.url);
+  // React Router replaces the error with a bare Error("Unexpected Server
+  // Error") before the ErrorBoundary sees it in production, so `code`/`meta`
+  // (Prisma's schema-drift signals) only exist here. Log them.
+  const e = error as { code?: string; meta?: unknown };
+  const extra = [
+    e?.code ? `code=${e.code}` : null,
+    e?.meta ? `meta=${JSON.stringify(e.meta)}` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
   console.error(
-    `[app] ${id} ${request.method} ${url.pathname}${url.search}`,
+    `[app] ${id} ${new Date().toISOString()} ${request.method} ${url.pathname}${url.search}` +
+      (extra ? ` ${extra}` : ""),
     error instanceof Error ? (error.stack ?? error.message) : error,
   );
 }

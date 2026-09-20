@@ -73,4 +73,11 @@ try {
   await pool.end();
 }
 
+// Regenerate the client BEFORE migrating. `migrate deploy` only changes the
+// database; the generated client still describes whatever schema.prisma looked
+// like the last time `generate` ran. A client that predates a model makes
+// `prisma.thatModel` undefined, and `undefined.findMany()` is a synchronous
+// TypeError that no .catch() can intercept. Prisma 7 removed the postinstall
+// hook that used to cover this, so it has to be explicit.
+run(`${PRISMA} generate`);
 run(`${PRISMA} migrate deploy`);

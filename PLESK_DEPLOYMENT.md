@@ -168,12 +168,40 @@ You must run Prisma migrations to prepare the database before the app starts:
 
 ---
 
+## After any schema change: regenerate the Prisma client
+
+`prisma migrate deploy` changes the **database**. The **generated client** in
+`node_modules/@prisma/client` is a separate artefact that only knows the models
+present when `prisma generate` last ran — and Prisma 7 removed the postinstall
+hook that used to regenerate it automatically.
+
+If the client is older than the schema, `prisma.newModel` is `undefined` and
+`undefined.findMany()` throws a synchronous `TypeError` that no `.catch()` can
+intercept. The page returns a plain 500 with no Prisma error code, which makes
+it look like an application bug rather than a deploy step that was missed.
+
+This is now handled for you in two places, so a normal deploy cannot miss it:
+
+* `npm run build` runs `prisma generate` first.
+* `scripts/migrate.mjs` (run by `server.js` on every **Restart App**, and by
+  `npm run migrate:prod`) runs `prisma generate` before `migrate deploy`.
+
+To check a server at any time:
+
+```bash
+npm run doctor
+```
+
+It reports `✗ model "x" MISSING from the generated client` when the client is
+stale, alongside the migration and schema checks.
+
 ## Updating the App in the Future
 
 When you push new code to production, follow these steps:
 1. Pull the latest code to Plesk (via Git extension or manual upload).
 2. If `package.json` changed, click **NPM Install**.
-3. If `schema.prisma` changed, run `npm run migrate:prod` via SSH — **the app
-   will 500 on pages that use new columns until this is done.**
+3. If `schema.prisma` changed, run `npm run migrate:prod` via SSH — it
+   regenerates the Prisma client and applies migrations. **Pages that use new
+   models/columns 500 until this is done.**
 4. **Crucial:** Build the application assets (either locally and upload the new `build/` folder, or run `npm run build` on the server).
 5. Click **Restart App** in the Plesk Node.js interface to load the new server code.

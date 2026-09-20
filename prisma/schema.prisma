@@ -100,6 +100,48 @@ model UserSession {
   @@index([userId, isActive])
 }
 
+// ─── Course resources (handouts, worksheets, links) ───────────────────────────
+// Shown in the course player's RESOURCES drawer and on /student/resources.
+// Access is always checked against the learner's licence for `courseId`; the
+// stored `url` is never sent to the browser for FILE resources - they are
+// streamed through /student/resource/:id instead.
+model CourseResource {
+  id          String   @id @default(uuid())
+  courseId    String
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lessonId    String? // optional: pin the resource to one lesson
+  lesson      Lesson?  @relation(fields: [lessonId], references: [id], onDelete: SetNull)
+  title       String
+  description String?
+  kind        String   @default("FILE") // "FILE" (uploaded) | "LINK" (YouTube/Vimeo/any URL)
+  url         String
+  fileName    String?
+  fileType    String? // MIME type for FILE resources
+  fileSize    Int? // bytes
+  order       Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([courseId, order])
+  @@index([lessonId])
+}
+
+// ─── Glossary ─────────────────────────────────────────────────────────────────
+// Course-specific; a learner only ever sees the terms of courses they hold a
+// licence for.
+model GlossaryTerm {
+  id         String   @id @default(uuid())
+  courseId   String
+  course     Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  term       String
+  definition String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([courseId, term])
+}
+
 // ─── Watch & Learn video (student dashboard) ──────────────────────────────────
 // Admin-curated videos for the "Watch & Learn" strip. When no active rows
 // exist the dashboard falls back to the channel's latest uploads (RSS).
@@ -155,6 +197,8 @@ model Course {
   progress          Progress[]
   enrollments       Enrollment[]
   modules           Module[]
+  resources         CourseResource[]
+  glossary          GlossaryTerm[]
 }
 
 // ─── Module (Section) ─────────────────────────────────────────────────────────
@@ -193,6 +237,7 @@ model Lesson {
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
   lessonProgress LessonProgress[]
+  resources      CourseResource[]
 
   @@index([moduleId])
 }

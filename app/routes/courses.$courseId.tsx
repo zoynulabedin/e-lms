@@ -13,6 +13,12 @@ import { useState, useRef, useEffect } from "react";
 import {
   AlertCircle,
   ArrowLeft,
+  Paperclip,
+  BookMarked,
+  Link2,
+  Loader2,
+  Eye,
+  EyeOff,
   ChevronDown,
   ChevronRight,
   MonitorPlay,
@@ -31,7 +37,6 @@ import {
   Image,
   Play,
   Globe,
-  EyeOff,
 } from "lucide-react";
 
 // ── ImageUpload ───────────────────────────────────────────────────────────────
@@ -163,6 +168,23 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     FROM "Course" WHERE id = ${courseId}
   `;
 
+  // Resources and glossary are read on their own and tolerate being absent so
+  // the builder still opens on a server that has not migrated/generated yet.
+  const resources = await prisma.courseResource
+    .findMany({
+      where: { courseId },
+      orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+      select: {
+        id: true, title: true, description: true, kind: true, url: true,
+        fileName: true, fileType: true, fileSize: true, lessonId: true,
+        isActive: true, order: true,
+      },
+    })
+    .catch(() => [] as any[]);
+  const glossary = await prisma.glossaryTerm
+    .findMany({ where: { courseId }, orderBy: [{ term: "asc" }] })
+    .catch(() => [] as any[]);
+
   // Added by a later migration: read it on its own so the builder still opens
   // on a server whose migrations have not been applied yet.
   const iconSet = await prisma
@@ -214,6 +236,8 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   }
 
   return {
+    resources,
+    glossary,
     course: {
       ...course,
       ...(extras ?? {}),
@@ -759,6 +783,132 @@ export async function action({ request, params }: ActionFunctionArgs) {
     await prisma.$transaction(
       list.map((a, i) => prisma.answer.update({ where: { id: a.id }, data: { order: i } })),
     );
+    return data({ success: true });
+  }
+
+  // ── Resources ─────────────────────────────────────────────────────────────
+  if (intent === "create_resource" || intent === "update_resource") {
+    const id = formData.get("id") as string;
+    const title = String(formData.get("title") || "").trim();
+    const description = String(formData.get("description") || "").trim() || null;
+    const kind = String(formData.get("kind") || "FILE") === "LINK" ? "LINK" : "FILE";
+    const url = String(formData.get("url") || "").trim();
+    const lessonIdRaw = String(formData.get("lessonId") || "").trim();
+    const fileName = String(formData.get("fileName") || "").trim() || null;
+    const fileType = String(formData.get("fileType") || "").trim() || null;
+    const sizeRaw = parseInt(String(formData.get("fileSize") || ""), 10);
+    const fileSize = Number.isInteger(sizeRaw) && sizeRaw > 0 ? sizeRaw : null;
+
+    if (!title) return data({ error: "Give the resource a title." }, { status: 400 });
+    if (!url) {
+      return data(
+        { error: kind === "LINK" ? "Paste a link." : "Choose a file to upload." },
+        { status: 400 },
+      );
+    }
+    if (kind === "LINK" && !/^https?:\/\//i.test(url)) {
+      return data({ error: "Links must start with http:// or https://" }, { status: 400 });
+    }
+
+    // A lesson may only be picked from THIS course.
+    let lessonId: string | null = null;
+    if (lessonIdRaw) {
+      const owns = await prisma.lesson.count({ where: { id: lessonIdRaw, module: { courseId } } });
+      if (owns === 0) return data({ error: "That lesson is not part of this course." }, { status: 400 });
+      lessonId = lessonIdRaw;
+    }
+
+    if (intent === "create_resource") {
+      const last = await prisma.courseResource.findFirst({
+        where: { courseId },
+        orderBy: { order: "desc" },
+        select: { order: true },
+      });
+      await prisma.courseResource.create({
+        data: {
+          courseId, lessonId, title, description, kind, url,
+          fileName, fileType, fileSize, order: (last?.order ?? -1) + 1,
+        },
+      });
+    } else {
+      // updateMany scopes the write to this course - an id from elsewhere is a no-op.
+      const r = await prisma.courseResource.updateMany({
+        where: { id, courseId },
+        data: { lessonId, title, description, kind, url, fileName, fileType, fileSize },
+      });
+      if (r.count === 0) return data({ error: "Resource not found." }, { status: 404 });
+    }
+    return data({ success: true });
+  }
+
+  if (intent === "delete_resource") {
+    const id = formData.get("id") as string;
+    const r = await prisma.courseResource.deleteMany({ where: { id, courseId } });
+    if (r.count === 0) return data({ error: "Resource not found." }, { status: 404 });
+    return data({ success: true });
+  }
+
+  if (intent === "toggle_resource") {
+    const id = formData.get("id") as string;
+    const row = await prisma.courseResource.findFirst({
+      where: { id, courseId },
+      select: { isActive: true },
+    });
+    if (!row) return data({ error: "Resource not found." }, { status: 404 });
+    await prisma.courseResource.updateMany({
+      where: { id, courseId },
+      data: { isActive: !row.isActive },
+    });
+    return data({ success: true });
+  }
+
+  if (intent === "move_resource") {
+    const id = formData.get("id") as string;
+    const dir = formData.get("direction") === "up" ? -1 : 1;
+    const list = await prisma.courseResource.findMany({
+      where: { courseId },
+      orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+      select: { id: true },
+    });
+    const idx = list.findIndex((r) => r.id === id);
+    if (idx === -1) return data({ error: "Resource not found." }, { status: 404 });
+    const to = idx + dir;
+    if (to >= 0 && to < list.length) [list[idx], list[to]] = [list[to], list[idx]];
+    await prisma.$transaction(
+      list.map((r, i) => prisma.courseResource.update({ where: { id: r.id }, data: { order: i } })),
+    );
+    return data({ success: true });
+  }
+
+  // ── Glossary ──────────────────────────────────────────────────────────────
+  if (intent === "create_term" || intent === "update_term") {
+    const id = formData.get("id") as string;
+    const term = String(formData.get("term") || "").trim();
+    const definition = String(formData.get("definition") || "").trim();
+    if (!term || !definition) {
+      return data({ error: "A glossary entry needs both a term and a definition." }, { status: 400 });
+    }
+    if (intent === "create_term") {
+      const dupe = await prisma.glossaryTerm.findFirst({
+        where: { courseId, term: { equals: term, mode: "insensitive" } },
+        select: { id: true },
+      });
+      if (dupe) return data({ error: `"${term}" is already in this glossary.` }, { status: 409 });
+      await prisma.glossaryTerm.create({ data: { courseId, term, definition } });
+    } else {
+      const r = await prisma.glossaryTerm.updateMany({
+        where: { id, courseId },
+        data: { term, definition },
+      });
+      if (r.count === 0) return data({ error: "Term not found." }, { status: 404 });
+    }
+    return data({ success: true });
+  }
+
+  if (intent === "delete_term") {
+    const id = formData.get("id") as string;
+    const r = await prisma.glossaryTerm.deleteMany({ where: { id, courseId } });
+    if (r.count === 0) return data({ error: "Term not found." }, { status: 404 });
     return data({ success: true });
   }
 
@@ -2413,6 +2563,561 @@ function CurriculumStep({ course, fetcher }: { course: any; fetcher: any }) {
   );
 }
 
+// ── Step 4: Resources & Glossary ──────────────────────────────────────────────
+
+function formatBytes(n: number | null | undefined) {
+  if (!n) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function ResourcesStep({
+  course,
+  resources,
+  glossary,
+}: {
+  course: any;
+  resources: any[];
+  glossary: any[];
+}) {
+  const lessons: Array<{ id: string; title: string; module: string }> =
+    (course.modules ?? []).flatMap((m: any) =>
+      (m.lessons ?? []).map((l: any) => ({ id: l.id, title: l.title, module: m.title })),
+    );
+
+  return (
+    <div className="max-w-4xl space-y-8">
+      <ResourcesPanel resources={resources} lessons={lessons} />
+      <GlossaryPanel glossary={glossary} />
+    </div>
+  );
+}
+
+// ── Resources ────────────────────────────────────────────────────────────────
+
+function ResourcesPanel({
+  resources,
+  lessons,
+}: {
+  resources: any[];
+  lessons: Array<{ id: string; title: string; module: string }>;
+}) {
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
+  const [adding, setAdding] = useState(false);
+
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data?.success) setAdding(false);
+  }, [fetcher.state, fetcher.data]);
+
+  return (
+    <section className="bg-white rounded-xl border border-gray-200">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+        <div className="flex items-center gap-2">
+          <Paperclip size={17} className="text-gray-500" />
+          <h2 className="font-semibold text-gray-900">Resources</h2>
+          <span className="text-xs text-gray-400">({resources.length})</span>
+        </div>
+        {!adding && (
+          <button
+            onClick={() => setAdding(true)}
+            className="flex items-center gap-1.5 text-sm text-white bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg font-medium transition-colors"
+          >
+            <Plus size={14} /> Add resource
+          </button>
+        )}
+      </div>
+
+      <p className="px-5 pt-3 text-xs text-gray-500">
+        Handouts for this course. Learners see them in the course player&rsquo;s{" "}
+        <strong>Resources</strong> drawer and on their Resources page. Files are downloaded
+        through a licence-checked link, so students of other courses cannot open them.
+      </p>
+
+      {fetcher.data?.error && (
+        <div className="mx-5 mt-3 flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm">
+          <AlertCircle size={14} className="shrink-0" /> {fetcher.data.error}
+        </div>
+      )}
+
+      {adding && (
+        <ResourceForm lessons={lessons} fetcher={fetcher} onCancel={() => setAdding(false)} />
+      )}
+
+      {resources.length === 0 && !adding ? (
+        <div className="px-5 py-10 text-center">
+          <Paperclip size={26} className="mx-auto text-gray-300 mb-2" />
+          <p className="text-sm text-gray-500">No resources yet.</p>
+          <p className="text-xs text-gray-400 mt-1">
+            The Resources link stays hidden for learners until you add one.
+          </p>
+        </div>
+      ) : (
+        <ul className="divide-y divide-gray-100">
+          {resources.map((r, i) => (
+            <ResourceRow key={r.id} r={r} i={i} total={resources.length} lessons={lessons} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function ResourceForm({
+  lessons,
+  fetcher,
+  onCancel,
+  existing,
+}: {
+  lessons: Array<{ id: string; title: string; module: string }>;
+  fetcher: any;
+  onCancel: () => void;
+  existing?: any;
+}) {
+  const [kind, setKind] = useState<"FILE" | "LINK">(existing?.kind === "LINK" ? "LINK" : "FILE");
+  const [url, setUrl] = useState<string>(existing?.url ?? "");
+  const [fileName, setFileName] = useState<string>(existing?.fileName ?? "");
+  const [fileType, setFileType] = useState<string>(existing?.fileType ?? "");
+  const [fileSize, setFileSize] = useState<number | "">(existing?.fileSize ?? "");
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("kind", "document");
+      const res = await fetch("/upload", { method: "POST", body: fd });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error ?? "Upload failed");
+      setUrl(json.url);
+      setFileName(json.fileName ?? file.name);
+      setFileType(json.fileType ?? file.type ?? "");
+      setFileSize(json.fileSize ?? file.size);
+    } catch (err: any) {
+      setUploadError(err.message ?? "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <fetcher.Form method="post" className="px-5 py-4 bg-gray-50 border-y border-gray-200 space-y-4">
+      <input type="hidden" name="intent" value={existing ? "update_resource" : "create_resource"} />
+      {existing && <input type="hidden" name="id" value={existing.id} />}
+      <input type="hidden" name="kind" value={kind} />
+      <input type="hidden" name="url" value={url} />
+      <input type="hidden" name="fileName" value={fileName} />
+      <input type="hidden" name="fileType" value={fileType} />
+      <input type="hidden" name="fileSize" value={fileSize === "" ? "" : String(fileSize)} />
+
+      <div className="flex gap-2">
+        {(["FILE", "LINK"] as const).map((k) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => {
+              setKind(k);
+              setUrl("");
+              setFileName("");
+              setFileType("");
+              setFileSize("");
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border transition-colors ${
+              kind === k
+                ? "border-blue-500 bg-blue-50 text-blue-900 font-medium"
+                : "border-gray-200 text-gray-600 hover:border-gray-300"
+            }`}
+          >
+            {k === "FILE" ? <Paperclip size={13} /> : <Link2 size={13} />}
+            {k === "FILE" ? "Upload a file" : "External link"}
+          </button>
+        ))}
+      </div>
+
+      {kind === "FILE" ? (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">File</label>
+          <div className="flex items-center gap-3">
+            <label className="inline-flex items-center gap-2 text-sm border border-gray-300 bg-white hover:bg-gray-50 px-3 py-2 rounded-lg cursor-pointer transition-colors">
+              {uploading ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+              {uploading ? "Uploading…" : "Choose file"}
+              <input
+                type="file"
+                className="hidden"
+                onChange={handleFile}
+                disabled={uploading}
+                accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.rtf"
+              />
+            </label>
+            {fileName && !uploading && (
+              <span className="text-sm text-gray-700 truncate">
+                {fileName}{" "}
+                <span className="text-gray-400">{formatBytes(Number(fileSize) || null)}</span>
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">
+            PDF, Word, Excel, PowerPoint, TXT, CSV, ZIP — up to 50 MB.
+          </p>
+          {uploadError && <p className="text-xs text-red-600 mt-1">{uploadError}</p>}
+        </div>
+      ) : (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">Link</label>
+          <input
+            type="url"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://www.youtube.com/watch?v=… or any URL"
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+          />
+          <p className="text-[11px] text-gray-400 mt-1">
+            YouTube and Vimeo play inside the drawer. Note: an external link is served by that
+            site, so it cannot be licence-checked the way an uploaded file is.
+          </p>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">Title</label>
+          <input
+            name="title"
+            defaultValue={existing?.title ?? ""}
+            required
+            placeholder="Module 1 Worksheet"
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">Show with</label>
+          <select
+            name="lessonId"
+            defaultValue={existing?.lessonId ?? ""}
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:border-blue-500"
+          >
+            <option value="">The whole course</option>
+            {lessons.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.module} › {l.title}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1.5">
+          Description (optional)
+        </label>
+        <input
+          name="description"
+          defaultValue={existing?.description ?? ""}
+          placeholder="What is it for?"
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+        />
+      </div>
+
+      <div className="flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-white transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          disabled={!url || uploading || fetcher.state !== "idle"}
+          className="px-5 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+        >
+          {existing ? "Save changes" : "Add resource"}
+        </button>
+      </div>
+    </fetcher.Form>
+  );
+}
+
+function ResourceRow({
+  r,
+  i,
+  total,
+  lessons,
+}: {
+  r: any;
+  i: number;
+  total: number;
+  lessons: Array<{ id: string; title: string; module: string }>;
+}) {
+  const rowFetcher = useFetcher<{ success?: boolean; error?: string }>();
+  const [editing, setEditing] = useState(false);
+  const lesson = lessons.find((l) => l.id === r.lessonId);
+
+  useEffect(() => {
+    if (rowFetcher.state === "idle" && rowFetcher.data?.success) setEditing(false);
+  }, [rowFetcher.state, rowFetcher.data]);
+
+  if (editing) {
+    return (
+      <li>
+        <ResourceForm
+          lessons={lessons}
+          fetcher={rowFetcher}
+          existing={r}
+          onCancel={() => setEditing(false)}
+        />
+      </li>
+    );
+  }
+
+  return (
+    <li className={`flex items-center gap-3 px-5 py-3 ${r.isActive ? "" : "bg-gray-50"}`}>
+      <span className="text-xs text-gray-400 w-4 text-right shrink-0">{i + 1}</span>
+      <div
+        className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+          r.kind === "LINK" ? "bg-purple-50 text-purple-600" : "bg-blue-50 text-blue-600"
+        }`}
+      >
+        {r.kind === "LINK" ? <Link2 size={15} /> : <Paperclip size={15} />}
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <p
+          className={`text-sm font-medium truncate ${r.isActive ? "text-gray-900" : "text-gray-500"}`}
+        >
+          {r.title}
+          {!r.isActive && (
+            <span className="ml-2 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+              hidden
+            </span>
+          )}
+        </p>
+        <p className="text-xs text-gray-400 truncate">
+          {lesson ? `${lesson.module} › ${lesson.title}` : "Whole course"}
+          {r.fileName ? ` · ${r.fileName}` : ""}
+          {r.fileSize ? ` · ${formatBytes(r.fileSize)}` : ""}
+        </p>
+      </div>
+
+      <rowFetcher.Form method="post" className="flex items-center shrink-0">
+        <input type="hidden" name="intent" value="move_resource" />
+        <input type="hidden" name="id" value={r.id} />
+        <button
+          type="submit"
+          name="direction"
+          value="up"
+          disabled={i === 0}
+          title="Move up"
+          className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-transparent"
+        >
+          <ChevronUp size={14} />
+        </button>
+        <button
+          type="submit"
+          name="direction"
+          value="down"
+          disabled={i === total - 1}
+          title="Move down"
+          className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-transparent"
+        >
+          <ChevronDown size={14} />
+        </button>
+      </rowFetcher.Form>
+
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        title="Edit"
+        className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 shrink-0"
+      >
+        <Edit3 size={14} />
+      </button>
+
+      <rowFetcher.Form method="post" className="shrink-0">
+        <input type="hidden" name="intent" value="toggle_resource" />
+        <input type="hidden" name="id" value={r.id} />
+        <button
+          type="submit"
+          title={r.isActive ? "Hide from learners" : "Show to learners"}
+          className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100"
+        >
+          {r.isActive ? <Eye size={14} /> : <EyeOff size={14} />}
+        </button>
+      </rowFetcher.Form>
+
+      <rowFetcher.Form method="post" className="shrink-0">
+        <input type="hidden" name="intent" value="delete_resource" />
+        <input type="hidden" name="id" value={r.id} />
+        <button
+          type="submit"
+          title="Delete"
+          onClick={(e) => {
+            if (!confirm(`Delete "${r.title}"?`)) e.preventDefault();
+          }}
+          className="p-1.5 rounded text-red-400 hover:text-red-600 hover:bg-red-50"
+        >
+          <Trash2 size={14} />
+        </button>
+      </rowFetcher.Form>
+    </li>
+  );
+}
+
+// ── Glossary ─────────────────────────────────────────────────────────────────
+
+function GlossaryPanel({ glossary }: { glossary: any[] }) {
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
+  const formRef = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data?.success) formRef.current?.reset();
+  }, [fetcher.state, fetcher.data]);
+
+  return (
+    <section className="bg-white rounded-xl border border-gray-200">
+      <div className="flex items-center gap-2 px-5 py-4 border-b border-gray-200">
+        <BookMarked size={17} className="text-gray-500" />
+        <h2 className="font-semibold text-gray-900">Glossary</h2>
+        <span className="text-xs text-gray-400">({glossary.length})</span>
+      </div>
+
+      <p className="px-5 pt-3 text-xs text-gray-500">
+        Terms for this course only. Learners open them from the course player&rsquo;s{" "}
+        <strong>Glossary</strong> link; the link stays hidden until there is at least one term.
+      </p>
+
+      {fetcher.data?.error && (
+        <div className="mx-5 mt-3 flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm">
+          <AlertCircle size={14} className="shrink-0" /> {fetcher.data.error}
+        </div>
+      )}
+
+      <fetcher.Form
+        ref={formRef}
+        method="post"
+        className="px-5 py-4 flex flex-col sm:flex-row gap-3 border-b border-gray-100"
+      >
+        <input type="hidden" name="intent" value="create_term" />
+        <input
+          name="term"
+          required
+          placeholder="Term (e.g. Margin Account)"
+          className="sm:w-64 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+        />
+        <input
+          name="definition"
+          required
+          placeholder="Definition"
+          className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+        />
+        <button
+          type="submit"
+          disabled={fetcher.state !== "idle"}
+          className="flex items-center justify-center gap-1.5 text-sm text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-60 px-4 py-2 rounded-lg font-medium transition-colors shrink-0"
+        >
+          <Plus size={14} /> Add
+        </button>
+      </fetcher.Form>
+
+      {glossary.length === 0 ? (
+        <div className="px-5 py-10 text-center">
+          <BookMarked size={26} className="mx-auto text-gray-300 mb-2" />
+          <p className="text-sm text-gray-500">No terms yet.</p>
+        </div>
+      ) : (
+        <ul className="divide-y divide-gray-100">
+          {glossary.map((t) => (
+            <GlossaryRow key={t.id} t={t} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function GlossaryRow({ t }: { t: any }) {
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
+  const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data?.success) setEditing(false);
+  }, [fetcher.state, fetcher.data]);
+
+  if (editing) {
+    return (
+      <li className="px-5 py-3 bg-gray-50">
+        <fetcher.Form method="post" className="flex flex-col sm:flex-row gap-3">
+          <input type="hidden" name="intent" value="update_term" />
+          <input type="hidden" name="id" value={t.id} />
+          <input
+            name="term"
+            defaultValue={t.term}
+            required
+            className="sm:w-64 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+          />
+          <input
+            name="definition"
+            defaultValue={t.definition}
+            required
+            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+          />
+          <div className="flex gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              className="px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-white"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="px-4 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+            >
+              Save
+            </button>
+          </div>
+        </fetcher.Form>
+      </li>
+    );
+  }
+
+  return (
+    <li className="flex items-start gap-3 px-5 py-3">
+      <div className="sm:w-64 shrink-0">
+        <p className="text-sm font-semibold text-gray-900">{t.term}</p>
+      </div>
+      <p className="flex-1 text-sm text-gray-600 leading-relaxed">{t.definition}</p>
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        title="Edit"
+        className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 shrink-0"
+      >
+        <Edit3 size={14} />
+      </button>
+      <fetcher.Form method="post" className="shrink-0">
+        <input type="hidden" name="intent" value="delete_term" />
+        <input type="hidden" name="id" value={t.id} />
+        <button
+          type="submit"
+          title="Delete"
+          onClick={(e) => {
+            if (!confirm(`Delete "${t.term}"?`)) e.preventDefault();
+          }}
+          className="p-1.5 rounded text-red-400 hover:text-red-600 hover:bg-red-50"
+        >
+          <Trash2 size={14} />
+        </button>
+      </fetcher.Form>
+    </li>
+  );
+}
+
 // ── Step 3: Additional ────────────────────────────────────────────────────────
 
 function AdditionalStep({ course, fetcher }: { course: any; fetcher: any }) {
@@ -2500,9 +3205,9 @@ function AdditionalStep({ course, fetcher }: { course: any; fetcher: any }) {
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export default function CourseBuilder() {
-  const { course } = useLoaderData<typeof loader>();
+  const { course, resources, glossary } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
-  const [activeStep, setActiveStep] = useState<1 | 2 | 3>(1);
+  const [activeStep, setActiveStep] = useState<1 | 2 | 3 | 4>(1);
 
   const isPublished = course.status === "PUBLISHED";
 
@@ -2510,6 +3215,7 @@ export default function CourseBuilder() {
     { num: 1, label: "Basics" },
     { num: 2, label: "Curriculum" },
     { num: 3, label: "Additional" },
+    { num: 4, label: "Resources" },
   ] as const;
 
   return (
@@ -2590,21 +3296,24 @@ export default function CourseBuilder() {
         {activeStep === 1 && <BasicsStep course={course} fetcher={fetcher} />}
         {activeStep === 2 && <CurriculumStep course={course} fetcher={fetcher} />}
         {activeStep === 3 && <AdditionalStep course={course} fetcher={fetcher} />}
+        {activeStep === 4 && (
+          <ResourcesStep course={course} resources={resources} glossary={glossary} />
+        )}
       </main>
 
       {/* ── Footer nav ───────────────────────────────────────────────────────── */}
       <footer className="bg-white border-t border-gray-200 px-6 py-3 flex items-center justify-between shrink-0">
         <button
-          onClick={() => setActiveStep((v) => Math.max(1, v - 1) as 1 | 2 | 3)}
+          onClick={() => setActiveStep((v) => Math.max(1, v - 1) as 1 | 2 | 3 | 4)}
           disabled={activeStep === 1}
           className="flex items-center gap-2 text-sm text-gray-700 border border-gray-300 hover:bg-gray-50 px-4 py-2 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors font-medium"
         >
           <ChevronRight size={16} className="rotate-180" /> Back
         </button>
-        <span className="text-xs text-gray-400">Step {activeStep} of 3</span>
+        <span className="text-xs text-gray-400">Step {activeStep} of 4</span>
         <button
-          onClick={() => setActiveStep((v) => Math.min(3, v + 1) as 1 | 2 | 3)}
-          disabled={activeStep === 3}
+          onClick={() => setActiveStep((v) => Math.min(4, v + 1) as 1 | 2 | 3 | 4)}
+          disabled={activeStep === 4}
           className="flex items-center gap-2 text-sm text-white bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors font-medium"
         >
           Next <ChevronRight size={16} />
