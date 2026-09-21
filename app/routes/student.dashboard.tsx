@@ -210,13 +210,13 @@ export default function StudentDashboard() {
         <StudentSidebar
           user={user}
           active="dashboard"
-          certificatesEnabled={hasCertificates}
         />
 
         {/* ── Main content ─────────────────────────────────────────────────── */}
         <main className="flex-1 min-w-0">
-          <StudentMobileTopbar active="dashboard" />
+          <StudentMobileTopbar active="dashboard" certificatesEnabled={hasCertificates} />
           <StudentTopbar
+            certificatesEnabled={hasCertificates}
             user={user}
             title={`Look who’s back, ${firstName}!`}
             subtitle="Ready for another money “aha!” moment?"

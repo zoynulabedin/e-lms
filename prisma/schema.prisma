@@ -157,6 +157,64 @@ model WatchVideo {
   @@index([isActive, order])
 }
 
+// ─── Certificate template ─────────────────────────────────────────────
+// The admin-editable completion certificate. Every column default is the value
+// that was hardcoded in app/routes/certificate.$courseId.tsx before this table
+// existed, and the table ships EMPTY, so certificates render byte-identically
+// until an admin saves for the first time.
+//
+// Two kinds of row:
+//   id = "global", courseId = null → the site-wide design (all the v1 admin
+//                                    UI ever writes)
+//   courseId = <course id>         → a per-course override. Schema and reader
+//                                    already allow it; adding that UI later
+//                                    needs no migration.
+//
+// The singleton is keyed by the literal id "global" — a primary key, so the
+// database structurally cannot hold two. A UNIQUE index on the nullable
+// courseId would NOT give that guarantee: Postgres permits unlimited NULLs in
+// a unique index, so a second global row could slip in and the reader would
+// pick one nondeterministically.
+model CertificateTemplate {
+  id       String  @id @default(uuid())
+  courseId String? @unique
+  course   Course? @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  // Branding
+  orgName        String  @default("InstructionalGraphics Academy")
+  logoUrl        String? // Cloudinary https URL from /upload; replaces the star badge
+  accentColor    String  @default("#1D375F")
+  secondaryColor String  @default("#C69445")
+  borderStyle    String  @default("DASHED") // DASHED | SOLID | NONE
+  fontPair       String  @default("CLASSIC") // key of FONT_PAIRS in certificate-template.ts
+
+  // Wording. Plain text only — entity-escaped at render time. Never HTML.
+  headline   String  @default("Certificate of Completion")
+  introLine  String  @default("This certifies that")
+  midLine    String  @default("has successfully completed")
+  dateLabel  String  @default("Completed on")
+  footerNote String?
+
+  // Signature block — hidden entirely when all three are empty
+  signatureImageUrl String?
+  signatureName     String?
+  signatureTitle    String?
+
+  // Layout / print. AUTO emits no @page rule at all, i.e. exactly how this
+  // certificate printed before the feature existed.
+  paperSize   String @default("AUTO") // AUTO | A4 | LETTER
+  orientation String @default("PORTRAIT") // PORTRAIT | LANDSCAPE
+  dateFormat  String @default("MONTH_DAY_YEAR") // MONTH_DAY_YEAR | DAY_MONTH_YEAR | ISO
+
+  // Optional extras
+  showCertificateId   Boolean @default(false)
+  showInstructor      Boolean @default(false)
+  certificateIdPrefix String  @default("CERT")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 // ─── Shopify webhook idempotency ───────────────────────────────────────────────
 // One row per processed order. Inserted in the same transaction as the
 // licences, so a retried/duplicate delivery hits the unique key and is dropped.
@@ -199,6 +257,7 @@ model Course {
   modules           Module[]
   resources         CourseResource[]
   glossary          GlossaryTerm[]
+  certificateTemplate CertificateTemplate?
 }
 
 // ─── Module (Section) ─────────────────────────────────────────────────────────

@@ -19,6 +19,7 @@ import {
   Shield,
   HelpCircle,
   Youtube,
+  Award,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -36,6 +37,7 @@ const navItems = [
   { to: "/quiz-review", label: "Quiz Review", icon: HelpCircle },
   { to: "/watch-videos", label: "Watch & Learn", icon: Youtube },
   { to: "/reports", label: "Reports", icon: BarChart2 },
+  { to: "/certificate-design", label: "Certificate", icon: Award },
   { to: "/settings", label: "Settings", icon: Settings },
   { to: "/catalog", label: "Student Catalog", icon: Globe },
 ];

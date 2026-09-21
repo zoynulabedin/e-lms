@@ -118,11 +118,16 @@ export default function StudentSettings() {
       <Toast />
 
       <div className="flex">
-        <StudentSidebar user={user} active="settings" certificatesEnabled={hasCertificates} />
+        <StudentSidebar user={user} active="settings" />
 
         <main className="flex-1 min-w-0">
-          <StudentMobileTopbar active="settings" />
-          <StudentTopbar user={user} title="Settings" subtitle="Manage your profile and password." />
+          <StudentMobileTopbar active="settings" certificatesEnabled={hasCertificates} />
+          <StudentTopbar
+            user={user}
+            certificatesEnabled={hasCertificates}
+            title="Settings"
+            subtitle="Manage your profile and password."
+          />
 
           <div className="max-w-3xl mx-auto px-5 sm:px-8 py-8 lg:py-10 space-y-8">
             {/* Hero */}

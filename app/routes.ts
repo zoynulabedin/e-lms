@@ -31,6 +31,9 @@ export default [
 
   // ─── Certificate (raw HTML response) ───────────────────────────────
   route("certificate/:courseId", "routes/certificate.$courseId.tsx"),
+  // Outside the admin layout on purpose: it returns HTML, not a page, so a
+  // resource request runs only this leaf loader — requireAdmin lives there.
+  route("certificate-design/preview", "routes/certificate-design.preview.tsx"),
 
   // ─── Shopify webhook ────────────────────────────────────────────────
   route("shopify/webhook", "routes/shopify.webhook.tsx"),
@@ -55,6 +58,7 @@ export default [
     route("reports", "routes/reports.tsx"),
     route("watch-videos", "routes/watch-videos.tsx"),
     route("settings", "routes/settings.tsx"),
+    route("certificate-design", "routes/certificate-design.tsx"),
     route("quiz-review", "routes/quiz-review.tsx"),
   ]),
 

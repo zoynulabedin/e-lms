@@ -14,6 +14,7 @@ import {
   Mail,
   Menu,
   X,
+  Award,
 } from "lucide-react";
 
 export type StudentNavItem =
@@ -31,8 +32,6 @@ export type StudentNavItem =
 interface StudentSidebarProps {
   user: { name: string; email: string };
   active: StudentNavItem;
-  /** When true, the Certificates nav item becomes an active link. */
-  certificatesEnabled?: boolean;
 }
 
 // ── Internal nav item ───────────────────────────────────────────────────────
@@ -90,11 +89,18 @@ function SidebarContent({
   active,
   onNavigate,
   showSettings = false,
+  showCertificates = false,
 }: {
   active?: StudentNavItem;
   onNavigate?: () => void;
-  /** The mobile drawer has no top-bar profile menu, so it lists Settings here. */
+  /**
+   * The mobile drawer has no top-bar profile menu, so it lists Settings - and,
+   * when the learner has earned one, Certificates - here instead. The five
+   * course-navigation items above are deliberately fixed; these two are the
+   * phone stand-in for the header menu, not additions to that list.
+   */
   showSettings?: boolean;
+  showCertificates?: boolean;
 }) {
   return (
     <>
@@ -141,6 +147,15 @@ function SidebarContent({
           active={active === "help"}
           onClick={onNavigate}
         />
+        {showCertificates && (
+          <NavItem
+            icon={Award}
+            label="My Certificates"
+            to="/student/certificates"
+            active={active === "certificates"}
+            onClick={onNavigate}
+          />
+        )}
         {showSettings && (
           <NavItem
             icon={Settings}
@@ -207,7 +222,10 @@ export function StudentSidebar({ active }: StudentSidebarProps) {
 
 // ── Mobile top bar: logo + hamburger that opens the sidebar as a drawer ─────
 
-export function StudentMobileTopbar({ active }: { active?: StudentNavItem } = {}) {
+export function StudentMobileTopbar({
+  active,
+  certificatesEnabled = false,
+}: { active?: StudentNavItem; certificatesEnabled?: boolean } = {}) {
   const [open, setOpen] = useState(false);
 
   // Escape closes; lock page scroll while the drawer is open.
@@ -282,7 +300,12 @@ export function StudentMobileTopbar({ active }: { active?: StudentNavItem } = {}
               <X size={22} />
             </button>
           </div>
-          <SidebarContent active={active} onNavigate={() => setOpen(false)} showSettings />
+          <SidebarContent
+            active={active}
+            onNavigate={() => setOpen(false)}
+            showSettings
+            showCertificates={certificatesEnabled}
+          />
         </div>
       </div>
     </>
@@ -295,10 +318,18 @@ export function StudentTopbar({
   user,
   title,
   subtitle,
+  certificatesEnabled = false,
 }: {
   user: { name: string; email: string };
   title?: React.ReactNode;
   subtitle?: React.ReactNode;
+  /**
+   * Shows "My Certificates" in the profile menu. It lives here rather than in
+   * the left sidebar because that menu is deliberately fixed at five items
+   * (Dashboard, My Course, Watch & Learn, Resources, Help & Support), and
+   * /student/certificates otherwise has no inbound link at all.
+   */
+  certificatesEnabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -378,6 +409,17 @@ export function StudentTopbar({
               </div>
             </div>
             <div className="p-1">
+              {certificatesEnabled && (
+                <Link
+                  to="/student/certificates"
+                  role="menuitem"
+                  onClick={() => setOpen(false)}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-brand-navy hover:bg-brand-green-dark hover:text-white font-medium transition-colors"
+                >
+                  <Award size={15} />
+                  My Certificates
+                </Link>
+              )}
               <Link
                 to="/student/settings"
                 role="menuitem"

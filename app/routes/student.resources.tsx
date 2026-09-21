@@ -166,12 +166,11 @@ export default function StudentResources() {
         <StudentSidebar
           user={user}
           active="resources"
-          certificatesEnabled={hasCertificates}
         />
 
         <main className="flex-1 min-w-0">
-          <StudentMobileTopbar active="resources" />
-          <StudentTopbar user={user} />
+          <StudentMobileTopbar active="resources" certificatesEnabled={hasCertificates} />
+          <StudentTopbar user={user} certificatesEnabled={hasCertificates} />
 
           <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8 lg:py-10">
             {/* Hero */}
