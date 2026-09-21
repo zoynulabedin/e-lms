@@ -20,6 +20,10 @@ import { renderCertificateHtml, certificateSerial } from "../utils/certificate-t
  * person's document inside an admin tool is not something this feature needs,
  * and not having the capability means it cannot be misused.
  */
+const SAMPLE_TITLE = "Money Talks: Teaching Kids About Saving";
+const SAMPLE_SUMMARY =
+  "An animated course in personal finance, budgeting and smart spending - 3.5 contact hours";
+
 export async function loader({ request }: LoaderFunctionArgs) {
   await requireAdmin(request);
 
@@ -32,8 +36,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
   // last courses, which says nothing about length. A course list is small
   // enough to scan whole.
   const longest = await prisma.course
-    .findMany({ select: { title: true }, take: 500 })
-    .then((rows) => rows.map((r) => r.title).sort((a, b) => b.length - a.length)[0])
+    .findMany({ select: { title: true, summary: true }, take: 500 })
+    .then((rows) => rows.sort((a, b) => b.title.length - a.title.length)[0] ?? null)
     .catch(() => null);
 
   const nonce = randomUUID();
@@ -41,12 +45,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
     config,
     {
       learnerName: "Jamie Rivera",
-      courseTitle: longest ?? "Money Talks: Teaching Kids About Saving",
+      courseTitle: longest?.title ?? SAMPLE_TITLE,
+      courseSummary: longest?.summary ?? SAMPLE_SUMMARY,
       completedAt: new Date(),
       instructor: "Denise Carter",
       certificateId: certificateSerial(
-        "00000000-0000-4000-8000-000000000000",
-        new Date(),
+        "6c1f4a9e-0000-4000-8000-000000000000",
+        longest?.title ?? SAMPLE_TITLE,
         config.certificateIdPrefix,
       ),
     },

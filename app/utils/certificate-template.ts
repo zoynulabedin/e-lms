@@ -39,6 +39,11 @@ export type CertificateConfig = {
   signatureImageUrl: string | null;
   signatureName: string | null;
   signatureTitle: string | null;
+  showSeal: boolean;
+  sealText: string;
+  sealStarColor: string;
+  showCourseSummary: boolean;
+  verifyUrl: string | null;
   paperSize: PaperSize;
   orientation: Orientation;
   dateFormat: DateFormat;
@@ -52,6 +57,8 @@ export type SafeConfig = CertificateConfig & { readonly [SAFE]: true };
 export type CertificateData = {
   learnerName: string;
   courseTitle: string;
+  /** Course.summary - the one-liner printed under the course title. */
+  courseSummary?: string | null;
   completedAt: string | Date;
   instructor?: string | null;
   certificateId?: string | null;
@@ -70,12 +77,13 @@ export type BorderStyle =
   | "ORNATE"
   | "GRADIENT"
   | "HATCH"
+  | "HATCH_RULE"
   | "LAYERED";
 
 /** Every style, in the order the admin picker shows them. */
 export const BORDER_STYLES: readonly BorderStyle[] = [
   "NONE", "SOLID", "DASHED", "DOTTED", "DOUBLE", "TWIN", "THICK",
-  "CORNERS", "CORNERS_LINE", "ORNATE", "GRADIENT", "HATCH", "LAYERED",
+  "CORNERS", "CORNERS_LINE", "ORNATE", "GRADIENT", "HATCH", "HATCH_RULE", "LAYERED",
 ];
 export type PaperSize = "AUTO" | "A4" | "LETTER";
 export type Orientation = "PORTRAIT" | "LANDSCAPE";
@@ -161,6 +169,7 @@ export const BORDER_LABELS: Record<BorderStyle, string> = {
   ORNATE: "Ornate",
   GRADIENT: "Gradient band",
   HATCH: "Diagonal hatch",
+  HATCH_RULE: "Hatch with inner rule",
   LAYERED: "Layered rules",
 };
 
@@ -243,6 +252,13 @@ export function borderFrameCss(
       return `${before} { ${base} inset:${px(12)}; border:4px solid transparent; border-image:linear-gradient(135deg, ${accent}, ${second}) 1; }`;
     case "HATCH":
       return `${before} { ${base} inset:${px(12)}; border:8px solid transparent; border-image:repeating-linear-gradient(45deg, ${second} 0 4px, transparent 4px 9px) 8; }`;
+    case "HATCH_RULE":
+      // The formal look: a hatched band at the edge with a hairline rule set
+      // in from it, which is what reads as "certificate" rather than "poster".
+      return (
+        `${before} { ${base} inset:${px(22)}; border:9px solid transparent; border-image:repeating-linear-gradient(45deg, ${second} 0 4px, transparent 4px 9px) 9; }` +
+        `${after} { ${base} inset:${px(42)}; border:1px solid ${accent}; }`
+      );
     case "LAYERED":
       // Inset shadows paint outside-in, earlier layers on top: this reads as
       // line / gap / line / gap / line. The gaps are the card's own white.
@@ -265,26 +281,33 @@ export const DATE_FORMAT_LABELS: Record<DateFormat, string> = {
 // this feature existed. The table starts empty and resolution falls through to
 // this object, so certificates render identically until an admin saves.
 export const DEFAULT_CONFIG: CertificateConfig = {
-  orgName: "InstructionalGraphics Academy",
+  orgName: "Instructional Graphics Academy",
   logoUrl: null,
   accentColor: "#1D375F",
   secondaryColor: "#C69445",
-  borderStyle: "DASHED",
+  borderStyle: "HATCH_RULE",
   fontPair: "CLASSIC",
   headline: "Certificate of Completion",
   introLine: "This certifies that",
   midLine: "has successfully completed",
-  dateLabel: "Completed on",
-  footerNote: null,
+  dateLabel: "Date of completion",
+  footerNote:
+    "This certificate records completion of an educational course. It is not a financial " +
+    "credential or a license to give financial advice.",
   signatureImageUrl: null,
   signatureName: null,
-  signatureTitle: null,
-  paperSize: "AUTO",
-  orientation: "PORTRAIT",
+  signatureTitle: "Course Director",
+  showSeal: true,
+  sealText: "Course Complete",
+  sealStarColor: "#2C795A",
+  showCourseSummary: true,
+  verifyUrl: null,
+  paperSize: "LETTER",
+  orientation: "LANDSCAPE",
   dateFormat: "MONTH_DAY_YEAR",
-  showCertificateId: false,
+  showCertificateId: true,
   showInstructor: false,
-  certificateIdPrefix: "CERT",
+  certificateIdPrefix: "IG",
 };
 
 /** Server-side write limits, mirrored in the editor's maxLength attributes. */
@@ -297,6 +320,8 @@ export const LIMITS = {
   footerNote: 300,
   signatureName: 80,
   signatureTitle: 80,
+  sealText: 28,
+  verifyUrl: 90,
   certificateIdPrefix: 6,
 } as const;
 
@@ -395,6 +420,13 @@ export function normalizeConfig(raw: unknown): SafeConfig {
     signatureImageUrl: safeImageUrl(r.signatureImageUrl),
     signatureName: safeOptionalText(r.signatureName, LIMITS.signatureName),
     signatureTitle: safeOptionalText(r.signatureTitle, LIMITS.signatureTitle),
+    showSeal: r.showSeal !== false,
+    sealText: safeText(r.sealText, LIMITS.sealText, d.sealText),
+    sealStarColor: safeColor(r.sealStarColor, d.sealStarColor),
+    showCourseSummary: r.showCourseSummary !== false,
+    // Printed as text, never as a link: a certificate is a paper document and
+    // an <a> here would only invite an admin to point it somewhere hostile.
+    verifyUrl: safeOptionalText(r.verifyUrl, LIMITS.verifyUrl),
     paperSize: pick(r.paperSize, ["AUTO", "A4", "LETTER"] as const, d.paperSize),
     orientation: pick(r.orientation, ["PORTRAIT", "LANDSCAPE"] as const, d.orientation),
     dateFormat: pick(
@@ -471,14 +503,30 @@ export function formatCertDate(input: string | Date, format: DateFormat): string
  */
 export function certificateSerial(
   progressId: string,
-  completedAt: string | Date,
+  courseTitle: string,
   prefix: string,
 ): string {
-  const d = completedAt instanceof Date ? completedAt : new Date(completedAt);
-  // UTC, so the serial cannot change with the reader's timezone.
-  const year = Number.isNaN(d.getTime()) ? "0000" : String(d.getUTCFullYear());
-  const hex = progressId.replace(/-/g, "").slice(0, 8).toUpperCase();
-  return `${prefix}-${year}-${hex}`;
+  // Up to three word-initials from the course, so the serial says which course
+  // it belongs to at a glance.
+  const code =
+    courseTitle
+      .split(" ")
+      .map((w) => w.replace(/[^A-Za-z0-9]/g, ""))
+      .filter(Boolean)
+      .slice(0, 3)
+      .map((w) => w[0].toUpperCase())
+      .join("") || "GEN";
+
+  // Base36 rather than raw hex, so the tail uses the whole alphabet and reads
+  // like a reference number instead of a fragment of a uuid.
+  let n = 0n;
+  for (const ch of progressId.replace(/-/g, "").slice(0, 12)) {
+    const v = parseInt(ch, 16);
+    if (!Number.isNaN(v)) n = n * 16n + BigInt(v);
+  }
+  const tail = n.toString(36).toUpperCase().padStart(6, "0").slice(-6);
+
+  return `${prefix}-${code}-${tail}`;
 }
 
 const STAR_SVG =
@@ -510,7 +558,6 @@ export function renderCertificateHtml(
   const fonts = FONT_PAIRS[cfg.fontPair];
   const accent = cfg.accentColor;
   const second = cfg.secondaryColor;
-
   const frameCss = borderFrameCss(cfg.borderStyle, accent, second);
 
   // AUTO + PORTRAIT emits nothing at all, which is byte-identical to how this
@@ -533,42 +580,72 @@ export function renderCertificateHtml(
   // browsers' default "simplify page" behaviour.
   const printCss = `
     body { background: #fff; padding: 0; min-height: auto; }
-    .cert { border: none; border-radius: 0; padding: 48px 56px; box-shadow: none; }
+    .page { box-shadow: none; }
     .no-print { display: none !important; }
     * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }`;
 
   const dateText = formatCertDate(data.completedAt, cfg.dateFormat);
 
-  const badge = cfg.logoUrl
+  // The masthead is the uploaded mark when there is one; until then the
+  // organisation's name is typeset as a stand-in.
+  const masthead = cfg.logoUrl
     ? `<img class="logo" src="${esc(cfg.logoUrl)}" alt="${esc(cfg.orgName)}"/>`
-    : `<div class="badge">${STAR_SVG}</div>`;
+    : `<p class="org">${esc(cfg.orgName)}</p>`;
 
-  const signatureBlock =
-    cfg.signatureImageUrl || cfg.signatureName || cfg.signatureTitle
-      ? `
-    <div class="sign">
-      ${cfg.signatureImageUrl ? `<img class="sign-img" src="${esc(cfg.signatureImageUrl)}" alt=""/>` : ""}
-      <div class="sign-rule"></div>
-      ${cfg.signatureName ? `<p class="sign-name">${esc(cfg.signatureName)}</p>` : ""}
-      ${cfg.signatureTitle ? `<p class="sign-title">${esc(cfg.signatureTitle)}</p>` : ""}
-    </div>`
+  const summary =
+    cfg.showCourseSummary && data.courseSummary
+      ? `<p class="summary">${esc(data.courseSummary)}</p>`
       : "";
 
   const instructorLine =
     cfg.showInstructor && data.instructor
-      ? `<p class="meta">Instructor: ${esc(data.instructor)}</p>`
+      ? `<p class="summary">Instructor: ${esc(data.instructor)}</p>`
       : "";
 
-  const idLine =
-    cfg.showCertificateId && data.certificateId
-      ? `<p class="meta mono">${esc(data.certificateId)}</p>`
+  // Left column. The signature image replaces the typeset name above the rule
+  // when one has been uploaded.
+  const sigMark = cfg.signatureImageUrl
+    ? `<img class="sig-img" src="${esc(cfg.signatureImageUrl)}" alt=""/>`
+    : cfg.signatureName
+      ? `<p class="sig-mark">${esc(cfg.signatureName)}</p>`
+      : `<span class="sig-gap"></span>`;
+
+  const signatureCol =
+    cfg.signatureImageUrl || cfg.signatureName || cfg.signatureTitle
+      ? `<div class="col">
+      ${sigMark}
+      <div class="rule"></div>
+      ${cfg.signatureName ? `<p class="col-name">${esc(cfg.signatureName)}</p>` : ""}
+      ${cfg.signatureTitle ? `<p class="col-label">${esc(cfg.signatureTitle)}</p>` : ""}
+    </div>`
+      : `<div class="col"></div>`;
+
+  const seal = cfg.showSeal
+    ? `<div class="seal"><div class="seal-in">
+      <svg class="seal-star" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+      <span class="seal-text">${esc(cfg.sealText)}</span>
+    </div></div>`
+    : "";
+
+  const idBlock =
+    (cfg.showCertificateId && data.certificateId) || cfg.verifyUrl
+      ? `<div class="foot-id">
+      ${cfg.showCertificateId && data.certificateId ? `<p class="cert-id">${esc(data.certificateId)}</p>` : ""}
+      ${cfg.verifyUrl ? `<p class="verify">${esc(cfg.verifyUrl)}</p>` : ""}
+    </div>`
       : "";
 
-  const footer = cfg.footerNote ? `<p class="footer">${esc(cfg.footerNote)}</p>` : "";
+  const footer =
+    cfg.footerNote || idBlock
+      ? `<div class="foot">
+      <p class="foot-note">${cfg.footerNote ? esc(cfg.footerNote) : ""}</p>
+      ${idBlock}
+    </div>`
+      : "";
 
   const printButton = opts.printNonce
     ? `
-    <div class="no-print" style="margin-top:40px;">
+    <div class="no-print" style="text-align:center;padding:0 0 32px;">
       <button id="cert-print" type="button">Download / Print Certificate</button>
     </div>
     <script nonce="${esc(opts.printNonce)}">
@@ -589,48 +666,75 @@ export function renderCertificateHtml(
 <style>
   ${pageRule}
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: ${fonts.body}; background: #f9fafb; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 40px; }
-  .cert { background: #fff; border: 2px solid #e5e7eb; border-radius: 16px; padding: 64px 72px; max-width: 780px; width: 100%; text-align: center; position: relative; overflow: hidden; }
+  body { font-family: ${fonts.body}; background: #fff; min-height: 100vh; display: flex; flex-direction: column; }
+  .page { position: relative; flex: 1; display: flex; flex-direction: column; background: #fff; overflow: hidden; }
   ${frameCss}
-  .badge { display: inline-flex; align-items: center; justify-content: center; width: 72px; height: 72px; background: linear-gradient(135deg, ${accent}, ${second}); border-radius: 50%; margin-bottom: 28px; }
-  .badge svg { width: 36px; height: 36px; fill: none; stroke: #fff; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
-  .logo { max-height: 88px; max-width: 260px; object-fit: contain; margin: 0 auto 28px; display: block; }
-  .org { font-size: 13px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: #6b7280; margin-bottom: 8px; }
-  h1 { font-family: ${fonts.heading}; font-size: 42px; color: #111827; margin-bottom: 20px; line-height: 1.15; }
-  .sub { font-size: 16px; color: #374151; margin-bottom: 8px; }
-  .name { font-size: 32px; font-weight: 700; color: ${accent}; margin-bottom: 8px; line-height: 1.2; }
-  .course { font-size: 20px; font-weight: 600; color: #111827; margin: 24px auto; max-width: 480px; line-height: 1.4; }
-  .date { font-size: 14px; color: #9ca3af; margin-top: 32px; }
-  .meta { font-size: 12px; color: #9ca3af; margin-top: 6px; }
-  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; }
-  .footer { font-size: 11px; color: #9ca3af; margin-top: 20px; max-width: 520px; margin-left: auto; margin-right: auto; line-height: 1.5; }
-  .divider { width: 80px; height: 3px; background: linear-gradient(90deg, ${accent}, ${second}); border-radius: 2px; margin: 28px auto; }
-  .sign { margin-top: 36px; display: inline-block; min-width: 220px; }
-  .sign-img { max-height: 56px; max-width: 220px; object-fit: contain; display: block; margin: 0 auto 4px; }
-  .sign-rule { height: 1px; background: #d1d5db; margin-bottom: 8px; }
-  .sign-name { font-size: 14px; font-weight: 600; color: #111827; }
-  .sign-title { font-size: 12px; color: #6b7280; margin-top: 2px; }
+  .cert { position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column; align-items: center; text-align: center; padding: 82px 104px 60px; }
+
+  .logo { max-height: 76px; max-width: 260px; object-fit: contain; margin-bottom: 18px; }
+  .org { font-size: 13px; font-weight: 600; letter-spacing: .2em; text-transform: uppercase; color: ${accent}; opacity: .8; }
+  h1 { font-family: ${fonts.heading}; font-size: 46px; color: ${accent}; margin-top: 14px; line-height: 1.1; }
+  .divider { width: 96px; height: 2px; background: ${accent}; margin: 18px auto 22px; }
+  .sub { font-size: 14px; color: ${accent}; opacity: .75; }
+  .name { font-size: 34px; font-weight: 700; color: ${accent}; margin-top: 10px; line-height: 1.15; }
+  .name-rule { width: 100%; max-width: 520px; height: 1px; background: ${accent}; opacity: .35; margin: 14px auto 16px; }
+  .course { font-size: 20px; font-weight: 700; color: #111827; max-width: 640px; line-height: 1.35; margin-top: 12px; }
+  .summary { font-size: 14px; color: ${accent}; opacity: .75; max-width: 660px; line-height: 1.5; margin-top: 8px; }
+
+  .cols { margin-top: auto; padding-top: 40px; width: 100%; display: flex; align-items: flex-end; justify-content: space-between; gap: 40px; }
+  .col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; }
+  .col-mid { flex: 0 0 auto; }
+  .rule { width: 100%; height: 1px; background: ${accent}; opacity: .55; margin-bottom: 8px; }
+  .col-name { font-size: 12px; font-weight: 700; color: #111827; }
+  .col-label { font-size: 11px; color: ${accent}; opacity: .7; margin-top: 2px; }
+  .sig-mark { font-family: ${fonts.heading}; font-size: 22px; color: ${accent}; padding-bottom: 8px; }
+  .sig-img { max-height: 46px; max-width: 200px; object-fit: contain; margin-bottom: 6px; }
+  .sig-gap { display: block; height: 30px; }
+  .date-value { font-family: ${fonts.heading}; font-size: 21px; color: ${accent}; padding-bottom: 8px; }
+
+  .seal { width: 100px; height: 100px; border-radius: 50%; border: 3px solid ${second}; padding: 5px; }
+  .seal-in { width: 100%; height: 100%; border-radius: 50%; background: ${accent}; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; }
+  .seal-star { width: 22px; height: 22px; fill: ${cfg.sealStarColor}; }
+  .seal-text { font-size: 8px; font-weight: 700; letter-spacing: .1em; line-height: 1.25; text-transform: uppercase; max-width: 62px; }
+
+  .foot { margin-top: 26px; padding-top: 14px; border-top: 1px solid ${accent}33; width: 100%; display: flex; align-items: flex-start; justify-content: space-between; gap: 32px; text-align: left; }
+  .foot-note { font-size: 10px; line-height: 1.5; color: ${accent}; opacity: .65; max-width: 58%; }
+  .foot-id { text-align: right; margin-left: auto; }
+  .cert-id { font-size: 11px; font-weight: 700; letter-spacing: .08em; color: ${accent}; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .verify { font-size: 11px; font-weight: 700; color: ${second}; margin-top: 2px; }
+
   #cert-print { background: ${accent}; color: #fff; border: none; padding: 10px 28px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; font-family: ${fonts.body}; }
   ${opts.forcePrint ? printCss : `@media print {${printCss}}`}
 </style>
 </head>
 <body>
-  <div class="cert">
-    ${badge}
-    <p class="org">${esc(cfg.orgName)}</p>
-    <h1>${esc(cfg.headline)}</h1>
-    <div class="divider"></div>
-    <p class="sub">${esc(cfg.introLine)}</p>
-    <p class="name">${esc(data.learnerName)}</p>
-    <p class="sub">${esc(cfg.midLine)}</p>
-    <p class="course">${esc(data.courseTitle)}</p>
-    <p class="date">${esc(cfg.dateLabel)} ${esc(dateText)}</p>
-    ${instructorLine}
-    ${idLine}
-    ${signatureBlock}
-    ${footer}
-    ${printButton}
+  <div class="page">
+    <div class="cert">
+      ${masthead}
+      <h1>${esc(cfg.headline)}</h1>
+      <div class="divider"></div>
+      <p class="sub">${esc(cfg.introLine)}</p>
+      <p class="name">${esc(data.learnerName)}</p>
+      <div class="name-rule"></div>
+      <p class="sub">${esc(cfg.midLine)}</p>
+      <p class="course">${esc(data.courseTitle)}</p>
+      ${summary}
+      ${instructorLine}
+
+      <div class="cols">
+        ${signatureCol}
+        <div class="col col-mid">${seal}</div>
+        <div class="col">
+          <p class="date-value">${esc(dateText)}</p>
+          <div class="rule"></div>
+          <p class="col-label">${esc(cfg.dateLabel)}</p>
+        </div>
+      </div>
+
+      ${footer}
+    </div>
   </div>
+  ${printButton}
 </body>
 </html>`;
 }

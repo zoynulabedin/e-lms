@@ -29,7 +29,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     select: {
       id: true,
       completedAt: true,
-      course: { select: { title: true, instructor: true } },
+      course: { select: { title: true, summary: true, instructor: true } },
     },
   });
 
@@ -55,11 +55,12 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     {
       learnerName: user.name,
       courseTitle: progress.course?.title ?? "Untitled course",
+      courseSummary: progress.course?.summary ?? null,
       completedAt: progress.completedAt,
       instructor: progress.course?.instructor ?? null,
       certificateId: certificateSerial(
         progress.id,
-        progress.completedAt,
+        progress.course?.title ?? "",
         config.certificateIdPrefix,
       ),
     },

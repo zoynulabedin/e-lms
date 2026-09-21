@@ -1,0 +1,15 @@
+-- AlterTable
+ALTER TABLE "CertificateTemplate" ADD COLUMN IF NOT EXISTS "sealStarColor" TEXT NOT NULL DEFAULT '#2C795A',
+ADD COLUMN IF NOT EXISTS "sealText" TEXT NOT NULL DEFAULT 'Course Complete',
+ADD COLUMN IF NOT EXISTS "showCourseSummary" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN IF NOT EXISTS "showSeal" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN IF NOT EXISTS "verifyUrl" TEXT,
+ALTER COLUMN "orgName" SET DEFAULT 'Instructional Graphics Academy',
+ALTER COLUMN "borderStyle" SET DEFAULT 'HATCH_RULE',
+ALTER COLUMN "dateLabel" SET DEFAULT 'Date of completion',
+ALTER COLUMN "signatureTitle" SET DEFAULT 'Course Director',
+ALTER COLUMN "paperSize" SET DEFAULT 'LETTER',
+ALTER COLUMN "orientation" SET DEFAULT 'LANDSCAPE',
+ALTER COLUMN "showCertificateId" SET DEFAULT true,
+ALTER COLUMN "certificateIdPrefix" SET DEFAULT 'IG';
+

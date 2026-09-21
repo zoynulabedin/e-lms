@@ -54,11 +54,14 @@ const FIELDS = [
   "orgName", "logoUrl", "accentColor", "secondaryColor", "borderStyle",
   "fontPair", "headline", "introLine", "midLine", "dateLabel", "footerNote",
   "signatureImageUrl", "signatureName", "signatureTitle",
+  "showSeal", "sealText", "sealStarColor", "showCourseSummary", "verifyUrl",
   "paperSize", "orientation", "dateFormat",
   "showCertificateId", "showInstructor", "certificateIdPrefix",
 ] as const;
 
-const BOOLEAN_FIELDS = new Set(["showCertificateId", "showInstructor"]);
+const BOOLEAN_FIELDS = new Set([
+  "showCertificateId", "showInstructor", "showSeal", "showCourseSummary",
+]);
 
 export async function loader({ request }: LoaderFunctionArgs) {
   await requireAdmin(request);
@@ -81,7 +84,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         id: true,
         completedAt: true,
         user: { select: { name: true } },
-        course: { select: { title: true, instructor: true } },
+        course: { select: { title: true, summary: true, instructor: true } },
       },
       orderBy: { completedAt: "desc" },
       take: 25,
@@ -93,6 +96,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       id: r.id,
       learnerName: r.user?.name ?? "Learner",
       courseTitle: r.course?.title ?? "Untitled course",
+      courseSummary: r.course?.summary ?? null,
       completedAt: (r.completedAt ?? new Date()).toISOString(),
       instructor: r.course?.instructor ?? null,
     }))
@@ -178,6 +182,10 @@ export async function action({ request }: ActionFunctionArgs) {
   return data({ success: "Saved. Every certificate now uses this design." });
 }
 
+const SAMPLE_TITLE = "Money Talks: Teaching Kids About Saving";
+const SAMPLE_SUMMARY =
+  "An animated course in personal finance, budgeting and smart spending - 3.5 contact hours";
+
 const storageError =
   "Certificate settings could not be saved on this server. Restart the app — it applies " +
   "pending migrations on boot — then try again.";
@@ -251,12 +259,13 @@ export default function CertificateDesign() {
   const previewData = useMemo(
     () => ({
       learnerName: sample?.learnerName ?? "Jamie Rivera",
-      courseTitle: sample?.courseTitle ?? "Money Talks: Teaching Kids About Saving",
+      courseTitle: sample?.courseTitle ?? SAMPLE_TITLE,
+      courseSummary: sample?.courseSummary ?? SAMPLE_SUMMARY,
       completedAt: sample?.completedAt ?? fallbackDate,
       instructor: sample?.instructor ?? "Denise Carter",
       certificateId: certificateSerial(
-        sample?.id ?? "00000000-0000-4000-8000-000000000000",
-        sample?.completedAt ?? fallbackDate,
+        sample?.id ?? "6c1f4a9e-0000-4000-8000-000000000000",
+        sample?.courseTitle ?? SAMPLE_TITLE,
         previewCfg.certificateIdPrefix,
       ),
     }),
@@ -370,6 +379,35 @@ export default function CertificateDesign() {
             <Text label="Title" value={cfg.signatureTitle ?? ""} onChange={(v) => set("signatureTitle", v || null)} max={LIMITS.signatureTitle} hint="For example: Course Director" />
           </Card>
 
+          <Card title="Seal">
+            <Check
+              label="Show the seal"
+              checked={cfg.showSeal}
+              onChange={(v) => set("showSeal", v)}
+              hint="The medallion between the signature and the date."
+            />
+            {cfg.showSeal && (
+              <>
+                <Text
+                  label="Seal wording"
+                  value={cfg.sealText}
+                  onChange={(v) => set("sealText", v)}
+                  max={LIMITS.sealText}
+                  def={DEFAULT_CONFIG.sealText}
+                  onRevert={() => set("sealText", DEFAULT_CONFIG.sealText)}
+                  hint="Two short words fit best; longer text wraps inside the circle."
+                />
+                <Color
+                  label="Star colour"
+                  value={cfg.sealStarColor}
+                  onChange={(v) => set("sealStarColor", v)}
+                  def={DEFAULT_CONFIG.sealStarColor}
+                  onRevert={() => set("sealStarColor", DEFAULT_CONFIG.sealStarColor)}
+                />
+              </>
+            )}
+          </Card>
+
           <Card title="Paper &amp; printing">
             <Select
               label="Paper size"
@@ -426,6 +464,19 @@ export default function CertificateDesign() {
               checked={cfg.showInstructor}
               onChange={(v) => set("showInstructor", v)}
               hint="Only appears on courses that have an instructor set."
+            />
+            <Check
+              label="Show the course summary"
+              checked={cfg.showCourseSummary}
+              onChange={(v) => set("showCourseSummary", v)}
+              hint="The one-line description from the course, printed under its title. Courses without a summary simply omit the line."
+            />
+            <Text
+              label="Verification line (optional)"
+              value={cfg.verifyUrl ?? ""}
+              onChange={(v) => set("verifyUrl", v || null)}
+              max={LIMITS.verifyUrl}
+              hint="Printed in the bottom corner as plain text, not a link. Only fill this in if that page really exists - a learner handing this to an employer will be taken at their word."
             />
           </Card>
 
@@ -542,6 +593,7 @@ function CertificatePreview({
   data: {
     learnerName: string;
     courseTitle: string;
+    courseSummary: string | null;
     completedAt: string;
     instructor: string | null;
     certificateId: string;

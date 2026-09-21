@@ -181,35 +181,45 @@ model CertificateTemplate {
   course   Course? @relation(fields: [courseId], references: [id], onDelete: Cascade)
 
   // Branding
-  orgName        String  @default("InstructionalGraphics Academy")
+  orgName        String  @default("Instructional Graphics Academy")
   logoUrl        String? // Cloudinary https URL from /upload; replaces the star badge
   accentColor    String  @default("#1D375F")
   secondaryColor String  @default("#C69445")
-  borderStyle    String  @default("DASHED") // DASHED | SOLID | NONE
+  borderStyle    String  @default("HATCH_RULE") // see BORDER_STYLES in certificate-template.ts
   fontPair       String  @default("CLASSIC") // key of FONT_PAIRS in certificate-template.ts
 
   // Wording. Plain text only — entity-escaped at render time. Never HTML.
   headline   String  @default("Certificate of Completion")
   introLine  String  @default("This certifies that")
   midLine    String  @default("has successfully completed")
-  dateLabel  String  @default("Completed on")
+  dateLabel  String  @default("Date of completion")
   footerNote String?
 
   // Signature block — hidden entirely when all three are empty
   signatureImageUrl String?
   signatureName     String?
-  signatureTitle    String?
+  signatureTitle    String? @default("Course Director")
+
+  // The medallion between the signature and the date
+  showSeal      Boolean @default(true)
+  sealText      String  @default("Course Complete")
+  sealStarColor String  @default("#2C795A")
+
+  // Course.summary printed under the course title, and the bottom-corner
+  // verification line. verifyUrl is plain text, never a link.
+  showCourseSummary Boolean @default(true)
+  verifyUrl         String?
 
   // Layout / print. AUTO emits no @page rule at all, i.e. exactly how this
   // certificate printed before the feature existed.
-  paperSize   String @default("AUTO") // AUTO | A4 | LETTER
-  orientation String @default("PORTRAIT") // PORTRAIT | LANDSCAPE
+  paperSize   String @default("LETTER") // AUTO | A4 | LETTER
+  orientation String @default("LANDSCAPE") // PORTRAIT | LANDSCAPE
   dateFormat  String @default("MONTH_DAY_YEAR") // MONTH_DAY_YEAR | DAY_MONTH_YEAR | ISO
 
   // Optional extras
-  showCertificateId   Boolean @default(false)
+  showCertificateId   Boolean @default(true)
   showInstructor      Boolean @default(false)
-  certificateIdPrefix String  @default("CERT")
+  certificateIdPrefix String  @default("IG")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
