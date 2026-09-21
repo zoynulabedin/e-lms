@@ -113,6 +113,9 @@ try {
       "license", "enrollment", "progress", "lessonProgress", "userSession",
       "passwordReset", "quizAttempt", "quizAttemptAnswer",
       "watchVideo", "shopifyOrder",
+      // Added after the first deploy - the usual reason a feature "does
+      // nothing" on the server while working locally.
+      "courseResource", "glossaryTerm", "certificateTemplate",
     ];
     const missing = required.filter((m) => typeof client[m] !== "object");
     if (missing.length === 0) {
@@ -133,6 +136,11 @@ try {
   head("Tables and columns the app needs");
   await tryQuery('table "WatchVideo"', 'SELECT 1 FROM "WatchVideo" LIMIT 1');
   await tryQuery('table "ShopifyOrder"', 'SELECT 1 FROM "ShopifyOrder" LIMIT 1');
+  // Without these the Resources page and the certificate designer degrade to
+  // empty rather than erroring, which looks like "the feature does nothing".
+  await tryQuery('table "CourseResource"', 'SELECT 1 FROM "CourseResource" LIMIT 1');
+  await tryQuery('table "GlossaryTerm"', 'SELECT 1 FROM "GlossaryTerm" LIMIT 1');
+  await tryQuery('table "CertificateTemplate"', 'SELECT 1 FROM "CertificateTemplate" LIMIT 1');
   await tryQuery('column Course."iconSet"', 'SELECT "iconSet" FROM "Course" LIMIT 1');
   await tryQuery('column Course."isPublic"', 'SELECT "isPublic" FROM "Course" LIMIT 1');
   await tryQuery('column Answer."order"', 'SELECT "order" FROM "Answer" LIMIT 1');
