@@ -2,7 +2,7 @@ import { redirect, useLoaderData, useFetcher, Link, data } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireAdmin } from "../utils/auth.server";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Plus,
   BookOpen,
@@ -37,14 +37,190 @@ export async function loader({ request }: LoaderFunctionArgs) {
       status: true,
       contentType: true,
       thumbnailUrl: true,
-      _count: { select: { licenses: true, progress: true, modules: true } },
+      _count: {
+        select: { licenses: true, progress: true, modules: true, enrollments: true },
+      },
     },
   });
-  return { courses };
+
+  // Keys that came from real Shopify orders. A course holding any of these can
+  // never be deleted, so the list can say so instead of letting an admin walk
+  // into a refusal.
+  const paidGroups = await prisma.license
+    .groupBy({
+      by: ["courseId"],
+      where: { shopifyOrderId: { not: null } },
+      _count: { _all: true },
+    })
+    .catch(() => [] as Array<{ courseId: string; _count: { _all: number } }>);
+  const paidByCourse: Record<string, number> = {};
+  for (const g of paidGroups) paidByCourse[g.courseId] = g._count._all;
+
+  return { courses, paidByCourse };
+}
+
+
+// ── Delete a course ─────────────────────────────────────────────────
+
+/**
+ * A dialog rather than window.confirm: deleting a course takes its licences,
+ * enrolments and every learner's progress with it, and the admin needs to see
+ * those numbers before deciding. A course holding keys from real Shopify
+ * orders cannot be deleted at all, and says so instead of offering a button.
+ */
+function DeleteCourseDialog({
+  course,
+  paidKeys,
+  onClose,
+  onDone,
+}: {
+  course: any;
+  paidKeys: number;
+  onClose: () => void;
+  onDone: (message: string) => void;
+}) {
+  const fetcher = useFetcher<any>();
+  const [typed, setTyped] = useState("");
+  const busy = fetcher.state !== "idle";
+
+  const licenses = course._count?.licenses ?? 0;
+  const enrolments = course._count?.enrollments ?? 0;
+  const progress = course._count?.progress ?? 0;
+  const modules = course._count?.modules ?? 0;
+  const hasData = licenses > 0 || enrolments > 0 || progress > 0;
+  const blocked = paidKeys > 0;
+
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data?.success) {
+      onDone(fetcher.data.message ?? "Course deleted.");
+      onClose();
+    }
+  }, [fetcher.state, fetcher.data, onClose, onDone]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const rows = [
+    { label: "Module" + (modules === 1 ? "" : "s"), n: modules },
+    { label: "License key" + (licenses === 1 ? "" : "s"), n: licenses },
+    { label: "Enrolment" + (enrolments === 1 ? "" : "s"), n: enrolments },
+    { label: "Progress record" + (progress === 1 ? "" : "s"), n: progress },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/50 backdrop-blur-sm">
+      <div role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 shrink-0">
+          <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
+            <Trash2 size={16} className="text-red-600" /> Delete course
+          </h3>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100 transition-colors"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-4 overflow-y-auto">
+          <p className="font-semibold text-gray-900">{course.title}</p>
+
+          {fetcher.data?.error && (
+            <div className="rounded-lg bg-red-50 border border-red-200 text-red-700 px-4 py-2.5 text-sm">
+              {fetcher.data.error}
+            </div>
+          )}
+
+          {blocked ? (
+            <div className="rounded-lg bg-red-50 border border-red-200 text-red-800 px-4 py-3 text-sm space-y-2">
+              <p className="font-semibold">
+                This course cannot be deleted.
+              </p>
+              <p>
+                {paidKeys} of its license key{paidKeys === 1 ? " is" : "s are"} from
+                real Shopify order{paidKeys === 1 ? "" : "s"}. Deleting the course
+                would destroy those purchases, and Shopify still counts those
+                orders as processed, so the keys could never be re-issued.
+              </p>
+              <p>Unpublish it instead, or delete the individual keys first.</p>
+            </div>
+          ) : (
+            <>
+              {hasData ? (
+                <>
+                  <p className="text-sm text-gray-600">
+                    These go with it, permanently:
+                  </p>
+                  <ul className="rounded-lg border border-gray-200 divide-y divide-gray-100 text-sm">
+                    {rows.map((r) => (
+                      <li key={r.label} className="flex justify-between px-4 py-2">
+                        <span className="text-gray-600">{r.label}</span>
+                        <span className={r.n > 0 ? "font-semibold text-gray-900" : "text-gray-400"}>
+                          {r.n}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-xs text-gray-500">
+                    No key here came from a Shopify order, so nothing that was paid
+                    for is lost \u2014 this is test data.
+                  </p>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                      Type <span className="font-mono font-semibold">DELETE</span> to confirm
+                    </label>
+                    <input
+                      value={typed}
+                      onChange={(e) => setTyped(e.target.value)}
+                      autoFocus
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-red-500"
+                      placeholder="DELETE"
+                    />
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-gray-600">
+                  Nobody holds a key for this course and nobody has started it, so
+                  only the course and its {modules} module{modules === 1 ? "" : "s"} go.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 px-6 py-4 bg-gray-50 border-t border-gray-200 shrink-0">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-white transition-colors"
+          >
+            {blocked ? "Close" : "Cancel"}
+          </button>
+          {!blocked && (
+            <button
+              type="button"
+              disabled={busy || (hasData && typed !== "DELETE")}
+              onClick={() =>
+                fetcher.submit(
+                  { intent: "delete", id: course.id, confirm: hasData ? typed : "" },
+                  { method: "post" },
+                )
+              }
+              className="inline-flex items-center gap-2 px-5 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 disabled:opacity-50 transition-colors"
+            >
+              <Trash2 size={14} /> Delete course
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  await requireAdmin(request);
+  const admin = await requireAdmin(request);
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
 
@@ -57,28 +233,73 @@ export async function action({ request }: ActionFunctionArgs) {
 
   if (intent === "delete") {
     const id = formData.get("id") as string;
-    // Deleting a course cascades to every License (incl. paid Shopify orders),
-    // Enrollment and Progress/certificate row. Refuse while any exist —
-    // unpublish instead. Only a course nobody has ever bought/started can go.
+
+    // Deleting a course cascades to every License, Enrollment, Progress,
+    // Module/Lesson/Quiz and the attempts underneath them. Two tiers:
+    //
+    //   • A key from a real Shopify order is money that changed hands, and the
+    //     order stays claimed in ShopifyOrder so the licence could never be
+    //     re-minted. That is refused outright, with no override.
+    //   • Everything else is admin-generated test data. It still needs the
+    //     typed confirmation, but an admin who made a test course has to be
+    //     able to get rid of it.
     const course = await prisma.course.findUnique({
       where: { id },
       select: {
         title: true,
-        _count: { select: { licenses: true, enrollments: true, progress: true } },
+        _count: {
+          select: { licenses: true, enrollments: true, progress: true, modules: true },
+        },
       },
     });
     if (!course) return data({ error: "Course not found." }, { status: 404 });
-    const { licenses, enrollments, progress } = course._count;
-    if (licenses > 0 || enrollments > 0 || progress > 0) {
+
+    const paidKeys = await prisma.license.count({
+      where: { courseId: id, shopifyOrderId: { not: null } },
+    });
+    if (paidKeys > 0) {
       return data(
         {
-          error: `"${course.title}" has ${licenses} license(s), ${enrollments} enrolment(s) and ${progress} progress record(s). Unpublish it instead of deleting.`,
+          error:
+            `"${course.title}" has ${paidKeys} license key(s) from real Shopify orders. ` +
+            `Deleting the course would destroy those purchases, and the orders stay marked ` +
+            `as processed so the keys could never be re-issued. Unpublish it instead.`,
         },
         { status: 400 },
       );
     }
+
+    const { licenses, enrollments, progress } = course._count;
+    const hasData = licenses > 0 || enrollments > 0 || progress > 0;
+
+    if (hasData && formData.get("confirm") !== "DELETE") {
+      return data(
+        {
+          error:
+            `"${course.title}" has ${licenses} license key(s), ${enrollments} enrolment(s) ` +
+            `and ${progress} progress record(s). Deleting removes all of them along with the ` +
+            `course. Type DELETE to confirm, or unpublish it instead.`,
+          needsConfirm: true,
+        },
+        { status: 400 },
+      );
+    }
+
     await prisma.course.delete({ where: { id } });
-    return data({ success: true });
+
+    // No audit table in this app; a log line is the only record of what went.
+    console.warn(
+      `[courses] ${admin.email} deleted course "${course.title}" ` +
+        `(${course._count.modules} module(s), ${licenses} licence(s), ` +
+        `${enrollments} enrolment(s), ${progress} progress record(s))`,
+    );
+
+    return data({
+      success: true,
+      message: hasData
+        ? `"${course.title}" and its ${licenses} key(s), ${enrollments} enrolment(s) and ${progress} progress record(s) were deleted.`
+        : `"${course.title}" deleted.`,
+    });
   }
 
   if (intent === "set_status") {
@@ -186,8 +407,11 @@ function QuickCreateModal({ onClose }: { onClose: () => void }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function CourseManagement() {
-  const { courses } = useLoaderData<typeof loader>();
+  const { courses, paidByCourse } = useLoaderData<typeof loader>();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  /** The course the admin is about to delete, or null when the dialog is shut. */
+  const [pendingDelete, setPendingDelete] = useState<any | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const fetcher = useFetcher<typeof action>();
   const toggleFetcher = useFetcher();
 
@@ -331,24 +555,13 @@ export default function CourseManagement() {
                       )}
                     </button>
                   </toggleFetcher.Form>
-                  <fetcher.Form method="post">
-                    <input type="hidden" name="intent" value="delete" />
-                    <input type="hidden" name="id" value={course.id} />
-                    <button
-                      type="submit"
-                      onClick={(e) => {
-                        if (
-                          !confirm(
-                            `Delete "${course.title}"? This cannot be undone.`,
-                          )
-                        )
-                          e.preventDefault();
-                      }}
-                      className="flex items-center gap-1 text-red-400 hover:text-red-600 hover:bg-red-50 px-2 py-1 rounded-lg text-xs font-medium border border-transparent hover:border-red-100"
-                    >
-                      <Trash2 size={12} /> Delete
-                    </button>
-                  </fetcher.Form>
+                  <button
+                    type="button"
+                    onClick={() => setPendingDelete(course)}
+                    className="flex items-center gap-1 text-red-400 hover:text-red-600 hover:bg-red-50 px-2 py-1 rounded-lg text-xs font-medium border border-transparent hover:border-red-100"
+                  >
+                    <Trash2 size={12} /> Delete
+                  </button>
                 </div>
               </div>
             </div>
@@ -373,6 +586,39 @@ export default function CourseManagement() {
           </div>
         )}
       </div>
+
+      {notice && (
+
+        <div className="rounded-lg bg-green-50 border border-green-200 text-green-800 px-4 py-2.5 text-sm flex items-start gap-2">
+
+          <span className="flex-1">{notice}</span>
+
+          <button onClick={() => setNotice(null)} className="text-green-700/60 hover:text-green-900" aria-label="Dismiss">
+
+            <X size={14} />
+
+          </button>
+
+        </div>
+
+      )}
+
+
+      {pendingDelete && (
+
+        <DeleteCourseDialog
+
+          course={pendingDelete}
+
+          paidKeys={paidByCourse[pendingDelete.id] ?? 0}
+
+          onClose={() => setPendingDelete(null)}
+
+          onDone={setNotice}
+
+        />
+
+      )}
 
       {isCreateOpen && (
         <QuickCreateModal onClose={() => setIsCreateOpen(false)} />
