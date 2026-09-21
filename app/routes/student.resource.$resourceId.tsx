@@ -84,12 +84,34 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     throw data({ message: "Resource not found." }, { status: 404 });
   }
 
-  const access = await getCourseAccess(user.id, resource.courseId);
-  if (!access.hasAccess) {
-    throw data(
-      { message: "This resource belongs to a course you don't have access to." },
-      { status: 403 },
-    );
+  // Admins manage every course, so they can open any file - otherwise there
+  // is no way to check that an upload actually landed, and an admin following
+  // a link from the site gets a 403 they cannot explain.
+  if (user.role !== "ADMIN") {
+    const access = await getCourseAccess(user.id, resource.courseId);
+    if (!access.hasAccess) {
+      // A 403 here is invisible in the UI - it is a download, not a page - so
+      // say in the log exactly why it was refused and what the user DOES hold.
+      // Without this the only evidence is a bare 403 in the access log.
+      const held = await prisma.license
+        .findMany({
+          where: { userId: user.id },
+          select: { courseId: true, status: true },
+        })
+        .catch(() => [] as Array<{ courseId: string; status: string }>);
+      console.warn(
+        `[resource] 403 ${user.email} -> resource ${id} (course ${resource.courseId}). ` +
+          `Their licences: ${
+            held.length
+              ? held.map((l) => `${l.courseId}=${l.status}`).join(", ")
+              : "none"
+          }`,
+      );
+      throw data(
+        { message: "This resource belongs to a course you don't have access to." },
+        { status: 403 },
+      );
+    }
   }
 
   if (resource.kind === "LINK") return redirect(resource.url);
