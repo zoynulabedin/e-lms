@@ -280,7 +280,9 @@ export default function StudentDashboard() {
                   </div>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 sm:gap-5">
+                // Two columns at most: three made the tiles narrow and tall
+                // again, and the deck asks for landscape tiles.
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5">
                   {tiles.map((c) => (
                     <CourseCard key={c.courseId} c={c} />
                   ))}
@@ -590,7 +592,7 @@ function WatchAndLearn({ videos }: { videos: YouTubeVideo[] }) {
         </div>
 
         {/* Right: tagline */}
-        <div className="hidden xl:block shrink-0 w-32 text-right">
+        <div className="hidden lg:block shrink-0 w-32 text-right">
           <p className="font-display italic text-brand-navy/80 text-lg leading-snug -rotate-3">
             Real Topics.
             <br />
@@ -598,6 +600,16 @@ function WatchAndLearn({ videos }: { videos: YouTubeVideo[] }) {
             <br />
             Real You.
           </p>
+          {/* The gold swoosh that underlines the tagline in the design. */}
+          <svg viewBox="0 0 120 12" className="w-24 h-3 ml-auto mt-1 -rotate-3" aria-hidden="true">
+            <path
+              d="M2 8 C 30 2, 70 2, 118 5"
+              fill="none"
+              stroke="#C69445"
+              strokeWidth="3"
+              strokeLinecap="round"
+            />
+          </svg>
         </div>
       </div>
     </section>

@@ -166,15 +166,20 @@ function SidebarContent({
           />
         )}
 
-        <Form method="post" action="/auth/logout">
-          <button
-            type="submit"
-            className={`${NAV_LINK} text-white/75 hover:bg-brand-green-dark hover:text-white`}
-          >
-            <LogOut size={18} />
-            Sign Out
-          </button>
-        </Form>
+        {/* Gated like Settings above it: the drawer has no profile menu, so
+            the phone needs it here. On desktop the profile menu already carries
+            Sign Out, and the left menu stays at its five fixed items. */}
+        {showSettings && (
+          <Form method="post" action="/auth/logout">
+            <button
+              type="submit"
+              className={`${NAV_LINK} text-white/75 hover:bg-brand-green-dark hover:text-white`}
+            >
+              <LogOut size={18} />
+              Sign Out
+            </button>
+          </Form>
+        )}
       </nav>
 
       {/* License key callout — pinned to the bottom */}

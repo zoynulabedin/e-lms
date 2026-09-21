@@ -83,7 +83,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
             fileName: true,
             fileType: true,
             fileSize: true,
-            lesson: { select: { title: true } },
+            // The module the lesson sits in, so the table can say which part
+            // of the course a handout belongs to.
+            lesson: {
+              select: { id: true, title: true, module: { select: { title: true } } },
+            },
           },
         })
         .catch((err: unknown) => {
@@ -108,9 +112,12 @@ export async function loader({ request }: LoaderFunctionArgs) {
             title: r.title,
             kind: r.kind,
             href: `/student/resource/${r.id}`,
-            label: r.lesson?.title ?? r.description ?? "Course resource",
-            typeHint: r.fileName ?? r.fileType ?? null,
-            lessonId: null as string | null,
+            moduleTitle: r.lesson?.module?.title ?? null,
+            lessonTitle: r.lesson?.title ?? null,
+            description: r.description,
+            typeLabel: fileTypeLabel(r.fileName) ?? r.fileType ?? null,
+            fileSize: r.fileSize,
+            lessonId: r.lesson?.id ?? null,
           })),
         ...course.modules.flatMap((m) =>
           m.lessons.map((l) => ({
@@ -118,8 +125,12 @@ export async function loader({ request }: LoaderFunctionArgs) {
             title: l.title,
             kind: "FILE",
             href: l.resourceUrl ? `/student/resource/${l.id}` : null,
-            label: m.title,
-            typeHint: l.resourceUrl,
+            moduleTitle: m.title,
+            lessonTitle: l.title,
+            description: null as string | null,
+            // Derived here, so the Cloudinary URL never reaches the page.
+            typeLabel: fileTypeLabel(l.resourceUrl),
+            fileSize: null as number | null,
             lessonId: l.id as string | null,
           })),
         ),
@@ -150,6 +161,14 @@ function fileTypeLabel(url: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+/** Human-readable size, or null when the admin never recorded one. */
+function fileSizeLabel(bytes: number | null): string | null {
+  if (!bytes) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────
@@ -289,8 +308,13 @@ function CourseResourceGroup({
       kind: string;
       /** Always /student/resource/<id> — never a raw storage URL. */
       href: string | null;
-      label: string;
-      typeHint: string | null;
+      /** The module the handout belongs to; null means the whole course. */
+      moduleTitle: string | null;
+      lessonTitle: string | null;
+      description: string | null;
+      /** e.g. "PDF" — resolved server-side; the storage URL never ships. */
+      typeLabel: string | null;
+      fileSize: number | null;
       lessonId: string | null;
     }>;
   };
@@ -328,72 +352,117 @@ function CourseResourceGroup({
         </Link>
       </div>
 
-      {/* Files */}
-      <ul className="divide-y divide-brand-beige-dark">
-        {course.downloads.map((file) => {
-          const type = fileTypeLabel(file.typeHint);
-          const isLink = file.kind === "LINK";
-          return (
-            <li
-              key={file.id}
-              className="flex items-center gap-4 px-5 sm:px-6 py-4"
-            >
-              <div className="w-10 h-10 rounded-lg bg-brand-mustard/15 flex items-center justify-center shrink-0">
-                {isLink ? (
-                  <ExternalLink className="text-brand-mustard" size={18} />
-                ) : (
-                  <FileText className="text-brand-mustard" size={18} />
-                )}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-brand-navy font-semibold text-sm sm:text-base truncate">
-                  {file.title}
-                </p>
-                <p className="text-brand-navy/55 text-xs mt-0.5 truncate">
-                  {file.label}
-                  {type && (
-                    <>
-                      {" · "}
-                      <span className="font-semibold tracking-wide">
-                        {type}
+      {/* Files.
+          A table, because a handout only makes sense next to the part of the
+          course it belongs to - the module name is a column, not a caption.
+          It scrolls sideways rather than wrapping on narrow screens, and the
+          two supporting columns drop away first. */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <caption className="sr-only">
+            Downloads for {course.title}, with the module each one belongs to
+          </caption>
+          <thead>
+            <tr className="text-left border-b border-brand-beige-dark bg-brand-beige/30">
+              <th scope="col" className="px-5 sm:px-6 py-2.5 font-semibold text-brand-navy/70 text-xs uppercase tracking-wider">
+                Resource
+              </th>
+              <th scope="col" className="px-4 py-2.5 font-semibold text-brand-navy/70 text-xs uppercase tracking-wider">
+                Module
+              </th>
+              <th scope="col" className="hidden md:table-cell px-4 py-2.5 font-semibold text-brand-navy/70 text-xs uppercase tracking-wider">
+                Lesson
+              </th>
+              <th scope="col" className="hidden sm:table-cell px-4 py-2.5 font-semibold text-brand-navy/70 text-xs uppercase tracking-wider">
+                Type
+              </th>
+              <th scope="col" className="px-5 sm:px-6 py-2.5 text-right font-semibold text-brand-navy/70 text-xs uppercase tracking-wider">
+                <span className="sr-only">Download</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-brand-beige-dark">
+            {course.downloads.map((file) => {
+              const size = fileSizeLabel(file.fileSize);
+              const isLink = file.kind === "LINK";
+              return (
+                <tr key={file.id} className="align-middle hover:bg-brand-beige/20 transition-colors">
+                  <td className="px-5 sm:px-6 py-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="w-9 h-9 rounded-lg bg-brand-mustard/15 flex items-center justify-center shrink-0">
+                        {isLink ? (
+                          <ExternalLink className="text-brand-mustard" size={16} />
+                        ) : (
+                          <FileText className="text-brand-mustard" size={16} />
+                        )}
                       </span>
-                    </>
-                  )}
-                </p>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                {file.lessonId && (
-                  <Link
-                    to={`/student/course/${course.id}?lesson=${file.lessonId}`}
-                    className="hidden md:inline-flex items-center px-3 py-2 rounded-lg text-xs font-semibold text-brand-navy/70 hover:bg-brand-beige transition-colors"
-                  >
-                    View in course
-                  </Link>
-                )}
-                {file.href ? (
-                  <a
-                    href={file.href}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 bg-brand-navy hover:bg-brand-navy-dark text-white text-xs font-semibold px-3.5 py-2 rounded-lg transition-colors"
-                  >
-                    {isLink ? <ExternalLink size={14} /> : <Download size={14} />}
-                    {isLink ? "Open" : "Download"}
-                  </a>
-                ) : (
-                  <span
-                    className="inline-flex items-center gap-1.5 bg-brand-beige text-brand-navy/40 text-xs font-semibold px-3.5 py-2 rounded-lg cursor-not-allowed"
-                    title="No download URL configured"
-                  >
-                    <Download size={14} />
-                    Unavailable
-                  </span>
-                )}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+                      <span className="min-w-0">
+                        <span className="block text-brand-navy font-semibold truncate">
+                          {file.title}
+                        </span>
+                        {file.description && (
+                          <span className="block text-brand-navy/55 text-xs truncate">
+                            {file.description}
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  </td>
+
+                  <td className="px-4 py-3">
+                    {file.moduleTitle ? (
+                      <span className="text-brand-navy/80">{file.moduleTitle}</span>
+                    ) : (
+                      <span className="text-brand-navy/45 italic">Whole course</span>
+                    )}
+                  </td>
+
+                  <td className="hidden md:table-cell px-4 py-3 text-brand-navy/60">
+                    {file.lessonTitle ?? "\u2014"}
+                  </td>
+
+                  <td className="hidden sm:table-cell px-4 py-3 text-brand-navy/60 whitespace-nowrap">
+                    {isLink ? "Link" : (file.typeLabel ?? "File")}
+                    {size && <span className="text-brand-navy/40"> &middot; {size}</span>}
+                  </td>
+
+                  <td className="px-5 sm:px-6 py-3 text-right whitespace-nowrap">
+                    <div className="inline-flex items-center gap-2">
+                      {file.lessonId && (
+                        <Link
+                          to={`/student/course/${course.id}?lesson=${file.lessonId}`}
+                          className="hidden lg:inline-flex items-center px-3 py-2 rounded-lg text-xs font-semibold text-brand-navy/70 hover:bg-brand-beige transition-colors"
+                        >
+                          View in course
+                        </Link>
+                      )}
+                      {file.href ? (
+                        <a
+                          href={file.href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 bg-brand-navy hover:bg-brand-navy-dark text-white text-xs font-semibold px-3.5 py-2 rounded-lg transition-colors"
+                        >
+                          {isLink ? <ExternalLink size={14} /> : <Download size={14} />}
+                          {isLink ? "Open" : "Download"}
+                        </a>
+                      ) : (
+                        <span
+                          className="inline-flex items-center gap-1.5 bg-brand-beige text-brand-navy/40 text-xs font-semibold px-3.5 py-2 rounded-lg cursor-not-allowed"
+                          title="No download URL configured"
+                        >
+                          <Download size={14} />
+                          Unavailable
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
