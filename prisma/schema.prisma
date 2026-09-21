@@ -205,6 +205,15 @@ model CertificateTemplate {
   sealText      String  @default("Course Complete")
   sealStarColor String  @default("#2C795A")
 
+  // Faint mark printed behind the wording. watermarkImageUrl falls back to
+  // logoUrl at render time, so the common case needs no second upload.
+  showWatermark     Boolean @default(false)
+  watermarkImageUrl String?
+  watermarkText     String?
+  watermarkStyle    String  @default("DIAGONAL") // CENTER | DIAGONAL | TILED
+  watermarkSize     String  @default("MEDIUM") // SMALL | MEDIUM | LARGE
+  watermarkOpacity  Int     @default(6) // percent, clamped 2..20 on write AND read
+
   // Course.summary printed under the course title, and the bottom-corner
   // verification line. verifyUrl is plain text, never a link.
   showCourseSummary Boolean @default(true)

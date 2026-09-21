@@ -1,5 +1,6 @@
 import { prisma } from "./db.server";
 import {
+  CONFIG_FIELDS,
   DEFAULT_CONFIG,
   normalizeConfig,
   type SafeConfig,
@@ -18,13 +19,11 @@ import {
  *  `courseId` would not, since Postgres permits unlimited NULLs. */
 export const GLOBAL_TEMPLATE_ID = "global";
 
-const COLUMNS = `
-  "orgName", "logoUrl", "accentColor", "secondaryColor", "borderStyle",
-  "fontPair", "headline", "introLine", "midLine", "dateLabel", "footerNote",
-  "signatureImageUrl", "signatureName", "signatureTitle",
-  "paperSize", "orientation", "dateFormat",
-  "showCertificateId", "showInstructor", "certificateIdPrefix"
-`;
+// Built from CONFIG_FIELDS, never hand-listed: a column added to the schema and
+// the editor but forgotten here would be written and then never read back, and
+// the setting would quietly do nothing. Still an explicit list rather than
+// SELECT *, so a later column cannot change the shape normalizeConfig sees.
+const COLUMNS = CONFIG_FIELDS.map((f) => `"${f}"`).join(", ");
 
 export type ResolvedTemplate = {
   config: SafeConfig;

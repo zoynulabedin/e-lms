@@ -18,10 +18,15 @@ import { prisma } from "../utils/db.server";
 import { requireAdmin } from "../utils/auth.server";
 import { resolveCertificateConfig, GLOBAL_TEMPLATE_ID } from "../utils/certificate.server";
 import {
+  BOOLEAN_CONFIG_FIELDS,
   BORDER_LABELS,
   BORDER_STYLES,
   borderFrameCss,
+  CONFIG_FIELDS,
   DATE_FORMAT_LABELS,
+  WATERMARK_OPACITY,
+  WATERMARK_SIZE_LABELS,
+  WATERMARK_STYLE_LABELS,
   DEFAULT_CONFIG,
   FONT_PAIRS,
   LIMITS,
@@ -37,6 +42,8 @@ import {
   type FontPairKey,
   type Orientation,
   type PaperSize,
+  type WatermarkSize,
+  type WatermarkStyle,
 } from "../utils/certificate-template";
 
 /**
@@ -48,20 +55,8 @@ import {
  * keystroke.
  */
 
-// The 20 editable columns, in one place so the read, the write and the form
-// cannot disagree about what a template is made of.
-const FIELDS = [
-  "orgName", "logoUrl", "accentColor", "secondaryColor", "borderStyle",
-  "fontPair", "headline", "introLine", "midLine", "dateLabel", "footerNote",
-  "signatureImageUrl", "signatureName", "signatureTitle",
-  "showSeal", "sealText", "sealStarColor", "showCourseSummary", "verifyUrl",
-  "paperSize", "orientation", "dateFormat",
-  "showCertificateId", "showInstructor", "certificateIdPrefix",
-] as const;
-
-const BOOLEAN_FIELDS = new Set([
-  "showCertificateId", "showInstructor", "showSeal", "showCourseSummary",
-]);
+const FIELDS = CONFIG_FIELDS;
+const BOOLEAN_FIELDS = BOOLEAN_CONFIG_FIELDS;
 
 export async function loader({ request }: LoaderFunctionArgs) {
   await requireAdmin(request);
@@ -155,6 +150,12 @@ export async function action({ request }: ActionFunctionArgs) {
   if (formData.get("signatureImageUrl") && !cfg.signatureImageUrl) {
     return data(
       { error: "That signature image didn't come through. Upload it again." },
+      { status: 400 },
+    );
+  }
+  if (formData.get("watermarkImageUrl") && !cfg.watermarkImageUrl) {
+    return data(
+      { error: "That watermark image didn't come through. Upload it again." },
       { status: 400 },
     );
   }
@@ -404,6 +405,64 @@ export default function CertificateDesign() {
                   def={DEFAULT_CONFIG.sealStarColor}
                   onRevert={() => set("sealStarColor", DEFAULT_CONFIG.sealStarColor)}
                 />
+              </>
+            )}
+          </Card>
+
+          <Card title="Watermark">
+            <Check
+              label="Show a watermark"
+              checked={cfg.showWatermark}
+              onChange={(v) => set("showWatermark", v)}
+              hint="A faint mark printed behind the wording."
+            />
+            {cfg.showWatermark && (
+              <>
+                <ImageField
+                  label="Watermark image"
+                  value={cfg.watermarkImageUrl}
+                  onChange={(v) => set("watermarkImageUrl", v)}
+                  hint={
+                    cfg.logoUrl
+                      ? "Leave this empty to reuse the logo you uploaded above."
+                      : "Optional. You can use text alone, or upload a logo above and leave this empty to reuse it."
+                  }
+                />
+                <Text
+                  label="Website or wording"
+                  value={cfg.watermarkText ?? ""}
+                  onChange={(v) => set("watermarkText", v || null)}
+                  max={LIMITS.watermarkText}
+                  hint="For example your website address. Printed in capitals under the image."
+                />
+                <Select
+                  label="Placement"
+                  value={cfg.watermarkStyle}
+                  onChange={(v) => set("watermarkStyle", v as WatermarkStyle)}
+                  options={Object.entries(WATERMARK_STYLE_LABELS).map(([v, l]) => ({ value: v, label: l }))}
+                />
+                <Select
+                  label="Size"
+                  value={cfg.watermarkSize}
+                  onChange={(v) => set("watermarkSize", v as WatermarkSize)}
+                  options={Object.entries(WATERMARK_SIZE_LABELS).map(([v, l]) => ({ value: v, label: l }))}
+                />
+                <Range
+                  label="Strength"
+                  value={cfg.watermarkOpacity}
+                  onChange={(v) => set("watermarkOpacity", v)}
+                  min={WATERMARK_OPACITY.min}
+                  max={WATERMARK_OPACITY.max}
+                  def={DEFAULT_CONFIG.watermarkOpacity}
+                  onRevert={() => set("watermarkOpacity", DEFAULT_CONFIG.watermarkOpacity)}
+                  hint="Keep it faint. A watermark that competes with the wording makes the certificate harder to read, on screen and on paper."
+                />
+                {!cfg.watermarkImageUrl && !cfg.logoUrl && !cfg.watermarkText && (
+                  <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    Nothing to show yet &mdash; add an image or some wording above, or the watermark
+                    stays invisible.
+                  </p>
+                )}
               </>
             )}
           </Card>
@@ -794,6 +853,38 @@ function Text({
       ) : (
         <input value={value} maxLength={max} onChange={(e) => onChange(e.target.value)} className={cls} />
       )}
+      {hint && <p className="text-[11px] text-gray-400 mt-1">{hint}</p>}
+    </div>
+  );
+}
+
+function Range({
+  label, value, onChange, min, max, hint, def, onRevert,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  min: number;
+  max: number;
+  hint?: string;
+  def?: number;
+  onRevert?: () => void;
+}) {
+  return (
+    <div>
+      <Label label={label} def={String(def)} value={String(value)} onRevert={onRevert} />
+      <div className="flex items-center gap-3">
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={1}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="flex-1 accent-blue-600"
+        />
+        <span className="text-sm text-gray-600 w-10 text-right tabular-nums">{value}%</span>
+      </div>
       {hint && <p className="text-[11px] text-gray-400 mt-1">{hint}</p>}
     </div>
   );

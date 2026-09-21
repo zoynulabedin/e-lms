@@ -42,6 +42,12 @@ export type CertificateConfig = {
   showSeal: boolean;
   sealText: string;
   sealStarColor: string;
+  showWatermark: boolean;
+  watermarkImageUrl: string | null;
+  watermarkText: string | null;
+  watermarkStyle: WatermarkStyle;
+  watermarkSize: WatermarkSize;
+  watermarkOpacity: number;
   showCourseSummary: boolean;
   verifyUrl: string | null;
   paperSize: PaperSize;
@@ -53,6 +59,45 @@ export type CertificateConfig = {
 };
 
 export type SafeConfig = CertificateConfig & { readonly [SAFE]: true };
+
+/**
+ * Every editable field, in one place.
+ *
+ * The database read, the upsert and the editor form all derive from this list.
+ * They used to each keep their own copy, and adding a column to two of the
+ * three meant the third silently dropped it: the value saved fine, was never
+ * SELECTed back, and normalizeConfig replaced the undefined with a default, so
+ * the setting simply had no effect. assertConfigFieldsComplete() below keeps
+ * the list honest.
+ */
+export const CONFIG_FIELDS = [
+  "orgName", "logoUrl", "accentColor", "secondaryColor", "borderStyle",
+  "fontPair", "headline", "introLine", "midLine", "dateLabel", "footerNote",
+  "signatureImageUrl", "signatureName", "signatureTitle",
+  "showSeal", "sealText", "sealStarColor",
+  "showWatermark", "watermarkImageUrl", "watermarkText", "watermarkStyle",
+  "watermarkSize", "watermarkOpacity",
+  "showCourseSummary", "verifyUrl",
+  "paperSize", "orientation", "dateFormat",
+  "showCertificateId", "showInstructor", "certificateIdPrefix",
+] as const satisfies readonly (keyof CertificateConfig)[];
+
+/** Fields that arrive from a form as "true"/"false" rather than text. */
+export const BOOLEAN_CONFIG_FIELDS: ReadonlySet<string> = new Set([
+  "showSeal", "showWatermark", "showCourseSummary", "showCertificateId", "showInstructor",
+]);
+
+/**
+ * Throws if a field was added to CertificateConfig but not to CONFIG_FIELDS.
+ * Called from the test suite; it costs nothing to keep exported.
+ */
+export function assertConfigFieldsComplete(): void {
+  const listed = new Set<string>(CONFIG_FIELDS);
+  const missing = Object.keys(DEFAULT_CONFIG).filter((k) => !listed.has(k));
+  if (missing.length) {
+    throw new Error(`CONFIG_FIELDS is missing: ${missing.join(", ")}`);
+  }
+}
 
 export type CertificateData = {
   learnerName: string;
@@ -89,6 +134,8 @@ export type PaperSize = "AUTO" | "A4" | "LETTER";
 export type Orientation = "PORTRAIT" | "LANDSCAPE";
 export type DateFormat = "MONTH_DAY_YEAR" | "DAY_MONTH_YEAR" | "ISO";
 export type FontPairKey = "CLASSIC" | "EDITORIAL" | "MODERN" | "FRIENDLY" | "PLAIN";
+export type WatermarkStyle = "CENTER" | "DIAGONAL" | "TILED";
+export type WatermarkSize = "SMALL" | "MEDIUM" | "LARGE";
 
 // ─── Choices ──────────────────────────────────────────────────────────────────
 
@@ -270,6 +317,29 @@ export function borderFrameCss(
   }
 }
 
+export const WATERMARK_STYLE_LABELS: Record<WatermarkStyle, string> = {
+  CENTER: "One mark, upright",
+  DIAGONAL: "One mark, angled",
+  TILED: "Repeated across the page",
+};
+
+export const WATERMARK_SIZE_LABELS: Record<WatermarkSize, string> = {
+  SMALL: "Small",
+  MEDIUM: "Medium",
+  LARGE: "Large",
+};
+
+/** Image box and text size per step. TILED scales these down on its own. */
+export const WATERMARK_SIZES: Record<WatermarkSize, { img: number; text: number }> = {
+  SMALL: { img: 150, text: 15 },
+  MEDIUM: { img: 260, text: 24 },
+  LARGE: { img: 400, text: 36 },
+};
+
+/** How faint the watermark may be made. Below 2% it is invisible; above 20% it
+ *  starts to compete with the text the certificate exists to carry. */
+export const WATERMARK_OPACITY = { min: 2, max: 20 } as const;
+
 export const DATE_FORMAT_LABELS: Record<DateFormat, string> = {
   MONTH_DAY_YEAR: "September 21, 2026",
   DAY_MONTH_YEAR: "21 September 2026",
@@ -300,6 +370,14 @@ export const DEFAULT_CONFIG: CertificateConfig = {
   showSeal: true,
   sealText: "Course Complete",
   sealStarColor: "#2C795A",
+  // Off by default: a watermark is a deliberate choice, and turning one on for
+  // everybody would change how every existing certificate prints.
+  showWatermark: false,
+  watermarkImageUrl: null,
+  watermarkText: null,
+  watermarkStyle: "DIAGONAL",
+  watermarkSize: "MEDIUM",
+  watermarkOpacity: 6,
   showCourseSummary: true,
   verifyUrl: null,
   paperSize: "LETTER",
@@ -321,6 +399,7 @@ export const LIMITS = {
   signatureName: 80,
   signatureTitle: 80,
   sealText: 28,
+  watermarkText: 60,
   verifyUrl: 90,
   certificateIdPrefix: 6,
 } as const;
@@ -357,6 +436,22 @@ export function safeImageUrl(v: unknown): string | null {
 }
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
+
+/**
+ * A whole-number percentage, clamped into the allowed band.
+ *
+ * Tested as a STRING before Number(): the value arrives from formData, and
+ * Number(" 7 ") is 7 while Number("") is 0, so Number.isInteger alone would let
+ * blank and padded input through as a silent 0. The result is interpolated into
+ * a CSS opacity, so it must be a number by construction, never a passed-through
+ * string.
+ */
+function safePercent(v: unknown, fallback: number): number {
+  const raw = typeof v === "number" ? String(v) : typeof v === "string" ? v.trim() : "";
+  if (!/^\d{1,2}$/.test(raw)) return fallback;
+  const n = Number(raw);
+  return Math.min(WATERMARK_OPACITY.max, Math.max(WATERMARK_OPACITY.min, n));
+}
 
 function safeColor(v: unknown, fallback: string): string {
   return typeof v === "string" && HEX.test(v.trim()) ? v.trim() : fallback;
@@ -423,6 +518,18 @@ export function normalizeConfig(raw: unknown): SafeConfig {
     showSeal: r.showSeal !== false,
     sealText: safeText(r.sealText, LIMITS.sealText, d.sealText),
     sealStarColor: safeColor(r.sealStarColor, d.sealStarColor),
+    showWatermark: r.showWatermark === true,
+    // Falls back to the header logo at render time when this is empty, so the
+    // usual case - watermark me with my own mark - needs no second upload.
+    watermarkImageUrl: safeImageUrl(r.watermarkImageUrl),
+    watermarkText: safeOptionalText(r.watermarkText, LIMITS.watermarkText),
+    watermarkStyle: pick(
+      r.watermarkStyle,
+      ["CENTER", "DIAGONAL", "TILED"] as const,
+      d.watermarkStyle,
+    ),
+    watermarkSize: pick(r.watermarkSize, ["SMALL", "MEDIUM", "LARGE"] as const, d.watermarkSize),
+    watermarkOpacity: safePercent(r.watermarkOpacity, d.watermarkOpacity),
     showCourseSummary: r.showCourseSummary !== false,
     // Printed as text, never as a link: a certificate is a paper document and
     // an <a> here would only invite an admin to point it somewhere hostile.
@@ -627,6 +734,27 @@ export function renderCertificateHtml(
     </div></div>`
     : "";
 
+  // The watermark sits behind everything, inside the page's overflow:hidden box
+  // so an oversized mark cannot spill past the sheet. It is built from <img>
+  // and text elements rather than a CSS background-image: an admin-supplied URL
+  // must never reach a CSS url(), and browsers routinely drop background images
+  // when printing, which is the one place a watermark has to survive.
+  const wmImage = cfg.watermarkImageUrl ?? cfg.logoUrl;
+  const wmSize = WATERMARK_SIZES[cfg.watermarkSize];
+  const wmUnit =
+    wmImage || cfg.watermarkText
+      ? `<div class="wm-unit">` +
+        (wmImage ? `<img class="wm-img" src="${esc(wmImage)}" alt=""/>` : "") +
+        (cfg.watermarkText ? `<span class="wm-text">${esc(cfg.watermarkText)}</span>` : "") +
+        `</div>`
+      : "";
+  const watermark =
+    cfg.showWatermark && wmUnit
+      ? `<div class="wm wm-${cfg.watermarkStyle.toLowerCase()}">${
+          cfg.watermarkStyle === "TILED" ? wmUnit.repeat(15) : wmUnit
+        }</div>`
+      : "";
+
   const idBlock =
     (cfg.showCertificateId && data.certificateId) || cfg.verifyUrl
       ? `<div class="foot-id">
@@ -703,12 +831,23 @@ export function renderCertificateHtml(
   .cert-id { font-size: 11px; font-weight: 700; letter-spacing: .08em; color: ${accent}; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .verify { font-size: 11px; font-weight: 700; color: ${second}; margin-top: 2px; }
 
+  .wm { position: absolute; inset: 0; z-index: 0; pointer-events: none; opacity: ${cfg.watermarkOpacity / 100}; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .wm-unit { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .wm-img { max-width: ${wmSize.img}px; max-height: ${wmSize.img}px; object-fit: contain; }
+  .wm-text { font-family: ${fonts.body}; font-size: ${wmSize.text}px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: ${accent}; white-space: nowrap; }
+  .wm-diagonal .wm-unit { transform: rotate(-28deg); }
+  .wm-tiled { flex-wrap: wrap; align-content: center; gap: 48px 64px; padding: 40px; }
+  .wm-tiled .wm-unit { transform: rotate(-28deg); gap: 6px; }
+  .wm-tiled .wm-img { max-width: ${Math.round(wmSize.img * 0.42)}px; max-height: ${Math.round(wmSize.img * 0.42)}px; }
+  .wm-tiled .wm-text { font-size: ${Math.max(9, Math.round(wmSize.text * 0.42))}px; }
+
   #cert-print { background: ${accent}; color: #fff; border: none; padding: 10px 28px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; font-family: ${fonts.body}; }
   ${opts.forcePrint ? printCss : `@media print {${printCss}}`}
 </style>
 </head>
 <body>
   <div class="page">
+    ${watermark}
     <div class="cert">
       ${masthead}
       <h1>${esc(cfg.headline)}</h1>
