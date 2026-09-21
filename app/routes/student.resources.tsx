@@ -50,6 +50,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
             select: {
               id: true,
               title: true,
+              order: true,
               lessons: {
                 where: { lessonType: "DOWNLOAD" },
                 orderBy: { order: "asc" },
@@ -86,7 +87,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
             // The module the lesson sits in, so the table can say which part
             // of the course a handout belongs to.
             lesson: {
-              select: { id: true, title: true, module: { select: { title: true } } },
+              select: {
+                id: true,
+                title: true,
+                module: { select: { id: true, title: true, order: true } },
+              },
             },
           },
         })
@@ -96,52 +101,101 @@ export async function loader({ request }: LoaderFunctionArgs) {
         })
     : [];
 
-  // Flatten to course → downloads, dropping courses with nothing to download.
-  // Every href points at /student/resource/<id>, which re-checks the licence on
-  // each request — the storage URL is never serialized into the page.
+  /**
+   * Course -> module -> the handouts that belong to it.
+   *
+   * Grouping by module is the point: a worksheet only means something next to
+   * the part of the course it came from. Anything attached to the course
+   * rather than to a lesson lands in a final "Whole course" group.
+   *
+   * Every href points at /student/resource/<id>, which re-checks the licence
+   * on each request - the storage URL is never serialized into the page.
+   */
+  type Row = {
+    id: string;
+    title: string;
+    kind: string;
+    href: string | null;
+    lessonTitle: string | null;
+    description: string | null;
+    typeLabel: string | null;
+    fileSize: number | null;
+    lessonId: string | null;
+  };
+
   const courseResources = courses
-    .map((course) => ({
-      id: course.id,
-      title: course.title,
-      thumbnailUrl: course.thumbnailUrl,
-      downloads: [
-        ...extras
-          .filter((r) => r.courseId === course.id)
-          .map((r) => ({
+    .map((course) => {
+      // Keyed by module id; the null key collects course-wide resources.
+      const groups = new Map<string | null, { title: string; order: number; items: Row[] }>();
+
+      const push = (
+        moduleId: string | null,
+        moduleTitle: string,
+        order: number,
+        row: Row,
+      ) => {
+        const key = moduleId;
+        if (!groups.has(key)) groups.set(key, { title: moduleTitle, order, items: [] });
+        groups.get(key)!.items.push(row);
+      };
+
+      for (const r of extras.filter((x) => x.courseId === course.id)) {
+        push(
+          r.lesson?.module?.id ?? null,
+          r.lesson?.module?.title ?? "Whole course",
+          // Course-wide resources sort last, after every real module.
+          r.lesson?.module?.order ?? Number.MAX_SAFE_INTEGER,
+          {
             id: r.id,
             title: r.title,
             kind: r.kind,
             href: `/student/resource/${r.id}`,
-            moduleTitle: r.lesson?.module?.title ?? null,
             lessonTitle: r.lesson?.title ?? null,
             description: r.description,
             typeLabel: fileTypeLabel(r.fileName) ?? r.fileType ?? null,
             fileSize: r.fileSize,
             lessonId: r.lesson?.id ?? null,
-          })),
-        ...course.modules.flatMap((m) =>
-          m.lessons.map((l) => ({
+          },
+        );
+      }
+
+      for (const m of course.modules) {
+        for (const l of m.lessons) {
+          push(m.id, m.title, m.order, {
             id: l.id,
             title: l.title,
             kind: "FILE",
             href: l.resourceUrl ? `/student/resource/${l.id}` : null,
-            moduleTitle: m.title,
             lessonTitle: l.title,
-            description: null as string | null,
+            description: null,
             // Derived here, so the Cloudinary URL never reaches the page.
             typeLabel: fileTypeLabel(l.resourceUrl),
-            fileSize: null as number | null,
-            lessonId: l.id as string | null,
-          })),
-        ),
-      ],
-    }))
-    .filter((c) => c.downloads.length > 0);
+            fileSize: null,
+            lessonId: l.id,
+          });
+        }
+      }
 
-  const totalDownloads = courseResources.reduce(
-    (n, c) => n + c.downloads.length,
-    0,
-  );
+      const modules = [...groups.entries()]
+        .map(([moduleId, g]) => ({
+          moduleId,
+          moduleTitle: g.title,
+          order: g.order,
+          items: g.items,
+        }))
+        .sort((a, b) => a.order - b.order);
+
+      return {
+        id: course.id,
+        title: course.title,
+        thumbnailUrl: course.thumbnailUrl,
+        modules,
+        total: modules.reduce((n, m) => n + m.items.length, 0),
+      };
+    })
+    .filter((c) => c.total > 0);
+
+  const totalDownloads = courseResources.reduce((n, c) => n + c.total, 0);
 
   const hasCertificates = progresses.length > 0;
 
@@ -302,20 +356,23 @@ function CourseResourceGroup({
     id: string;
     title: string;
     thumbnailUrl: string | null;
-    downloads: Array<{
-      id: string;
-      title: string;
-      kind: string;
-      /** Always /student/resource/<id> — never a raw storage URL. */
-      href: string | null;
-      /** The module the handout belongs to; null means the whole course. */
-      moduleTitle: string | null;
-      lessonTitle: string | null;
-      description: string | null;
-      /** e.g. "PDF" — resolved server-side; the storage URL never ships. */
-      typeLabel: string | null;
-      fileSize: number | null;
-      lessonId: string | null;
+    total: number;
+    modules: Array<{
+      moduleId: string | null;
+      moduleTitle: string;
+      items: Array<{
+        id: string;
+        title: string;
+        kind: string;
+        /** Always /student/resource/<id> — never a raw storage URL. */
+        href: string | null;
+        lessonTitle: string | null;
+        description: string | null;
+        /** e.g. "PDF" — resolved server-side; the storage URL never ships. */
+        typeLabel: string | null;
+        fileSize: number | null;
+        lessonId: string | null;
+      }>;
     }>;
   };
 }) {
@@ -339,8 +396,8 @@ function CourseResourceGroup({
             {course.title}
           </p>
           <p className="text-brand-navy/60 text-xs mt-0.5">
-            {course.downloads.length} file
-            {course.downloads.length === 1 ? "" : "s"}
+            {course.total} file{course.total === 1 ? "" : "s"} across{" "}
+            {course.modules.length} section{course.modules.length === 1 ? "" : "s"}
           </p>
         </div>
         <Link
@@ -352,117 +409,118 @@ function CourseResourceGroup({
         </Link>
       </div>
 
-      {/* Files.
-          A table, because a handout only makes sense next to the part of the
-          course it belongs to - the module name is a column, not a caption.
-          It scrolls sideways rather than wrapping on narrow screens, and the
-          two supporting columns drop away first. */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <caption className="sr-only">
-            Downloads for {course.title}, with the module each one belongs to
-          </caption>
-          <thead>
-            <tr className="text-left border-b border-brand-beige-dark bg-brand-beige/30">
-              <th scope="col" className="px-5 sm:px-6 py-2.5 font-semibold text-brand-navy/70 text-xs uppercase tracking-wider">
-                Resource
-              </th>
-              <th scope="col" className="px-4 py-2.5 font-semibold text-brand-navy/70 text-xs uppercase tracking-wider">
-                Module
-              </th>
-              <th scope="col" className="hidden md:table-cell px-4 py-2.5 font-semibold text-brand-navy/70 text-xs uppercase tracking-wider">
-                Lesson
-              </th>
-              <th scope="col" className="hidden sm:table-cell px-4 py-2.5 font-semibold text-brand-navy/70 text-xs uppercase tracking-wider">
-                Type
-              </th>
-              <th scope="col" className="px-5 sm:px-6 py-2.5 text-right font-semibold text-brand-navy/70 text-xs uppercase tracking-wider">
-                <span className="sr-only">Download</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-brand-beige-dark">
-            {course.downloads.map((file) => {
-              const size = fileSizeLabel(file.fileSize);
-              const isLink = file.kind === "LINK";
-              return (
-                <tr key={file.id} className="align-middle hover:bg-brand-beige/20 transition-colors">
-                  <td className="px-5 sm:px-6 py-3">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <span className="w-9 h-9 rounded-lg bg-brand-mustard/15 flex items-center justify-center shrink-0">
-                        {isLink ? (
-                          <ExternalLink className="text-brand-mustard" size={16} />
-                        ) : (
-                          <FileText className="text-brand-mustard" size={16} />
-                        )}
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block text-brand-navy font-semibold truncate">
-                          {file.title}
-                        </span>
-                        {file.description && (
-                          <span className="block text-brand-navy/55 text-xs truncate">
-                            {file.description}
-                          </span>
-                        )}
-                      </span>
-                    </div>
-                  </td>
+      {/* One table per module, in course order, with course-wide files last. */}
+      {course.modules.map((m) => (
+        <section key={m.moduleId ?? "course-wide"}>
+          <h3 className="flex items-center gap-2 px-5 sm:px-6 py-2.5 bg-brand-beige/60 border-y border-brand-beige-dark text-brand-navy font-semibold text-sm">
+            {m.moduleId ? (
+              <BookOpen size={14} className="text-brand-navy/60 shrink-0" />
+            ) : (
+              <FolderOpen size={14} className="text-brand-navy/60 shrink-0" />
+            )}
+            <span className="min-w-0 truncate">{m.moduleTitle}</span>
+            <span className="text-brand-navy/50 font-normal text-xs shrink-0">
+              ({m.items.length})
+            </span>
+          </h3>
 
-                  <td className="px-4 py-3">
-                    {file.moduleTitle ? (
-                      <span className="text-brand-navy/80">{file.moduleTitle}</span>
-                    ) : (
-                      <span className="text-brand-navy/45 italic">Whole course</span>
-                    )}
-                  </td>
-
-                  <td className="hidden md:table-cell px-4 py-3 text-brand-navy/60">
-                    {file.lessonTitle ?? "\u2014"}
-                  </td>
-
-                  <td className="hidden sm:table-cell px-4 py-3 text-brand-navy/60 whitespace-nowrap">
-                    {isLink ? "Link" : (file.typeLabel ?? "File")}
-                    {size && <span className="text-brand-navy/40"> &middot; {size}</span>}
-                  </td>
-
-                  <td className="px-5 sm:px-6 py-3 text-right whitespace-nowrap">
-                    <div className="inline-flex items-center gap-2">
-                      {file.lessonId && (
-                        <Link
-                          to={`/student/course/${course.id}?lesson=${file.lessonId}`}
-                          className="hidden lg:inline-flex items-center px-3 py-2 rounded-lg text-xs font-semibold text-brand-navy/70 hover:bg-brand-beige transition-colors"
-                        >
-                          View in course
-                        </Link>
-                      )}
-                      {file.href ? (
-                        <a
-                          href={file.href}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 bg-brand-navy hover:bg-brand-navy-dark text-white text-xs font-semibold px-3.5 py-2 rounded-lg transition-colors"
-                        >
-                          {isLink ? <ExternalLink size={14} /> : <Download size={14} />}
-                          {isLink ? "Open" : "Download"}
-                        </a>
-                      ) : (
-                        <span
-                          className="inline-flex items-center gap-1.5 bg-brand-beige text-brand-navy/40 text-xs font-semibold px-3.5 py-2 rounded-lg cursor-not-allowed"
-                          title="No download URL configured"
-                        >
-                          <Download size={14} />
-                          Unavailable
-                        </span>
-                      )}
-                    </div>
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <caption className="sr-only">
+                Downloads in {m.moduleTitle} of {course.title}
+              </caption>
+              <thead>
+                <tr className="text-left border-b border-brand-beige-dark">
+                  <th scope="col" className="px-5 sm:px-6 py-2 font-semibold text-brand-navy/60 text-[11px] uppercase tracking-wider">
+                    Resource
+                  </th>
+                  <th scope="col" className="hidden md:table-cell px-4 py-2 font-semibold text-brand-navy/60 text-[11px] uppercase tracking-wider">
+                    Lesson
+                  </th>
+                  <th scope="col" className="hidden sm:table-cell px-4 py-2 font-semibold text-brand-navy/60 text-[11px] uppercase tracking-wider">
+                    Type
+                  </th>
+                  <th scope="col" className="px-5 sm:px-6 py-2 text-right">
+                    <span className="sr-only">Download</span>
+                  </th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody className="divide-y divide-brand-beige-dark">
+                {m.items.map((file) => {
+                  const size = fileSizeLabel(file.fileSize);
+                  const isLink = file.kind === "LINK";
+                  return (
+                    <tr key={file.id} className="align-middle hover:bg-brand-beige/20 transition-colors">
+                      <td className="px-5 sm:px-6 py-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="w-9 h-9 rounded-lg bg-brand-mustard/15 flex items-center justify-center shrink-0">
+                            {isLink ? (
+                              <ExternalLink className="text-brand-mustard" size={16} />
+                            ) : (
+                              <FileText className="text-brand-mustard" size={16} />
+                            )}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block text-brand-navy font-semibold truncate">
+                              {file.title}
+                            </span>
+                            {file.description && (
+                              <span className="block text-brand-navy/55 text-xs truncate">
+                                {file.description}
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                      </td>
+
+                      <td className="hidden md:table-cell px-4 py-3 text-brand-navy/60">
+                        {file.lessonTitle ?? "\u2014"}
+                      </td>
+
+                      <td className="hidden sm:table-cell px-4 py-3 text-brand-navy/60 whitespace-nowrap">
+                        {isLink ? "Link" : (file.typeLabel ?? "File")}
+                        {size && <span className="text-brand-navy/40"> &middot; {size}</span>}
+                      </td>
+
+                      <td className="px-5 sm:px-6 py-3 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-2">
+                          {file.lessonId && (
+                            <Link
+                              to={`/student/course/${course.id}?lesson=${file.lessonId}`}
+                              className="hidden lg:inline-flex items-center px-3 py-2 rounded-lg text-xs font-semibold text-brand-navy/70 hover:bg-brand-beige transition-colors"
+                            >
+                              View in course
+                            </Link>
+                          )}
+                          {file.href ? (
+                            <a
+                              href={file.href}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 bg-brand-navy hover:bg-brand-navy-dark text-white text-xs font-semibold px-3.5 py-2 rounded-lg transition-colors"
+                            >
+                              {isLink ? <ExternalLink size={14} /> : <Download size={14} />}
+                              {isLink ? "Open" : "Download"}
+                            </a>
+                          ) : (
+                            <span
+                              className="inline-flex items-center gap-1.5 bg-brand-beige text-brand-navy/40 text-xs font-semibold px-3.5 py-2 rounded-lg cursor-not-allowed"
+                              title="No download URL configured"
+                            >
+                              <Download size={14} />
+                              Unavailable
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ))}
     </div>
   );
 }
