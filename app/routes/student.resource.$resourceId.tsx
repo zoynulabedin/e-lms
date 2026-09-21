@@ -1,6 +1,7 @@
-import { data, redirect } from "react-router";
+import { redirect } from "react-router";
 import type { LoaderFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
+import { cloudinaryFetchUrl } from "../utils/cloudinary.server";
 import { requireUser } from "../utils/auth.server";
 import { getCourseAccess } from "../utils/access.server";
 
@@ -19,6 +20,53 @@ import { getCourseAccess } from "../utils/access.server";
  * Vimeo, any external page) redirect, since we cannot proxy a third-party
  * player anyway — that difference is called out in the admin UI.
  */
+/**
+ * A small HTML page for the failure cases.
+ *
+ * This is a resource route: it has no component, so a thrown `data()` is
+ * serialized straight to the browser and the learner sees raw JSON like
+ * {"message":"..."} in a blank tab. That is not an error message, it is a
+ * glitch. These pages say what happened and where to go next.
+ */
+function errorPage(status: number, title: string, detail: string, backTo = "/student/resources") {
+  const esc = (v: string) =>
+    v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>${esc(title)}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', system-ui, sans-serif; background: #f4ede8; color: #1d375f;
+         min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .card { background: #fff; border: 1px solid #d5cfca; border-radius: 16px; padding: 40px;
+          max-width: 460px; width: 100%; text-align: center; }
+  h1 { font-size: 20px; margin-bottom: 10px; }
+  p { font-size: 14px; line-height: 1.6; color: rgba(29,55,95,.72); }
+  a { display: inline-block; margin-top: 24px; background: #1d375f; color: #fff;
+      text-decoration: none; font-size: 14px; font-weight: 600; padding: 10px 22px; border-radius: 8px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>${esc(title)}</h1>
+    <p>${esc(detail)}</p>
+    <a href="${esc(backTo)}">Back to my resources</a>
+  </div>
+</body>
+</html>`;
+  return new Response(html, {
+    status,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Robots-Tag": "noindex, nofollow",
+    },
+  });
+}
+
 export async function loader({ request, params }: LoaderFunctionArgs) {
   const user = await requireUser(request);
   const id = params.resourceId!;
@@ -50,7 +98,13 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     .catch(() => null);
 
   if (row) {
-    if (!row.isActive) throw data({ message: "Resource not found." }, { status: 404 });
+    if (!row.isActive) {
+      throw errorPage(
+        404,
+        "This file is not available",
+        "Your instructor has hidden it for now. It may come back later.",
+      );
+    }
     resource = row;
   } else {
     // The same id space also covers DOWNLOAD lessons, whose file lives on the
@@ -81,7 +135,11 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   }
 
   if (!resource) {
-    throw data({ message: "Resource not found." }, { status: 404 });
+    throw errorPage(
+      404,
+      "File not found",
+      "This link does not point at anything any more — the file may have been removed.",
+    );
   }
 
   // Admins manage every course, so they can open any file - otherwise there
@@ -107,26 +165,72 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
               : "none"
           }`,
       );
-      throw data(
-        { message: "This resource belongs to a course you don't have access to." },
-        { status: 403 },
+      throw errorPage(
+        403,
+        "You don't have access to this file",
+        "It belongs to a course you don't currently own. If you have a licence key for it, " +
+          "redeem the key and the file will appear in your resources.",
+        "/redeem",
       );
     }
   }
 
   if (resource.kind === "LINK") return redirect(resource.url);
 
-  // Stream the file from storage. `duplex` is required by Node's fetch when a
-  // body is piped through; the upstream response body is passed straight on so
-  // large PDFs never sit in memory.
-  const upstream = await fetch(resource.url).catch((err) => {
-    console.error(`[resource] fetch failed for ${id}:`, err);
-    return null;
-  });
+  // Stream the file from storage, so the learner's browser never sees where it
+  // actually lives. The entitlement check above has already run either way.
+  //
+  // For a Cloudinary asset, ask for an authenticated download URL rather than
+  // using the stored one: an account with restricted delivery answers 401 on
+  // the plain URL, even to the server that uploaded the file.
+  const fetchUrl = cloudinaryFetchUrl(resource.url) ?? resource.url;
 
-  if (!upstream || !upstream.ok) {
-    console.error(`[resource] storage returned ${upstream?.status ?? "no response"} for ${id}`);
-    throw data({ message: "This file could not be retrieved. Please try again." }, { status: 502 });
+  let upstream: Response | null = null;
+  let failure = "";
+  try {
+    upstream = await fetch(fetchUrl, { redirect: "follow" });
+    if (!upstream.ok) failure = `HTTP ${upstream.status}`;
+  } catch (err) {
+    failure = err instanceof Error ? err.message : String(err);
+  }
+
+  if (failure) {
+    // Name the file and the reason. A download has no UI to show an error in,
+    // so without this the only trace is a bare 502 in the access log.
+    let hint = "";
+    const isCloudinary = resource.url.startsWith("https://res.cloudinary.com/");
+    if (isCloudinary && failure === "HTTP 401") {
+      hint =
+        " — Cloudinary refused even the signed download. Check Settings → Security " +
+        'for restricted delivery, and that "Allow delivery of PDF and ZIP files" is on.';
+    } else if (!isCloudinary) {
+      hint =
+        " — this URL was typed in by hand rather than uploaded. It has to be a " +
+        "direct, publicly fetchable file link, not a share page (Google Drive, " +
+        "Dropbox and OneDrive share links do not work).";
+    }
+    console.error(
+      `[resource] storage failed for ${id} (${failure}). URL: ${resource.url}${hint}`,
+    );
+
+    // The learner still gets their file: hand them the storage URL rather than
+    // a dead end. The licence check above has already passed, so this grants
+    // nothing to anyone who was not entitled - it only stops hiding where the
+    // file is kept, which the streamed path does as a bonus, not as the
+    // entitlement rule. Better a visible URL than a download that never works.
+    // The learner still gets their file: hand them the best URL we have
+    // rather than a dead end. The licence check above has already passed, so
+    // this grants nothing to anyone who was not entitled. The signed form is
+    // preferred because it expires in minutes, so a forwarded link dies fast.
+    return redirect(fetchUrl);
+  }
+
+  if (!upstream) {
+    throw errorPage(
+      502,
+      "This file could not be opened",
+      "Something went wrong fetching it. Please try again, and tell us if it keeps happening.",
+    );
   }
 
   const filename = (resource.fileName || resource.title || "download").replace(/["\\]/g, "");
