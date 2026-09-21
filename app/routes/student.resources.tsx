@@ -52,14 +52,20 @@ export async function loader({ request }: LoaderFunctionArgs) {
               id: true,
               title: true,
               order: true,
+              // Any lesson that carries a file, not only DOWNLOAD ones.
+              // The lesson editor offers "Resource URL" on a DOWNLOAD lesson
+              // and "Exercise Files" on every other type - both write the same
+              // resourceUrl column. Filtering on lessonType made every
+              // exercise file attached to a video invisible here.
               lessons: {
-                where: { lessonType: "DOWNLOAD" },
+                where: { resourceUrl: { not: null } },
                 orderBy: { order: "asc" },
                 select: {
                   id: true,
                   title: true,
                   order: true,
                   resourceUrl: true,
+                  lessonType: true,
                 },
               },
             },
@@ -155,14 +161,18 @@ export async function loader({ request }: LoaderFunctionArgs) {
             _m: r.lesson?.module?.order ?? LAST,
             _l: r.lesson?.order ?? LAST,
           })),
-        // DOWNLOAD lessons are themselves the handout, so the video and the
-        // resource are the same row.
+        // A DOWNLOAD lesson IS the handout, so its own title names the file.
+        // On any other lesson type the file is an attachment hanging off the
+        // video, so the row is named after the file itself.
         ...course.modules.flatMap((m) =>
           m.lessons.map((l) => ({
             id: l.id,
-            title: l.title,
+            title:
+              l.lessonType === "DOWNLOAD"
+                ? l.title
+                : (fileNameFromUrl(l.resourceUrl) ?? "Exercise files"),
             kind: "FILE",
-            href: l.resourceUrl ? `/student/resource/${l.id}` : null,
+            href: `/student/resource/${l.id}`,
             moduleTitle: m.title,
             videoTitle: l.title,
             description: null as string | null,
@@ -211,6 +221,21 @@ function fileTypeLabel(url: string | null): string | null {
     const ext = pathname.split(".").pop()?.toLowerCase() ?? "";
     if (!ext || ext.length > 5 || pathname.endsWith("/")) return null;
     return ext.toUpperCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The file's own name from its URL, e.g. ".../worksheet-1.pdf" -> "worksheet-1.pdf".
+ * Used to name an exercise file, which has no title of its own. Returns null
+ * for anything that does not look like a file so the caller can fall back.
+ */
+function fileNameFromUrl(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    const name = decodeURIComponent(new URL(url, "https://x").pathname.split("/").pop() ?? "");
+    return name && name.includes(".") && name.length <= 80 ? name : null;
   } catch {
     return null;
   }

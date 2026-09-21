@@ -10,6 +10,20 @@ import { moduleIcon, GETTING_STARTED_ICON, isIntroModuleTitle } from "../utils/m
 /** Cream highlight + navy text used for the lesson/quiz currently playing. */
 const ACTIVE_BG = "#F5E7C8";
 const ACTIVE_FG = "#001A38";
+/**
+ * The file's own name from its URL, e.g. ".../worksheet-1.pdf". Used to name an
+ * exercise file, which has no title of its own.
+ */
+function fileNameFromUrl(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    const name = decodeURIComponent(new URL(url, "https://x").pathname.split("/").pop() ?? "");
+    return name && name.includes(".") && name.length <= 80 ? name : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Light course-player header. */
 const HEADER_BG = "#FCF9F7";
 /** Footer lesson-navigation buttons. */
@@ -138,13 +152,51 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
         videoUrl: true,
         modules: {
           orderBy: { order: "asc" },
-          include: { lessons: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] } },
+          select: {
+            id: true,
+            title: true,
+            order: true,
+            lessons: {
+              orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+              select: {
+                id: true,
+                title: true,
+                order: true,
+                lessonType: true,
+                content: true,
+                videoUrl: true,
+                iframeEmbed: true,
+                embedUrl: true,
+                duration: true,
+                // resourceUrl is deliberately NOT selected: it is the raw
+                // storage link, and the download goes through
+                // /student/resource/<id> so the licence is re-checked. The
+                // `hasResource` flag below is all the UI needs.
+              },
+            },
+          },
         },
       },
     }),
   ]);
 
   if (!course) throw data({ message: "Course not found." }, { status: 404 });
+
+  // Which lessons carry a file, as a boolean. Read separately so the URL
+  // itself never joins the page payload.
+  const withFiles = new Set(
+    (
+      await prisma.lesson.findMany({
+        where: { module: { courseId }, resourceUrl: { not: null } },
+        select: { id: true },
+      })
+    ).map((l) => l.id),
+  );
+  for (const m of course.modules) {
+    for (const l of m.lessons) {
+      (l as { hasResource?: boolean }).hasResource = withFiles.has(l.id);
+    }
+  }
 
   // Module icon set — read separately so a not-yet-migrated database only
   // costs the icons, not the whole page.
@@ -304,7 +356,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   // passed, so anything read here is something the learner holds a licence for;
   // a resource attached to a different course is never fetched. Both tolerate a
   // server whose migrations/client predate the feature.
-  const [resources, glossary] = await Promise.all([
+  const [courseResources, glossary, exerciseFiles] = await Promise.all([
     prisma.courseResource
       .findMany({
         where: { courseId, isActive: true },
@@ -333,7 +385,33 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
         console.error("[course] GlossaryTerm unavailable:", err);
         return [] as never[];
       }),
+    // Files attached to a lesson through the builder's "Resource URL"
+    // (DOWNLOAD lessons) or "Exercise Files" (every other type). Both write
+    // Lesson.resourceUrl, and they predate CourseResource - a course set up
+    // before that table existed keeps ALL of its handouts here.
+    prisma.lesson.findMany({
+      where: { module: { courseId }, resourceUrl: { not: null } },
+      orderBy: [{ module: { order: "asc" } }, { order: "asc" }],
+      select: { id: true, title: true, resourceUrl: true, lessonType: true },
+    }),
   ]);
+
+  // One list for the drawer, admin-curated first.
+  const resources = [
+    ...courseResources,
+    ...exerciseFiles.map((l) => ({
+      id: l.id,
+      title:
+        l.lessonType === "DOWNLOAD"
+          ? l.title
+          : (fileNameFromUrl(l.resourceUrl) ?? "Exercise files"),
+      description: null as string | null,
+      kind: "FILE",
+      lessonId: l.id as string | null,
+      fileName: fileNameFromUrl(l.resourceUrl),
+      fileSize: null as number | null,
+    })),
+  ];
 
   const url = new URL(request.url);
   const lessonId = url.searchParams.get("lesson");
@@ -2247,9 +2325,9 @@ export default function CourseViewer() {
                   </div>
                   <h2 className="text-gray-900 font-bold text-xl mb-2">{currentLesson.title}</h2>
                   <p className="text-gray-500 text-sm mb-6 leading-relaxed">Download this resource to continue learning.</p>
-                  {currentLesson.resourceUrl ? (
+                  {currentLesson.hasResource ? (
                     <a
-                      href={currentLesson.resourceUrl}
+                      href={`/student/resource/${currentLesson.id}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={() => !completedSet.has(currentLesson.id) && markLessonComplete(currentLesson.id)}

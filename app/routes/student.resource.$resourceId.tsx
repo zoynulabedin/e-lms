@@ -65,7 +65,10 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
         module: { select: { courseId: true } },
       },
     });
-    if (lesson?.resourceUrl && lesson.lessonType === "DOWNLOAD") {
+    // Any lesson carrying a file, not only DOWNLOAD ones - the lesson editor
+    // writes resourceUrl from "Exercise Files" on video/text/storyline lessons
+    // too, and those links have to resolve rather than 404.
+    if (lesson?.resourceUrl) {
       resource = {
         courseId: lesson.module.courseId,
         title: lesson.title,
