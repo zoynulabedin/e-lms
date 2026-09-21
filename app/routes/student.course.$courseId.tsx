@@ -5,7 +5,7 @@ import { prisma } from "../utils/db.server";
 import { requireUser } from "../utils/auth.server";
 import { computeCourseAccess, requireCourseAccess } from "../utils/access.server";
 import { recomputeCourseProgress } from "../utils/progress.server";
-import { moduleIcon, GETTING_STARTED_ICON } from "../utils/module-icons";
+import { moduleIcon, GETTING_STARTED_ICON, isIntroModuleTitle } from "../utils/module-icons";
 
 /** Cream highlight + navy text used for the lesson/quiz currently playing. */
 const ACTIVE_BG = "#F5E7C8";
@@ -38,7 +38,8 @@ import {
   Award,
   RotateCcw,
   Maximize2,
-  Lock,
+  Menu,
+  ChevronRight,
   Paperclip,
   BookMarked,
   Link2,
@@ -100,14 +101,6 @@ function resolveVideoEmbed(raw: string): {
     return { type: "direct", src: trimmed };
   // Everything else (HTML pages, relative paths, unknown embeds) → iframe
   return { type: "iframe", src: trimmed };
-}
-
-function formatDuration(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 function formatCountdown(totalSeconds: number): string {
@@ -370,7 +363,6 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     allItems.slice(currentIdx + 1).find((i) => i.type === "lesson") ?? null;
 
   const lessonItems = allItems.filter((i) => i.type === "lesson");
-  const totalDuration = lessonItems.reduce((sum, { item }) => sum + (item.duration ?? 0), 0);
   const totalLessons = lessonItems.length;
 
   return {
@@ -388,7 +380,6 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     totalLessons,
     totalItems: allItems.length,
     currentItemNumber: currentIdx + 1,
-    totalDuration,
   };
 }
 
@@ -1516,12 +1507,14 @@ export default function CourseViewer() {
     totalLessons,
     totalItems,
     currentItemNumber,
-    totalDuration,
   } = useLoaderData<typeof loader>();
 
   const fetcher = useFetcher();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [drawer, setDrawer] = useState<null | "glossary" | "resources">(null);
+  // The menu closes from its own header and reopens from the breadcrumb bar,
+  // as in the design. Open by default on a course that has modules.
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // lessonId -> "Module > Lesson", so a resource attached to a lesson can say
   // where it belongs without another round-trip.
@@ -1548,6 +1541,7 @@ export default function CourseViewer() {
   const currentQuiz = activeItem?.type === "quiz" ? activeItem.item : null;
 
   const hasModules = course.modules.length > 0 && totalItems > 0;
+  const hasIntroModule = isIntroModuleTitle(course.modules[0]?.title);
 
   const isStoryline =
     currentLesson?.lessonType === "STORYLINE" ||
@@ -1600,6 +1594,20 @@ export default function CourseViewer() {
   currentLessonIdRef.current = currentLesson?.id ?? null;
   const lastReportedRef = useRef(0);
 
+  /**
+   * The final slide of a Storyline scene has been reached.
+   *
+   * The one place lessonComplete is acted on: it reveals "Next Lesson" and
+   * marks the lesson done. Guarded so a scene that fires the trigger twice
+   * (or a re-render) cannot submit twice.
+   */
+  const onStorylineLessonEnd = (id: string) => {
+    setReachedLessonEnd(true);
+    if (!id || completedSetRef.current.has(id) || lessonDoneRef.current === id) return;
+    lessonDoneRef.current = id;
+    markLessonComplete(id);
+  };
+
   const reportWatchProgress = (pct: number) => {
     if (hasModules) {
       const id = currentLessonIdRef.current;
@@ -1630,12 +1638,18 @@ export default function CourseViewer() {
       try {
         const msg = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
         if (msg?.type === "progress" && typeof msg.percent === "number") {
-          reportWatchProgress(Math.round(msg.percent));
+          // On a modular course a percentage is NOT a completion signal. A
+          // Storyline scene can report 95% with slides still unseen, which is
+          // exactly why the green tick was appearing while there was still
+          // lesson left to watch. Completion comes from the explicit
+          // lessonComplete trigger, handled once in onStorylineLessonEnd.
+          // Flat courses have no per-lesson notion, so there the percentage is
+          // still what drives course progress.
+          if (!hasModules) reportWatchProgress(Math.round(msg.percent));
         }
-        // Final slide of the Storyline scene reached.
-        if (msg?.action === "lessonComplete" || msg?.type === "lessonComplete") {
-          setReachedLessonEnd(true);
-        }
+        // lessonComplete is deliberately NOT handled here. StorylinePlayer
+        // owns that message and calls onStorylineLessonEnd; handling it in
+        // both places sent the completion POST twice.
       } catch { /* non-JSON */ }
     };
     window.addEventListener("message", handler);
@@ -1694,11 +1708,31 @@ export default function CourseViewer() {
     <div className="h-screen flex overflow-hidden bg-brand-navy-deeper">
 
       {/* ── Sidebar ────────────────────────────────────────────────────────────── */}
-      {hasModules && (
+      {hasModules && sidebarOpen && (
         <aside
           className="w-[360px] shrink-0 flex flex-col overflow-hidden"
           style={{ background: "var(--color-brand-navy-deeper)" }}
         >
+          {/* Course title, with the close control from the design */}
+          <div
+            className="shrink-0 flex items-start gap-2 px-4 py-3 border-b"
+            style={{ borderColor: "rgba(255,255,255,0.08)" }}
+          >
+            <h2 className="flex-1 min-w-0 text-[16px] font-bold text-white leading-snug">
+              {course.title}
+            </h2>
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(false)}
+              title="Hide the menu"
+              aria-label="Hide the menu"
+              className="shrink-0 p-1 rounded hover:bg-white/10 transition-colors"
+              style={{ color: "rgba(255,255,255,0.7)" }}
+            >
+              <X size={18} />
+            </button>
+          </div>
+
           {/* Module list */}
           <div
             className="flex-1 overflow-y-auto"
@@ -1731,12 +1765,15 @@ export default function CourseViewer() {
                     onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-brand-navy-deeper)")}
                   >
                     {(() => {
-                      // Module 1 of a course is the intro / "Getting Started"
-                      // section, so it gets the dedicated icon.
+                      // The intro section takes the dedicated compass icon; the
+                      // numbered modules then line up with the supplied sprite,
+                      // where icon 1 belongs to "Module 1". Without the shift,
+                      // a course that opens with "Getting Started" gave every
+                      // module the icon belonging to the one before it.
                       const src =
-                        moduleIdx === 0
-                          ? (moduleIcon(course.iconSet, 0) ?? GETTING_STARTED_ICON)
-                          : moduleIcon(course.iconSet, moduleIdx);
+                        hasIntroModule && moduleIdx === 0
+                          ? GETTING_STARTED_ICON
+                          : moduleIcon(course.iconSet, hasIntroModule ? moduleIdx - 1 : moduleIdx);
                       return src ? (
                         <img src={src} alt="" aria-hidden="true" className="w-[22px] h-[22px] object-contain shrink-0" />
                       ) : (
@@ -1748,7 +1785,7 @@ export default function CourseViewer() {
                     </p>
                     {expanded
                       ? <ChevronUp size={16} className="shrink-0" style={{ color: "rgba(255,255,255,0.55)" }} />
-                      : <ChevronDown size={16} className="shrink-0" style={{ color: "rgba(255,255,255,0.55)" }} />}
+                      : <ChevronRight size={16} className="shrink-0" style={{ color: "rgba(255,255,255,0.55)" }} />}
                   </button>
 
                   {/* Item list */}
@@ -1803,20 +1840,6 @@ export default function CourseViewer() {
                               >
                                 {lesson.title}
                               </p>
-
-                              {/* Duration badge */}
-                              {lesson.duration ? (
-                                <span
-                                  className="shrink-0 text-[13px] tabular-nums px-2 py-0.5 rounded font-mono"
-                                  style={
-                                    isActive
-                                      ? { background: "rgba(0,26,56,0.10)", color: "rgba(0,26,56,0.65)" }
-                                      : { background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.6)" }
-                                  }
-                                >
-                                  {formatDuration(lesson.duration)}
-                                </span>
-                              ) : null}
                             </Link>
                           );
                         }
@@ -1912,7 +1935,7 @@ export default function CourseViewer() {
 
         {/* ── Top bar ──────────────────────────────────────────────────────────── */}
         <header
-          className="shrink-0 flex items-center gap-3 px-4 h-16 z-20 border-b"
+          className="relative shrink-0 flex items-center gap-3 px-4 h-16 z-20 border-b"
           style={{ background: HEADER_BG, borderColor: "rgba(0,26,56,0.10)" }}
         >
           {/* Logo → dashboard */}
@@ -1925,10 +1948,13 @@ export default function CourseViewer() {
           </Link>
 
           {/* Learn. Grow. Do More. */}
+          {/* Taken out of the flow so it is centred on the HEADER, not on
+              whatever space the logo and the right-hand cluster leave over. */}
           <img
             src="/std-dashboard-img/Learn Grow Text.png"
             alt="Learn. Grow. Do More."
-            className="hidden lg:block h-9 w-auto object-contain mx-auto"
+            aria-hidden="true"
+            className="hidden lg:block h-9 w-auto object-contain absolute left-1/2 -translate-x-1/2 pointer-events-none"
           />
 
           <div className="flex-1 min-w-0 lg:hidden">
@@ -1942,8 +1968,12 @@ export default function CourseViewer() {
             {/* Progress */}
             <div className="hidden sm:block text-right">
               <p className="text-[13px]" style={{ color: "rgba(0,26,56,0.75)" }}>
+                {/* Counted over the same set as the percentage beside it and
+                    the footer's "n / m": lessons AND quizzes. Using
+                    totalLessons here while the percent covered every item made
+                    the two numbers disagree on any course with a quiz. */}
                 Your Progress: <strong style={{ color: ACTIVE_FG }}>{completedCount}</strong> of{" "}
-                <strong style={{ color: ACTIVE_FG }}>{totalLessons}</strong> ({completionPercent}%)
+                <strong style={{ color: ACTIVE_FG }}>{totalItems}</strong> ({completionPercent}%)
               </p>
               <div className="mt-1 h-1.5 w-36 ml-auto rounded-full overflow-hidden" style={{ background: "rgba(0,26,56,0.12)" }}>
                 <div className="h-full rounded-full" style={{ width: `${completionPercent}%`, background: "#2c795a" }} />
@@ -2066,6 +2096,43 @@ export default function CourseViewer() {
           </div>
         </header>
 
+        {/* ── Breadcrumb: which module and lesson, plus the menu toggle ────
+             Beige, matching the header band above it. "All blue sections:
+             #001A38" fixes the VALUE of the navy surfaces; the target shows
+             this row on the warm content surround, not as a third navy band. */}
+        {hasModules && (
+          <div
+            className="shrink-0 flex items-center gap-2 px-4 py-2 border-b z-10"
+            style={{
+              background: "var(--color-brand-beige)",
+              borderColor: "rgba(0,26,56,0.10)",
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setSidebarOpen((v) => !v)}
+              title={sidebarOpen ? "Hide the menu" : "Show the menu"}
+              aria-label={sidebarOpen ? "Hide the menu" : "Show the menu"}
+              aria-expanded={sidebarOpen}
+              className="shrink-0 p-1 rounded hover:bg-black/5 transition-colors"
+              style={{ color: ACTIVE_FG }}
+            >
+              <Menu size={18} />
+            </button>
+            <p className="min-w-0 truncate text-[13px]" style={{ color: "rgba(0,26,56,0.65)" }}>
+              {activeItem?.module?.title && (
+                <>
+                  {activeItem.module.title}
+                  <ChevronRight size={13} className="inline mx-1 -mt-px" />
+                </>
+              )}
+              <span className="font-medium" style={{ color: ACTIVE_FG }}>
+                {activeItem?.item?.title ?? course.title}
+              </span>
+            </p>
+          </div>
+        )}
+
         {/* ── Glossary / Resources drawer ──────────────────────────────────── */}
         <CourseDrawer
           open={drawer}
@@ -2158,16 +2225,7 @@ export default function CourseViewer() {
                     className="absolute inset-0 w-full h-full border-0"
                     sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
                     lessonId={currentLesson?.id ?? course.id}
-                    nextLessonUrl={
-                      currentLesson && nextLessonItem
-                        ? itemNavUrl(nextLessonItem)
-                        : null
-                    }
-                    onComplete={(id) => {
-                      if (currentLesson && !completedSet.has(id)) {
-                        markLessonComplete(id);
-                      }
-                    }}
+                    onComplete={onStorylineLessonEnd}
                   />
                 ) : (
                   <div className="absolute inset-0 flex items-center justify-center">
@@ -2265,7 +2323,7 @@ export default function CourseViewer() {
               {/* Navigation */}
               <div className="px-5 py-3 flex items-center gap-4">
                 {/* Previous lesson */}
-                <div className="flex-1 flex justify-start min-w-0">
+                <div className="flex-1 flex items-center justify-start gap-4 min-w-0">
                   {prevItem ? (
                     <Link to={itemNavUrl(prevItem)} className="group min-w-0 max-w-[260px]">
                       <span
@@ -2284,11 +2342,18 @@ export default function CourseViewer() {
                       </span>
                     </Link>
                   ) : null}
+                  {/* Rule running to the counter, as in the design. Hidden on
+                      narrow screens where the three blocks already fill the row. */}
+                  <span
+                    className="hidden md:block flex-1 h-px"
+                    style={{ background: "rgba(255,255,255,0.18)" }}
+                    aria-hidden="true"
+                  />
                 </div>
 
                 {/* Centre: position */}
                 <div className="flex flex-col items-center shrink-0">
-                  <span className="text-[15px] font-semibold" style={{ color: "#ffffff" }}>
+                  <span className="text-[13px] font-semibold" style={{ color: "#ffffff" }}>
                     {currentItemNumber} / {totalItems}
                   </span>
                   <span
@@ -2301,14 +2366,19 @@ export default function CourseViewer() {
 
                 {/* Next lesson — for Storyline lessons only once the learner
                     reaches the final slide of the scene. */}
-                <div className="flex-1 flex justify-end min-w-0">
+                <div className="flex-1 flex items-center justify-end gap-4 min-w-0">
+                  <span
+                    className="hidden md:block flex-1 h-px"
+                    style={{ background: "rgba(255,255,255,0.18)" }}
+                    aria-hidden="true"
+                  />
                   {nextItem && (isStoryline ? reachedLessonEnd || isLessonDone : true) ? (
                     <Link
                       to={itemNavUrl(nextItem)}
                       onClick={() => {
                         if (currentLesson && !completedSet.has(currentLesson.id)) markLessonComplete(currentLesson.id);
                       }}
-                      className="group min-w-0 max-w-[260px] text-right animate-in fade-in duration-300"
+                      className="group min-w-0 max-w-[260px] text-right animate-fade-in"
                     >
                       <span
                         className="flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-[15px] font-semibold transition-opacity"

@@ -3,9 +3,11 @@
  *
  * The artwork arrived as one vertical sprite per course; `scripts`-time
  * slicing produced the individual transparent PNGs in /public/module-icons.
- * They are listed in module order, so module N of a course uses icon N of its
- * set. The first entry of each set is the graduation cap used for the
- * intro / "Getting Started" module.
+ * The sprite is numbered BY MODULE, as supplied: icon 1 belongs to "Module 1",
+ * icon 2 to "Module 2", and so on. A course that opens with an intro section
+ * ("Getting Started") must therefore NOT consume icon 1 for it - the intro has
+ * its own compass icon, and the numbered modules still line up with the sprite.
+ * Use isIntroModuleTitle() to spot that section.
  */
 
 export const ICON_SETS = {
@@ -16,6 +18,20 @@ export const ICON_SETS = {
 export type IconSet = keyof typeof ICON_SETS;
 
 export const GETTING_STARTED_ICON = "/module-icons/getting-started-1.png";
+
+/**
+ * Does this module title name the intro section rather than a numbered module?
+ *
+ * Matched on the title because position alone cannot tell them apart: some
+ * courses open with "Getting Started", others go straight to "Module 1", and
+ * getting this wrong shifts every icon in the course by one.
+ */
+const INTRO_TITLE =
+  /^\s*(getting started|get started|start here|introduction|intro|welcome|course overview|overview)\b/i;
+
+export function isIntroModuleTitle(title: string | null | undefined): boolean {
+  return INTRO_TITLE.test(String(title ?? ""));
+}
 
 export function isIconSet(v: unknown): v is IconSet {
   return v === "market" || v === "money";

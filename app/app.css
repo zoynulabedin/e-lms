@@ -41,6 +41,30 @@ body {
   animation: slide-in 0.3s ease-out;
 }
 
+/* Used by the course player's "Next Lesson" button, which stays hidden until
+   Storyline reports the final slide of the scene and then fades in. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.35s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in,
+  .animate-slide-in {
+    animation: none;
+  }
+}
+
 /* Hide the scrollbar on horizontal strips (catalog pills, video strip) while keeping them scrollable */
 .scrollbar-none {
   scrollbar-width: none;

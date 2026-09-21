@@ -32,8 +32,12 @@ export function Toast() {
 
   if (!visible || !message) return null;
 
+  // animate-slide-in is this project's own keyframe (app/app.css). The
+  // tailwindcss-animate utilities this carried before - animate-in,
+  // slide-in-from-bottom-4, fade-in - did nothing: that plugin is not
+  // installed, so the toast simply appeared with no transition at all.
   return (
-    <div className="fixed bottom-6 right-6 z-50 animate-in slide-in-from-bottom-4 fade-in duration-300">
+    <div className="fixed bottom-6 right-6 z-50 animate-slide-in">
       <div className="flex items-center gap-3 bg-gray-900 text-white px-4 py-3 rounded-xl shadow-2xl border border-white/10 max-w-sm">
         <CheckCircle2 className="text-green-400 shrink-0 w-5 h-5" />
         <span className="text-sm font-medium flex-1">{message}</span>
