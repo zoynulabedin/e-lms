@@ -19,6 +19,7 @@ import {
   Key,
   LifeBuoy,
   BookOpen,
+  BookMarked,
 } from "lucide-react";
 
 const YOUTUBE_URL = "https://www.youtube.com/@TeachMeLikeATot";
@@ -57,6 +58,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
                 select: {
                   id: true,
                   title: true,
+                  order: true,
                   resourceUrl: true,
                 },
               },
@@ -86,10 +88,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
             fileSize: true,
             // The module the lesson sits in, so the table can say which part
             // of the course a handout belongs to.
+            // The video the handout hangs off, and the module that video sits
+            // in - both are columns in the table.
             lesson: {
               select: {
                 id: true,
                 title: true,
+                order: true,
                 module: { select: { id: true, title: true, order: true } },
               },
             },
@@ -101,105 +106,99 @@ export async function loader({ request }: LoaderFunctionArgs) {
         })
     : [];
 
+  // The glossary the course player shows behind its GLOSSARY link. Same
+  // entitlement rule as the handouts: only courses this learner holds a
+  // licence for are ever queried. Tolerates a server that has not migrated.
+  const terms = courseIds.length
+    ? await prisma.glossaryTerm
+        .findMany({
+          where: { courseId: { in: courseIds } },
+          orderBy: [{ term: "asc" }],
+          select: { id: true, courseId: true, term: true, definition: true },
+        })
+        .catch((err: unknown) => {
+          console.error("[resources] GlossaryTerm unavailable:", err);
+          return [] as never[];
+        })
+    : [];
+
   /**
-   * Course -> module -> the handouts that belong to it.
+   * Course -> one flat list of handouts, ordered the way the course reads:
+   * module order, then the video's order inside it, then the order the admin
+   * gave the resources. Module and video are columns, so a learner can see at
+   * a glance which part of the course a file came from.
    *
-   * Grouping by module is the point: a worksheet only means something next to
-   * the part of the course it came from. Anything attached to the course
-   * rather than to a lesson lands in a final "Whole course" group.
+   * Anything attached to the course rather than to a video has no module or
+   * video and sorts last.
    *
    * Every href points at /student/resource/<id>, which re-checks the licence
    * on each request - the storage URL is never serialized into the page.
    */
-  type Row = {
-    id: string;
-    title: string;
-    kind: string;
-    href: string | null;
-    lessonTitle: string | null;
-    description: string | null;
-    typeLabel: string | null;
-    fileSize: number | null;
-    lessonId: string | null;
-  };
+  const LAST = Number.MAX_SAFE_INTEGER;
 
   const courseResources = courses
     .map((course) => {
-      // Keyed by module id; the null key collects course-wide resources.
-      const groups = new Map<string | null, { title: string; order: number; items: Row[] }>();
-
-      const push = (
-        moduleId: string | null,
-        moduleTitle: string,
-        order: number,
-        row: Row,
-      ) => {
-        const key = moduleId;
-        if (!groups.has(key)) groups.set(key, { title: moduleTitle, order, items: [] });
-        groups.get(key)!.items.push(row);
-      };
-
-      for (const r of extras.filter((x) => x.courseId === course.id)) {
-        push(
-          r.lesson?.module?.id ?? null,
-          r.lesson?.module?.title ?? "Whole course",
-          // Course-wide resources sort last, after every real module.
-          r.lesson?.module?.order ?? Number.MAX_SAFE_INTEGER,
-          {
+      const rows = [
+        ...extras
+          .filter((r) => r.courseId === course.id)
+          .map((r) => ({
             id: r.id,
             title: r.title,
             kind: r.kind,
             href: `/student/resource/${r.id}`,
-            lessonTitle: r.lesson?.title ?? null,
+            moduleTitle: r.lesson?.module?.title ?? null,
+            videoTitle: r.lesson?.title ?? null,
             description: r.description,
             typeLabel: fileTypeLabel(r.fileName) ?? r.fileType ?? null,
             fileSize: r.fileSize,
             lessonId: r.lesson?.id ?? null,
-          },
-        );
-      }
-
-      for (const m of course.modules) {
-        for (const l of m.lessons) {
-          push(m.id, m.title, m.order, {
+            _m: r.lesson?.module?.order ?? LAST,
+            _l: r.lesson?.order ?? LAST,
+          })),
+        // DOWNLOAD lessons are themselves the handout, so the video and the
+        // resource are the same row.
+        ...course.modules.flatMap((m) =>
+          m.lessons.map((l) => ({
             id: l.id,
             title: l.title,
             kind: "FILE",
             href: l.resourceUrl ? `/student/resource/${l.id}` : null,
-            lessonTitle: l.title,
-            description: null,
+            moduleTitle: m.title,
+            videoTitle: l.title,
+            description: null as string | null,
             // Derived here, so the Cloudinary URL never reaches the page.
             typeLabel: fileTypeLabel(l.resourceUrl),
-            fileSize: null,
-            lessonId: l.id,
-          });
-        }
-      }
+            fileSize: null as number | null,
+            lessonId: l.id as string | null,
+            _m: m.order,
+            _l: l.order,
+          })),
+        ),
+      ].sort((a, b) => a._m - b._m || a._l - b._l);
 
-      const modules = [...groups.entries()]
-        .map(([moduleId, g]) => ({
-          moduleId,
-          moduleTitle: g.title,
-          order: g.order,
-          items: g.items,
-        }))
-        .sort((a, b) => a.order - b.order);
+      const glossary = terms
+        .filter((t) => t.courseId === course.id)
+        .map(({ id, term, definition }) => ({ id, term, definition }));
 
       return {
         id: course.id,
         title: course.title,
         thumbnailUrl: course.thumbnailUrl,
-        modules,
-        total: modules.reduce((n, m) => n + m.items.length, 0),
+        rows: rows.map(({ _m, _l, ...r }) => r),
+        total: rows.length,
+        glossary,
       };
     })
-    .filter((c) => c.total > 0);
+    // A course earns a card if it has handouts OR glossary terms - this page
+    // covers both of the course player's header links, not just one.
+    .filter((c) => c.total > 0 || c.glossary.length > 0);
 
   const totalDownloads = courseResources.reduce((n, c) => n + c.total, 0);
+  const totalTerms = courseResources.reduce((n, c) => n + c.glossary.length, 0);
 
   const hasCertificates = progresses.length > 0;
 
-  return { user, courseResources, totalDownloads, hasCertificates };
+  return { user, courseResources, totalDownloads, totalTerms, hasCertificates };
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -228,7 +227,7 @@ function fileSizeLabel(bytes: number | null): string | null {
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function StudentResources() {
-  const { user, courseResources, totalDownloads, hasCertificates } =
+  const { user, courseResources, totalDownloads, totalTerms, hasCertificates } =
     useLoaderData<typeof loader>();
 
   return (
@@ -263,13 +262,18 @@ export default function StudentResources() {
 
             {/* Downloads */}
             <section className="mb-12">
-              <div className="flex items-center justify-between gap-4 mb-5">
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 mb-5">
                 <div className="flex items-center gap-2">
                   <Download className="text-brand-navy" size={22} />
                   <h2 className="font-display text-2xl text-brand-navy">
-                    Downloads from your courses
+                    Handouts &amp; glossary
                   </h2>
                 </div>
+                {totalTerms > 0 && (
+                  <span className="text-xs font-semibold text-brand-navy/60 bg-white border border-brand-beige-dark rounded-full px-3 py-1">
+                    {totalTerms} term{totalTerms === 1 ? "" : "s"}
+                  </span>
+                )}
                 {totalDownloads > 0 && (
                   <span className="text-xs font-semibold text-brand-navy/60 bg-white border border-brand-beige-dark rounded-full px-3 py-1">
                     {totalDownloads} file{totalDownloads === 1 ? "" : "s"}
@@ -283,11 +287,11 @@ export default function StudentResources() {
                     <FileText className="text-brand-mustard" size={26} />
                   </div>
                   <p className="text-brand-navy font-medium">
-                    No downloadable materials yet
+                    No course materials yet
                   </p>
                   <p className="text-brand-navy/60 text-sm mt-1 max-w-md mx-auto">
-                    When a course you're enrolled in includes worksheets or
-                    files, they'll show up here.
+                    When a course you own includes worksheets, handouts or a
+                    glossary, they'll show up here.
                   </p>
                   <Link
                     to="/student"
@@ -357,23 +361,22 @@ function CourseResourceGroup({
     title: string;
     thumbnailUrl: string | null;
     total: number;
-    modules: Array<{
-      moduleId: string | null;
-      moduleTitle: string;
-      items: Array<{
-        id: string;
-        title: string;
-        kind: string;
-        /** Always /student/resource/<id> — never a raw storage URL. */
-        href: string | null;
-        lessonTitle: string | null;
-        description: string | null;
-        /** e.g. "PDF" — resolved server-side; the storage URL never ships. */
-        typeLabel: string | null;
-        fileSize: number | null;
-        lessonId: string | null;
-      }>;
+    rows: Array<{
+      id: string;
+      title: string;
+      kind: string;
+      /** Always /student/resource/<id> — never a raw storage URL. */
+      href: string | null;
+      /** null for a handout attached to the course rather than to a video. */
+      moduleTitle: string | null;
+      videoTitle: string | null;
+      description: string | null;
+      /** e.g. "PDF" — resolved server-side; the storage URL never ships. */
+      typeLabel: string | null;
+      fileSize: number | null;
+      lessonId: string | null;
     }>;
+    glossary: Array<{ id: string; term: string; definition: string }>;
   };
 }) {
   return (
@@ -396,8 +399,11 @@ function CourseResourceGroup({
             {course.title}
           </p>
           <p className="text-brand-navy/60 text-xs mt-0.5">
-            {course.total} file{course.total === 1 ? "" : "s"} across{" "}
-            {course.modules.length} section{course.modules.length === 1 ? "" : "s"}
+            {course.total} file{course.total === 1 ? "" : "s"}
+            {course.glossary.length > 0 && (
+              <> &middot; {course.glossary.length} glossary term
+                {course.glossary.length === 1 ? "" : "s"}</>
+            )}
           </p>
         </div>
         <Link
@@ -409,118 +415,161 @@ function CourseResourceGroup({
         </Link>
       </div>
 
-      {/* One table per module, in course order, with course-wide files last. */}
-      {course.modules.map((m) => (
-        <section key={m.moduleId ?? "course-wide"}>
+      {/* One table for the course. Module and video are columns so a learner
+          can see which part of the course each file came from; rows are in
+          course order. Repeated module/video names are dimmed rather than
+          blanked, so a row still reads on its own when sorted or scanned. */}
+      {course.total > 0 && (
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <caption className="sr-only">
+            Downloads for {course.title}, with the module and video each one belongs to
+          </caption>
+          <thead>
+            <tr className="text-left border-b border-brand-beige-dark bg-brand-beige/30">
+              <th scope="col" className="px-5 sm:px-6 py-2.5 font-semibold text-brand-navy/70 text-[11px] uppercase tracking-wider">
+                Module
+              </th>
+              <th scope="col" className="hidden sm:table-cell px-4 py-2.5 font-semibold text-brand-navy/70 text-[11px] uppercase tracking-wider">
+                Video
+              </th>
+              <th scope="col" className="px-4 py-2.5 font-semibold text-brand-navy/70 text-[11px] uppercase tracking-wider">
+                Resource
+              </th>
+              <th scope="col" className="px-5 sm:px-6 py-2.5 text-right">
+                <span className="sr-only">Download</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-brand-beige-dark">
+            {course.rows.map((file, i) => {
+              const size = fileSizeLabel(file.fileSize);
+              const isLink = file.kind === "LINK";
+              const prev = course.rows[i - 1];
+              const sameModule = prev && prev.moduleTitle === file.moduleTitle;
+              const sameVideo = sameModule && prev.videoTitle === file.videoTitle;
+              return (
+                <tr key={file.id} className="align-top hover:bg-brand-beige/20 transition-colors">
+                  <td className={`px-5 sm:px-6 py-3 ${sameModule ? "text-brand-navy/35" : "text-brand-navy/85 font-medium"}`}>
+                    {file.moduleTitle ?? (
+                      <span className="italic text-brand-navy/45">Whole course</span>
+                    )}
+                  </td>
+
+                  <td className={`hidden sm:table-cell px-4 py-3 ${sameVideo ? "text-brand-navy/35" : "text-brand-navy/70"}`}>
+                    {file.videoTitle ?? "\u2014"}
+                  </td>
+
+                  <td className="px-4 py-3">
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <span className="w-8 h-8 rounded-lg bg-brand-mustard/15 flex items-center justify-center shrink-0 mt-0.5">
+                        {isLink ? (
+                          <ExternalLink className="text-brand-mustard" size={15} />
+                        ) : (
+                          <FileText className="text-brand-mustard" size={15} />
+                        )}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-brand-navy font-semibold">{file.title}</span>
+                        <span className="block text-brand-navy/50 text-xs">
+                          {isLink ? "Link" : (file.typeLabel ?? "File")}
+                          {size && <> &middot; {size}</>}
+                        </span>
+                        {file.description && (
+                          <span className="block text-brand-navy/55 text-xs mt-0.5">
+                            {file.description}
+                          </span>
+                        )}
+                        {/* The video name again, for the phone layout where the
+                            Video column is hidden. */}
+                        {file.videoTitle && (
+                          <span className="sm:hidden block text-brand-navy/45 text-xs mt-0.5">
+                            {file.videoTitle}
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  </td>
+
+                  <td className="px-5 sm:px-6 py-3 text-right whitespace-nowrap">
+                    <div className="inline-flex items-center gap-2">
+                      {file.lessonId && (
+                        <Link
+                          to={`/student/course/${course.id}?lesson=${file.lessonId}`}
+                          className="hidden lg:inline-flex items-center px-3 py-2 rounded-lg text-xs font-semibold text-brand-navy/70 hover:bg-brand-beige transition-colors"
+                        >
+                          View in course
+                        </Link>
+                      )}
+                      {file.href ? (
+                        <a
+                          href={file.href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 bg-brand-navy hover:bg-brand-navy-dark text-white text-xs font-semibold px-3.5 py-2 rounded-lg transition-colors"
+                        >
+                          {isLink ? <ExternalLink size={14} /> : <Download size={14} />}
+                          {isLink ? "Open" : "Download"}
+                        </a>
+                      ) : (
+                        <span
+                          className="inline-flex items-center gap-1.5 bg-brand-beige text-brand-navy/40 text-xs font-semibold px-3.5 py-2 rounded-lg cursor-not-allowed"
+                          title="No download URL configured"
+                        >
+                          <Download size={14} />
+                          Unavailable
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      )}
+
+      {/* Glossary — the other half of what the course player's header offers,
+          so a learner does not have to open a lesson to read the terms. */}
+      {course.glossary.length > 0 && (
+        <div>
           <h3 className="flex items-center gap-2 px-5 sm:px-6 py-2.5 bg-brand-beige/60 border-y border-brand-beige-dark text-brand-navy font-semibold text-sm">
-            {m.moduleId ? (
-              <BookOpen size={14} className="text-brand-navy/60 shrink-0" />
-            ) : (
-              <FolderOpen size={14} className="text-brand-navy/60 shrink-0" />
-            )}
-            <span className="min-w-0 truncate">{m.moduleTitle}</span>
-            <span className="text-brand-navy/50 font-normal text-xs shrink-0">
-              ({m.items.length})
+            <BookMarked size={14} className="text-brand-navy/60 shrink-0" />
+            Glossary
+            <span className="text-brand-navy/50 font-normal text-xs">
+              ({course.glossary.length})
             </span>
           </h3>
-
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <caption className="sr-only">
-                Downloads in {m.moduleTitle} of {course.title}
-              </caption>
+              <caption className="sr-only">Glossary for {course.title}</caption>
               <thead>
                 <tr className="text-left border-b border-brand-beige-dark">
-                  <th scope="col" className="px-5 sm:px-6 py-2 font-semibold text-brand-navy/60 text-[11px] uppercase tracking-wider">
-                    Resource
+                  <th scope="col" className="px-5 sm:px-6 py-2 font-semibold text-brand-navy/70 text-[11px] uppercase tracking-wider w-1/3">
+                    Term
                   </th>
-                  <th scope="col" className="hidden md:table-cell px-4 py-2 font-semibold text-brand-navy/60 text-[11px] uppercase tracking-wider">
-                    Lesson
-                  </th>
-                  <th scope="col" className="hidden sm:table-cell px-4 py-2 font-semibold text-brand-navy/60 text-[11px] uppercase tracking-wider">
-                    Type
-                  </th>
-                  <th scope="col" className="px-5 sm:px-6 py-2 text-right">
-                    <span className="sr-only">Download</span>
+                  <th scope="col" className="px-4 sm:px-6 py-2 font-semibold text-brand-navy/70 text-[11px] uppercase tracking-wider">
+                    Meaning
                   </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-brand-beige-dark">
-                {m.items.map((file) => {
-                  const size = fileSizeLabel(file.fileSize);
-                  const isLink = file.kind === "LINK";
-                  return (
-                    <tr key={file.id} className="align-middle hover:bg-brand-beige/20 transition-colors">
-                      <td className="px-5 sm:px-6 py-3">
-                        <div className="flex items-center gap-3 min-w-0">
-                          <span className="w-9 h-9 rounded-lg bg-brand-mustard/15 flex items-center justify-center shrink-0">
-                            {isLink ? (
-                              <ExternalLink className="text-brand-mustard" size={16} />
-                            ) : (
-                              <FileText className="text-brand-mustard" size={16} />
-                            )}
-                          </span>
-                          <span className="min-w-0">
-                            <span className="block text-brand-navy font-semibold truncate">
-                              {file.title}
-                            </span>
-                            {file.description && (
-                              <span className="block text-brand-navy/55 text-xs truncate">
-                                {file.description}
-                              </span>
-                            )}
-                          </span>
-                        </div>
-                      </td>
-
-                      <td className="hidden md:table-cell px-4 py-3 text-brand-navy/60">
-                        {file.lessonTitle ?? "\u2014"}
-                      </td>
-
-                      <td className="hidden sm:table-cell px-4 py-3 text-brand-navy/60 whitespace-nowrap">
-                        {isLink ? "Link" : (file.typeLabel ?? "File")}
-                        {size && <span className="text-brand-navy/40"> &middot; {size}</span>}
-                      </td>
-
-                      <td className="px-5 sm:px-6 py-3 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center gap-2">
-                          {file.lessonId && (
-                            <Link
-                              to={`/student/course/${course.id}?lesson=${file.lessonId}`}
-                              className="hidden lg:inline-flex items-center px-3 py-2 rounded-lg text-xs font-semibold text-brand-navy/70 hover:bg-brand-beige transition-colors"
-                            >
-                              View in course
-                            </Link>
-                          )}
-                          {file.href ? (
-                            <a
-                              href={file.href}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1.5 bg-brand-navy hover:bg-brand-navy-dark text-white text-xs font-semibold px-3.5 py-2 rounded-lg transition-colors"
-                            >
-                              {isLink ? <ExternalLink size={14} /> : <Download size={14} />}
-                              {isLink ? "Open" : "Download"}
-                            </a>
-                          ) : (
-                            <span
-                              className="inline-flex items-center gap-1.5 bg-brand-beige text-brand-navy/40 text-xs font-semibold px-3.5 py-2 rounded-lg cursor-not-allowed"
-                              title="No download URL configured"
-                            >
-                              <Download size={14} />
-                              Unavailable
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {course.glossary.map((t) => (
+                  <tr key={t.id} className="align-top hover:bg-brand-beige/20 transition-colors">
+                    <th scope="row" className="px-5 sm:px-6 py-3 text-left font-semibold text-brand-navy align-top">
+                      {t.term}
+                    </th>
+                    <td className="px-4 sm:px-6 py-3 text-brand-navy/70 leading-relaxed">
+                      {t.definition}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
-        </section>
-      ))}
+        </div>
+      )}
     </div>
   );
 }
