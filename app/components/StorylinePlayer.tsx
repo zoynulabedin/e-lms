@@ -1,12 +1,19 @@
 import { forwardRef, useEffect, useMemo, useRef } from "react";
+import { parseStorylineMessage, storylineDebug } from "../utils/storyline";
 
 interface StorylinePlayerProps {
   /** Storyline iframe src (story.html URL or full embed URL) */
   src: string;
   /** Lesson ID for tracking */
   lessonId: string;
-  /** Called when the iframe posts `lessonComplete` (use to persist progress) */
+  /**
+   * Called for every validated completion message - `{ type:
+   * "STORYLINE_LESSON_COMPLETED" }`, or `{ action: "lessonComplete" }` from
+   * older packages. Storyline can repeat it; the caller de-duplicates.
+   */
   onComplete?: (lessonId: string) => void;
+  /** Called for a validated `{ type: "progress", percent }` message. */
+  onProgress?: (percent: number) => void;
   /**
    * Allowed origins for postMessage. The component always accepts the
    * `src` URL's origin. Pass extra hosts here if your Storyline content
@@ -24,6 +31,10 @@ interface StorylinePlayerProps {
  * Embeds a published Storyline scene and reports when the learner reaches its
  * final slide.
  *
+ * A message is acted on only when it comes from THIS iframe's window, from an
+ * allowed origin, and has one of the shapes parseStorylineMessage accepts.
+ * This is the only Storyline message listener in the course player.
+ *
  * Navigation remains the parent course player's responsibility. Keeping this
  * component focused on validating the Storyline message lets the parent mark
  * progress, show a cancellable countdown, and choose whether the following
@@ -35,6 +46,7 @@ export const StorylinePlayer = forwardRef<HTMLIFrameElement, StorylinePlayerProp
       src,
       lessonId,
       onComplete,
+      onProgress,
       allowedOrigins,
       title = "Storyline Course",
       className,
@@ -52,6 +64,12 @@ export const StorylinePlayer = forwardRef<HTMLIFrameElement, StorylinePlayerProp
       else if (ref) (ref as React.MutableRefObject<HTMLIFrameElement | null>).current = node;
     };
 
+    // Latest callbacks, read by the listener without re-attaching it.
+    const handlersRef = useRef({ lessonId, onComplete, onProgress });
+    handlersRef.current = { lessonId, onComplete, onProgress };
+
+    // By value: a new array with the same hosts must not rebuild the listener.
+    const extraOrigins = (allowedOrigins ?? []).join(",");
     const allowedOriginSet = useMemo(() => {
       const set = new Set<string>();
       try {
@@ -63,9 +81,9 @@ export const StorylinePlayer = forwardRef<HTMLIFrameElement, StorylinePlayerProp
       } catch {
         // invalid src — fall back to defaults only
       }
-      for (const o of allowedOrigins ?? []) set.add(o);
+      for (const o of extraOrigins.split(",")) if (o) set.add(o);
       return set;
-    }, [src, allowedOrigins]);
+    }, [src, extraOrigins]);
 
     useEffect(() => {
       function handleMessage(event: MessageEvent) {
@@ -73,27 +91,27 @@ export const StorylinePlayer = forwardRef<HTMLIFrameElement, StorylinePlayerProp
         // any other frame or tab from an allowed host mark lessons complete.
         const frame = innerRef.current;
         if (!frame || event.source !== frame.contentWindow) return;
-        if (!allowedOriginSet.has(event.origin)) return;
-        let payload = event.data;
-        if (typeof payload === "string") {
-          try {
-            payload = JSON.parse(payload);
-          } catch {
-            return;
-          }
+        const message = parseStorylineMessage(event.data);
+        if (!message) return;
+        if (!allowedOriginSet.has(event.origin)) {
+          storylineDebug("message rejected: origin not allowed", {
+            origin: event.origin,
+            allowed: Array.from(allowedOriginSet),
+          });
+          return;
         }
-        if (!payload || typeof payload !== "object") return;
-        const isCompletion =
-          payload.type === "STORYLINE_LESSON_COMPLETED" ||
-          // Keep existing published packages working while they are migrated.
-          payload.action === "lessonComplete";
-        if (!isCompletion) return;
 
-        onComplete?.(lessonId);
+        const { lessonId: id, onComplete: complete, onProgress: progress } = handlersRef.current;
+        if (message.kind === "completed") {
+          storylineDebug("completion event received", { lessonId: id, origin: event.origin });
+          complete?.(id);
+        } else {
+          progress?.(message.percent);
+        }
       }
       window.addEventListener("message", handleMessage);
       return () => window.removeEventListener("message", handleMessage);
-    }, [lessonId, onComplete, allowedOriginSet]);
+    }, [allowedOriginSet]);
 
     return (
       <iframe

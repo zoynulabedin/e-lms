@@ -1,11 +1,12 @@
 import { data } from "react-router";
-import { useLoaderData, useFetcher, Link, useNavigate } from "react-router";
+import { useLoaderData, useFetcher, Link } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireUser } from "../utils/auth.server";
 import { computeCourseAccess, requireCourseAccess } from "../utils/access.server";
 import { recomputeCourseProgress } from "../utils/progress.server";
 import { moduleIcon, GETTING_STARTED_ICON, isIntroModuleTitle } from "../utils/module-icons";
+import { parseOriginList } from "../utils/storyline";
 
 /** Cream highlight + navy text used for the lesson/quiz currently playing. */
 const ACTIVE_BG = "#F5E7C8";
@@ -28,7 +29,6 @@ function fileNameFromUrl(url: string | null): string | null {
 const HEADER_BG = "#FCF9F7";
 /** Footer lesson-navigation buttons. */
 const GOLD = "#BE924C";
-const STORYLINE_AUTO_ADVANCE_SECONDS = 5;
 import { randomUUID } from "crypto";
 import { Prisma } from "@prisma/client";
 import {
@@ -64,6 +64,8 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { HlsPlayer } from "../components/HlsPlayer";
 import { StorylinePlayer } from "../components/StorylinePlayer";
+import { LessonAutoAdvance } from "../components/LessonAutoAdvance";
+import { useLessonAutoAdvance } from "../hooks/useLessonAutoAdvance";
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
 
@@ -433,13 +435,11 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     ? allItems.findIndex((i) => i.type === activeItem!.type && i.item.id === activeItem!.item.id)
     : 0;
 
+  // allItems runs across module boundaries, so the item after a module's last
+  // lesson is the first item of the next module. Storyline auto-advance uses
+  // this same nextItem as the Next Lesson button.
   const prevItem = currentIdx > 0 ? allItems[currentIdx - 1] : null;
   const nextItem = currentIdx < allItems.length - 1 ? allItems[currentIdx + 1] : null;
-
-  // Resolve across module boundaries. Storyline completion moves to another
-  // lesson, never directly into a quiz; quizzes still use manual navigation.
-  const nextLessonItem =
-    allItems.slice(currentIdx + 1).find((i) => i.type === "lesson") ?? null;
 
   const lessonItems = allItems.filter((i) => i.type === "lesson");
   const totalLessons = lessonItems.length;
@@ -455,7 +455,9 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     userId: user.id,
     prevItem,
     nextItem,
-    nextLessonItem,
+    // Hosts besides each embed URL's own origin that Storyline may post from
+    // (e.g. a CDN the package redirects to). Usually empty.
+    storylineOrigins: parseOriginList(process.env.STORYLINE_ALLOWED_ORIGINS),
     totalLessons,
     totalItems: allItems.length,
     currentItemNumber: currentIdx + 1,
@@ -1590,7 +1592,7 @@ export default function CourseViewer() {
     completedLessonIds,
     prevItem,
     nextItem,
-    nextLessonItem,
+    storylineOrigins,
     totalLessons,
     totalItems,
     currentItemNumber,
@@ -1598,7 +1600,6 @@ export default function CourseViewer() {
 
   const fetcher = useFetcher();
   const lessonCompletionFetcher = useFetcher<{ ok?: boolean; error?: string }>();
-  const navigate = useNavigate();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [drawer, setDrawer] = useState<null | "glossary" | "resources">(null);
   // The menu closes from its own header and reopens from the breadcrumb bar,
@@ -1637,7 +1638,6 @@ export default function CourseViewer() {
       ? `/student/course/${course.id}?lesson=${item.item.id}`
       : `/student/course/${course.id}?quiz=${item.item.id}`;
   };
-  const nextLessonUrl = nextLessonItem ? itemNavUrl(nextLessonItem) : null;
 
   const hasModules = course.modules.length > 0 && totalItems > 0;
   const hasIntroModule = isIntroModuleTitle(course.modules[0]?.title);
@@ -1659,7 +1659,15 @@ export default function CourseViewer() {
     .flatMap((m: any) => m.lessons)
     .filter((l: any) => completedSet.has(l.id)).length;
 
+  const isLessonDone = currentLesson ? completedSet.has(currentLesson.id) : false;
+
   const markLessonComplete = (lessonId: string) => {
+    // One request per lesson at a time: Storyline, the header button and the
+    // Next link can all ask to complete the same lesson within moments.
+    if (
+      lessonCompletionFetcher.state !== "idle" &&
+      lessonCompletionFetcher.formData?.get("lessonId") === lessonId
+    ) return;
     const fd = new FormData();
     fd.append("intent", "complete_lesson");
     fd.append("lessonId", lessonId);
@@ -1668,6 +1676,7 @@ export default function CourseViewer() {
 
   const markLessonIncomplete = (lessonId: string) => {
     lessonDoneRef.current = null; // allow the watch handler to re-complete later
+    autoAdvance.cancel("lesson marked incomplete");
     const fd = new FormData();
     fd.append("intent", "uncomplete_lesson");
     fd.append("lessonId", lessonId);
@@ -1678,27 +1687,6 @@ export default function CourseViewer() {
   // courses mark the current lesson complete instead. One submission per
   // lesson - the server derives the course percent from all lessons/quizzes.
   const lessonDoneRef = useRef<string | null>(null);
-  // Storyline tells us when the learner reaches the last slide of the scene
-  // (postMessage { type: "STORYLINE_LESSON_COMPLETED" }). Until then "Next Lesson" stays
-  // hidden so nobody skips half a lesson. Non-Storyline lessons are always ready.
-  const [autoAdvanceSeconds, setAutoAdvanceSeconds] = useState<number | null>(null);
-  const [autoAdvanceStatus, setAutoAdvanceStatus] = useState<
-    "idle" | "saving" | "countdown" | "error" | "course-complete"
-  >("idle");
-  const [autoAdvanceError, setAutoAdvanceError] = useState<string | null>(null);
-  const [storylineCompletionSaved, setStorylineCompletionSaved] = useState(false);
-  const autoAdvanceHandledRef = useRef(false);
-  const completionRequestBecameBusyRef = useRef(false);
-  const navigationStartedRef = useRef(false);
-  useEffect(() => {
-    setAutoAdvanceSeconds(null);
-    setAutoAdvanceStatus("idle");
-    setAutoAdvanceError(null);
-    setStorylineCompletionSaved(false);
-    autoAdvanceHandledRef.current = false;
-    completionRequestBecameBusyRef.current = false;
-    navigationStartedRef.current = false;
-  }, [currentLesson?.id, currentQuiz?.id]);
   // Latest values readable from long-lived event handlers without making
   // them effect dependencies (a re-subscribe would reset the 5 % throttle).
   const completedSetRef = useRef(completedSet);
@@ -1707,101 +1695,30 @@ export default function CourseViewer() {
   currentLessonIdRef.current = currentLesson?.id ?? null;
   const lastReportedRef = useRef(0);
 
-  /**
-   * The final slide of a Storyline scene has been reached.
-   *
-   * The one place lessonComplete is acted on: it reveals "Next Lesson" and
-   * marks the lesson done. Guarded so a scene that fires the trigger twice
-   * (or a re-render) cannot submit twice.
-   */
-  const beginStorylineCompletionSave = (id: string) => {
-    lessonDoneRef.current = id;
-    completionRequestBecameBusyRef.current = false;
-    setAutoAdvanceError(null);
-    setAutoAdvanceStatus("saving");
-    markLessonComplete(id);
+  // Storyline reports the end of a lesson (postMessage { type:
+  // "STORYLINE_LESSON_COMPLETED" }, validated by StorylinePlayer). The hook
+  // saves it through markLessonComplete, then counts down to the same item
+  // the Next Lesson button opens. "Next Lesson" itself stays hidden until the
+  // lesson is saved as complete, so nobody skips half a lesson; the menu and
+  // Mark as complete remain for packages that never send the message.
+  const autoAdvanceNext = nextItem
+    ? { kind: nextItem.type, title: String(nextItem.item.title ?? ""), url: itemNavUrl(nextItem) }
+    : null;
+  const autoAdvance = useLessonAutoAdvance({
+    lessonId: currentLesson?.lessonType === "STORYLINE" ? currentLesson.id : null,
+    isSaved: isLessonDone,
+    next: autoAdvanceNext,
+    save: markLessonComplete,
+    saveStatus: { state: lessonCompletionFetcher.state, data: lessonCompletionFetcher.data },
+  });
+
+  // Restart remounts the Storyline iframe: reloading it through
+  // contentWindow.location is blocked when the package is on another origin.
+  const [storylineRestarts, setStorylineRestarts] = useState(0);
+  const restartStoryline = () => {
+    autoAdvance.rearm();
+    setStorylineRestarts((n) => n + 1);
   };
-
-  const onStorylineLessonEnd = (id: string) => {
-    // The component passes the lesson id it was rendered with. This extra
-    // context check prevents a late message from a departing iframe from
-    // completing the newly selected lesson.
-    if (!id || id !== currentLessonIdRef.current) return;
-    if (autoAdvanceHandledRef.current) return;
-    autoAdvanceHandledRef.current = true;
-    if (completedSetRef.current.has(id)) {
-      setStorylineCompletionSaved(true);
-      if (nextLessonUrl) {
-        setAutoAdvanceStatus("countdown");
-        setAutoAdvanceSeconds(STORYLINE_AUTO_ADVANCE_SECONDS);
-      } else {
-        setAutoAdvanceStatus("course-complete");
-      }
-    } else {
-      beginStorylineCompletionSave(id);
-    }
-  };
-
-  // Wait for the existing completion action and its route revalidation to
-  // finish. Navigation never starts merely because Storyline emitted a signal.
-  useEffect(() => {
-    if (autoAdvanceStatus !== "saving") return;
-
-    if (lessonCompletionFetcher.state !== "idle") {
-      completionRequestBecameBusyRef.current = true;
-      return;
-    }
-    if (!completionRequestBecameBusyRef.current) return;
-
-    completionRequestBecameBusyRef.current = false;
-    if (lessonCompletionFetcher.data?.ok) {
-      setStorylineCompletionSaved(true);
-      if (nextLessonUrl) {
-        setAutoAdvanceStatus("countdown");
-        setAutoAdvanceSeconds(STORYLINE_AUTO_ADVANCE_SECONDS);
-      } else {
-        setAutoAdvanceStatus("course-complete");
-        setAutoAdvanceSeconds(null);
-      }
-    } else {
-      lessonDoneRef.current = null;
-      setAutoAdvanceStatus("error");
-      setAutoAdvanceError(
-        lessonCompletionFetcher.data?.error ??
-          "We couldn't save your lesson progress. Please try again.",
-      );
-    }
-  }, [
-    autoAdvanceStatus,
-    lessonCompletionFetcher.data,
-    lessonCompletionFetcher.state,
-    nextLessonUrl,
-  ]);
-
-  useEffect(() => {
-    if (
-      autoAdvanceStatus !== "countdown" ||
-      autoAdvanceSeconds === null ||
-      !nextLessonUrl
-    ) return;
-
-    if (autoAdvanceSeconds <= 0) {
-      setAutoAdvanceSeconds(null);
-      if (!navigationStartedRef.current) {
-        navigationStartedRef.current = true;
-        navigate(nextLessonUrl);
-      }
-      return;
-    }
-
-    const timer = window.setTimeout(
-      () => setAutoAdvanceSeconds((seconds) =>
-        seconds === null ? null : seconds - 1,
-      ),
-      1_000,
-    );
-    return () => window.clearTimeout(timer);
-  }, [autoAdvanceSeconds, autoAdvanceStatus, navigate, nextLessonUrl]);
 
   const reportWatchProgress = (pct: number) => {
     if (hasModules) {
@@ -1817,40 +1734,6 @@ export default function CourseViewer() {
     fd.append("percent", String(pct));
     fetcher.submit(fd, { method: "post" });
   };
-
-  // Storyline postMessage - only trust messages from OUR iframe, from the
-  // origin we embedded. Anything else (another tab, a hostile page holding a
-  // reference to this window) is ignored.
-  useEffect(() => {
-    if (!isStoryline) return;
-    let allowedOrigin: string | null = null;
-    try {
-      allowedOrigin = embedUrl ? new URL(embedUrl, window.location.origin).origin : null;
-    } catch { allowedOrigin = null; }
-    const handler = (event: MessageEvent) => {
-      if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return;
-      if (allowedOrigin && event.origin !== allowedOrigin) return;
-      try {
-        const msg = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
-        if (msg?.type === "progress" && typeof msg.percent === "number") {
-          // On a modular course a percentage is NOT a completion signal. A
-          // Storyline scene can report 95% with slides still unseen, which is
-          // exactly why the green tick was appearing while there was still
-          // lesson left to watch. Completion comes from the explicit
-          // lessonComplete trigger, handled once in onStorylineLessonEnd.
-          // Flat courses have no per-lesson notion, so there the percentage is
-          // still what drives course progress.
-          if (!hasModules) reportWatchProgress(Math.round(msg.percent));
-        }
-        // lessonComplete is deliberately NOT handled here. StorylinePlayer
-        // owns that message and calls onStorylineLessonEnd; handling it in
-        // both places sent the completion POST twice.
-      } catch { /* non-JSON */ }
-    };
-    window.addEventListener("message", handler);
-    return () => window.removeEventListener("message", handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStoryline, embedUrl, hasModules, currentLesson?.id]);
 
   // Video timeupdate
   useEffect(() => {
@@ -1889,8 +1772,6 @@ export default function CourseViewer() {
   useEffect(() => {
     if (activeItem?.module?.id) setOpenModuleId(activeItem.module.id);
   }, [activeItem?.module?.id]);
-
-  const isLessonDone = currentLesson ? completedSet.has(currentLesson.id) : false;
 
   return (
     <div className="h-screen flex overflow-hidden bg-brand-navy-deeper">
@@ -2251,7 +2132,7 @@ export default function CourseViewer() {
             {/* Restart storyline */}
             {isStoryline && (
               <button
-                onClick={() => iframeRef.current?.contentWindow?.location.reload()}
+                onClick={restartStoryline}
                 title="Restart"
                 className="p-1.5 rounded transition-colors shrink-0 hover:bg-black/5"
                 style={{ color: "rgba(0,26,56,0.6)" }}
@@ -2405,7 +2286,7 @@ export default function CourseViewer() {
               <div className="absolute inset-0 bg-black">
                 {embedUrl ? (
                   <StorylinePlayer
-                    key={currentLesson?.id ?? course.id}
+                    key={`${currentLesson?.id ?? course.id}:${storylineRestarts}`}
                     ref={iframeRef}
                     src={embedUrl}
                     title={currentLesson?.title || course.title}
@@ -2413,7 +2294,13 @@ export default function CourseViewer() {
                     className="absolute inset-0 w-full h-full border-0"
                     sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
                     lessonId={currentLesson?.id ?? course.id}
-                    onComplete={onStorylineLessonEnd}
+                    allowedOrigins={storylineOrigins}
+                    // A lesson's completion drives auto-advance. A percentage is
+                    // never a lesson-completion signal (a scene can report 95 %
+                    // with slides unseen); only a flat course, which has no
+                    // lessons, turns it into course progress.
+                    onComplete={currentLesson ? autoAdvance.handleCompletion : undefined}
+                    onProgress={hasModules ? undefined : (pct) => reportWatchProgress(Math.round(pct))}
                   />
                 ) : (
                   <div className="absolute inset-0 flex items-center justify-center">
@@ -2422,6 +2309,22 @@ export default function CourseViewer() {
                       <p className="text-gray-500 text-sm">Storyline embed URL not configured.</p>
                     </div>
                   </div>
+                )}
+
+                {/* Completion hand-off. Inside the Storyline wrapper so it
+                    stays visible when this wrapper is fullscreen. */}
+                {currentLesson && (
+                  <LessonAutoAdvance
+                    phase={autoAdvance.phase}
+                    secondsLeft={autoAdvance.secondsLeft}
+                    error={autoAdvance.error}
+                    next={autoAdvanceNext}
+                    courseComplete={isCompleted}
+                    certificateUrl={`/certificate/${course.id}`}
+                    onContinue={autoAdvance.continueNow}
+                    onCancel={autoAdvance.cancel}
+                    onRetry={autoAdvance.retry}
+                  />
                 )}
               </div>
             )}
@@ -2491,106 +2394,6 @@ export default function CourseViewer() {
               </div>
             )}
 
-            {/* Storyline final-slide handoff. Storyline only reports completion;
-                the LMS saves progress and owns countdown/navigation. */}
-            {autoAdvanceStatus !== "idle" && (
-              <div
-                className="absolute right-4 bottom-4 z-20 w-[min(360px,calc(100%-2rem))] rounded-2xl border border-white/15 bg-brand-navy-deeper/95 p-4 text-white shadow-2xl backdrop-blur-sm animate-fade-in"
-                role="dialog"
-                aria-labelledby="storyline-completion-title"
-              >
-                <div className="flex items-start gap-3">
-                  <div
-                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-brand-mustard font-bold text-brand-navy-deeper"
-                    aria-hidden="true"
-                  >
-                    {autoAdvanceStatus === "countdown" ? autoAdvanceSeconds : (
-                      <Check size={20} strokeWidth={3} />
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p id="storyline-completion-title" className="text-sm font-semibold">
-                      {autoAdvanceStatus === "saving" && "Saving lesson progress…"}
-                      {autoAdvanceStatus === "countdown" && "Lesson complete"}
-                      {autoAdvanceStatus === "error" && "Progress was not saved"}
-                      {autoAdvanceStatus === "course-complete" && "Course complete"}
-                    </p>
-
-                    {autoAdvanceStatus === "saving" && (
-                      <p className="mt-1 text-xs text-white/65">
-                        Please wait before continuing.
-                      </p>
-                    )}
-
-                    {autoAdvanceStatus === "countdown" && nextLessonItem && (
-                      <>
-                        <p className="mt-0.5 truncate text-xs text-white/65">
-                          Next: {nextLessonItem.item.title}
-                        </p>
-                        <p className="mt-1 text-xs text-white/80" aria-live="polite">
-                          Starting automatically in {STORYLINE_AUTO_ADVANCE_SECONDS} seconds.
-                        </p>
-                        <div className="mt-3 flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setAutoAdvanceSeconds(null);
-                              if (nextLessonUrl && !navigationStartedRef.current) {
-                                navigationStartedRef.current = true;
-                                navigate(nextLessonUrl);
-                              }
-                            }}
-                            className="rounded-lg bg-brand-mustard px-3 py-1.5 text-xs font-semibold text-brand-navy-deeper hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-                          >
-                            Continue Now
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setAutoAdvanceSeconds(null);
-                              setAutoAdvanceStatus("idle");
-                            }}
-                            className="rounded-lg border border-white/20 px-3 py-1.5 text-xs font-semibold text-white/80 hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </>
-                    )}
-
-                    {autoAdvanceStatus === "error" && (
-                      <>
-                        <p className="mt-1 text-xs leading-relaxed text-red-200" role="alert">
-                          {autoAdvanceError}
-                        </p>
-                        <div className="mt-3 flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => currentLesson?.id && beginStorylineCompletionSave(currentLesson.id)}
-                            className="rounded-lg bg-brand-mustard px-3 py-1.5 text-xs font-semibold text-brand-navy-deeper hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-                          >
-                            Retry
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setAutoAdvanceStatus("idle")}
-                            className="rounded-lg border border-white/20 px-3 py-1.5 text-xs font-semibold text-white/80 hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-                          >
-                            Stay here
-                          </button>
-                        </div>
-                      </>
-                    )}
-
-                    {autoAdvanceStatus === "course-complete" && (
-                      <p className="mt-1 text-xs text-white/70">
-                        You reached the final lesson. Your completion has been saved.
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
 
           {/* ── Bottom nav bar ───────────────────────────────────────────────── */}
@@ -2616,10 +2419,7 @@ export default function CourseViewer() {
                   {prevItem ? (
                     <Link
                       to={itemNavUrl(prevItem)}
-                      onClick={() => {
-                        setAutoAdvanceSeconds(null);
-                        setAutoAdvanceStatus("idle");
-                      }}
+                      onClick={() => autoAdvance.cancel("previous lesson clicked")}
                       className="group min-w-0 max-w-[260px]"
                     >
                       <span
@@ -2660,20 +2460,19 @@ export default function CourseViewer() {
                   </span>
                 </div>
 
-                {/* Next lesson — for Storyline lessons only once the learner
-                    reaches the final slide of the scene. */}
+                {/* Next lesson — for Storyline lessons only once the lesson is
+                    saved as complete (final slide reached, or marked). */}
                 <div className="flex-1 flex items-center justify-end gap-4 min-w-0">
                   <span
                     className="hidden md:block flex-1 h-px"
                     style={{ background: "rgba(255,255,255,0.18)" }}
                     aria-hidden="true"
                   />
-                  {nextItem && (isStoryline ? storylineCompletionSaved || isLessonDone : true) ? (
+                  {nextItem && (isStoryline ? isLessonDone : true) ? (
                     <Link
                       to={itemNavUrl(nextItem)}
                       onClick={() => {
-                        setAutoAdvanceSeconds(null);
-                        setAutoAdvanceStatus("idle");
+                        autoAdvance.cancel("next lesson clicked");
                         if (currentLesson && !completedSet.has(currentLesson.id)) markLessonComplete(currentLesson.id);
                       }}
                       className="group min-w-0 max-w-[260px] text-right animate-fade-in"

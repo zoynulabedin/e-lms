@@ -1,75 +1,200 @@
-# Storyline lesson-completion integration
+# Storyline lesson completion → automatic next lesson
 
-The LMS controls progress, the countdown, and lesson navigation. A Storyline
-package only reports that its lesson has finished; it must not contain an LMS
-lesson URL or try to choose the next lesson itself.
+A Storyline package only announces **"I have completed."** The LMS decides
+everything else: it saves the learner's progress, shows a short countdown and
+opens the next item in the course. A Storyline package never contains an LMS
+URL, a lesson ID or any navigation logic.
 
-## JavaScript to add in Storyline
-
-Add an **Execute JavaScript** trigger containing:
-
-```javascript
-window.parent.postMessage(
-  { type: "STORYLINE_LESSON_COMPLETED" },
-  "*"
-);
+```
+Storyline trigger ──postMessage──▶ StorylinePlayer (validates) ──▶ useLessonAutoAdvance
+                                                                   │
+        existing complete_lesson action ◀── save ──────────────────┤
+                                                                   ▼
+                        LessonAutoAdvance card: "Next lesson starts in 5…4…3…"
+                                                                   │
+                        same URL as the existing Next Lesson button ◀┘
 ```
 
-`"*"` is used by the sender so the same published package works on local,
-staging, and production LMS hosts. The LMS receiver does not trust arbitrary
-messages: it accepts the event only when it comes from the currently embedded
-Storyline iframe and its exact configured content origin, and only while that
-Storyline lesson is current.
+## 1. The JavaScript to add in Storyline
 
-Older packages that already send `{ action: "lessonComplete" }` remain
-supported, but all new packages should use `STORYLINE_LESSON_COMPLETED`.
+Paste this into an **Execute JavaScript** trigger, exactly as written:
 
-## Where to put the trigger
+```javascript
+window.parent.postMessage({ type: "STORYLINE_LESSON_COMPLETED" }, "*");
+```
 
-In Articulate Storyline:
+- `window.parent` is the LMS course player, because the LMS embeds the
+  published `story.html` directly in an iframe.
+- The target `"*"` lets the same published package work on local, staging and
+  production. The message carries no data, and the LMS decides whether to
+  trust it (see section 4).
+- Firing it more than once is harmless. The LMS handles one completion per
+  lesson visit.
 
-1. Open the final slide of the lesson.
-2. Create a trigger with action **Execute JavaScript**.
-3. Paste the JavaScript above.
-4. Run it when the final slide's timeline completes, or on the final action the
-   learner must perform.
-5. Publish the package and upload/replace the hosted Storyline output.
+## 2. Where to add it (Storyline 360)
 
-The trigger should represent completion of the whole lesson. Do not attach it
-to an early slide merely because that slide contains a video.
+Pick **one** trigger per lesson. Use the one that matches the real end of the
+lesson:
 
-For a video-only lesson, Storyline may run the same JavaScript when that media
-completes. If content or interactions follow the video, run it on the final
-slide or final required interaction instead.
+| Lesson ends when…                                 | Trigger "When"      | "Object"          |
+| ------------------------------------------------- | ------------------- | ----------------- |
+| The last slide finishes playing (most lessons)    | **Timeline ends**   | the final slide   |
+| A video finishes (video-only lesson)              | **Media completes** | that video        |
+| The learner clicks a final button such as "Finish"| **User clicks**     | that button       |
 
-## What happens in the LMS
+Steps:
 
-After a valid event, the LMS:
+1. Open the lesson's **final slide**, or the slide with the lesson's video.
+2. In the **Triggers** panel, choose **Create a new trigger**.
+3. **Action:** *Execute JavaScript*. Open the *Script* box and paste the
+   script from section 1.
+4. **When:** choose from the table above, for example *Timeline ends* on
+   *this slide*, or *Media completes* on your video.
+5. Click **OK**, then **Publish → Web**. Upload the published folder to the
+   content host, replacing the old output.
 
-1. Ignores any duplicate completion events.
-2. Saves completion through the existing `complete_lesson` action.
-3. Waits for the save and progress recalculation to succeed.
-4. Displays a five-second countdown.
-5. Opens the next lesson, including a lesson in the next module.
+Guidance:
 
-The learner can select **Continue Now** or **Cancel**. Canceling leaves the
-saved completion intact and keeps the existing manual navigation available.
-If saving fails, the LMS stays on the current lesson and offers **Retry**.
-When there is no later lesson, it displays the course-complete state instead
-of starting a countdown.
+- Put the trigger where the **whole lesson** is finished. If slides, a quiz
+  or an interaction follow a video, do not use *Media completes*. Use the
+  final slide or the final required action instead. Otherwise the learner is
+  moved on before finishing.
+- *Timeline ends* does not fire while the slide's timeline is paused, for
+  example by a layer that pauses the base layer. If the last slide waits for
+  input, use the button's *User clicks* trigger.
+- The parent page never inspects the video inside Storyline. Storyline is the
+  only thing that knows the video finished, which is why its own *Media
+  completes* trigger sends the signal.
+- JavaScript triggers **do not run in Storyline's Preview**. Test the
+  published output.
 
-## Testing
+## 3. What the LMS does
 
-1. Publish a short test lesson with the trigger on its final slide.
-2. Configure that package as a Storyline lesson followed by another lesson.
-3. Open it as a licensed student and reach the final slide.
-4. Confirm that **Saving lesson progress…** appears before the countdown.
-5. Confirm that the lesson receives its completed indicator.
-6. Test **Continue Now**, **Cancel**, and normal countdown completion.
-7. Fire the Storyline trigger twice and confirm there is only one save and one
-   countdown.
-8. Test the last lesson in a module and verify that the first lesson in the next
-   module opens.
-9. Test the final lesson in a course and verify that no navigation is attempted.
-10. Repeat against staging and production after each environment's Storyline
-    embed URL is configured.
+After a valid message:
+
+1. **Duplicate check.** Only the first completion of this lesson visit is
+   used. Repeats are ignored: no second save, countdown or navigation.
+2. **Save.** The existing `complete_lesson` action saves the completion, and
+   the LMS waits until the save and the progress refresh have finished. If
+   the lesson was already complete, no request is sent.
+3. **Countdown.** A card shows *Lesson complete*, the next item's title and
+   *Next lesson starts in 5 seconds*, with **Continue Now** and **Cancel**.
+4. **Navigate.** When the countdown ends, the LMS opens the same item the
+   **Next Lesson** button links to. This works across module boundaries: the
+   last lesson of Module 1 is followed by the first item of Module 2.
+
+Special cases:
+
+| Situation                        | Behaviour                                                                                              |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Next item is a **quiz**          | No countdown. The card offers **Start Quiz**, because a timed quiz starts its clock as soon as it opens. |
+| **Last item** in the course      | No countdown and no navigation. The card shows *Course complete* (with **Get Certificate**) once everything is finished, and otherwise points to the course menu. |
+| **Save fails**                   | The learner stays on the lesson. The card shows **Retry**. Next Lesson stays hidden until the completion is saved; the menu and *Mark as complete* still work. |
+| Learner presses **Cancel**       | The countdown stops, the completion stays saved and the Next Lesson button is available. The countdown does not restart. |
+| Learner navigates during the countdown (menu, Previous/Next, back button) | The countdown is cancelled; the learner's choice wins. |
+| Browser tab is hidden            | The countdown pauses until the tab is visible again.                                                  |
+| **Restart** button (LMS header)  | Reloads the Storyline and cancels any countdown. The next completion of the restarted lesson counts as new. |
+| Storyline is in its own fullscreen | The LMS leaves fullscreen so the countdown card is visible.                                          |
+
+Keyboard and screen-reader users: when the card needs an answer it takes
+focus, **Escape** cancels, and the countdown is announced once, not every
+second.
+
+## 4. How the message is validated
+
+The LMS acts on a message only if **all** of these hold:
+
+1. It was sent by the window inside **this lesson's** Storyline iframe.
+   Messages from other frames, tabs or browser extensions are ignored.
+2. Its origin is the origin of the lesson's **embed URL**, or one listed in
+   `STORYLINE_ALLOWED_ORIGINS`.
+3. Its payload is exactly `{ type: "STORYLINE_LESSON_COMPLETED" }`, or the
+   older `{ action: "lessonComplete" }`. A JSON string of either is also
+   accepted.
+4. The lesson it belongs to is still the lesson on screen, so a late message
+   from a lesson being left is ignored.
+
+The server still checks the learner's licence and that the lesson belongs to
+the course, as for any completion.
+
+## 5. Configuration
+
+| Setting | Where | Default |
+| ------- | ----- | ------- |
+| `STORYLINE_ALLOWED_ORIGINS` | Server environment (optional). A comma-separated list of extra origins, e.g. `https://cdn.example.com`. Needed only if the published `story.html` is served from a different host than the embed URL (for example after a redirect). | *(empty)*: only each embed URL's own origin is accepted. |
+| Countdown length | `STORYLINE_AUTO_ADVANCE_SECONDS` in `app/utils/storyline.ts` | `5` |
+
+The embed URL itself is the existing **Storyline embed URL** field of the
+lesson in the course builder.
+
+## 6. Testing
+
+### Turn on the trace
+
+In development builds the trace is always on. On staging or production, turn
+it on for your own browser only by running this in the DevTools console of
+the course player:
+
+```javascript
+localStorage.setItem("storyline-debug", "1"); // remove the key to turn it off
+```
+
+Reload. The console then shows `[storyline] …` lines such as
+*completion event received*, *duplicate completion ignored*,
+*message rejected: origin not allowed*, *lesson completion started /
+successful / failed*, *countdown started*, *countdown cancelled* and
+*navigation started*.
+
+### Without republishing Storyline
+
+To simulate the trigger:
+
+1. Open a Storyline lesson in the course player.
+2. In DevTools, set the console's **JavaScript context** dropdown to the
+   Storyline frame (`story.html`).
+3. Run the script from section 1.
+
+It is exactly what the trigger does, so it exercises the real validation.
+The same line run in the **top** context is ignored, because it does not come
+from the iframe.
+
+### With a published package
+
+1. Publish a short test lesson (**Publish → Web**) with the trigger on its
+   final slide, and upload it.
+2. In the course builder, add it as a *Storyline* lesson whose next item is
+   another lesson.
+3. Open it as a student with access and play to the end. You should see, in
+   order: *Saving lesson progress…*, then *Lesson complete*, then the
+   countdown 5 → 1, then the next lesson opens. The menu shows the green tick
+   on the finished lesson.
+
+### Checklist
+
+- [ ] Countdown, **Continue Now**, **Cancel**. After Cancel, the Next Lesson
+      button works.
+- [ ] Trigger fires twice: only one save request (Network tab) and one countdown.
+- [ ] Last lesson of a module: the first item of the next module opens.
+- [ ] Next item is a quiz: **Start Quiz** is offered and nothing opens by itself.
+- [ ] Last lesson of the course: no countdown, end-of-course card.
+- [ ] Save failure: **Retry** is shown and the page does not navigate. To
+      test, stop the server or go offline in DevTools just before the end.
+- [ ] Previous / Next / menu clicked during the countdown: the learner's
+      choice wins.
+- [ ] Refresh a completed lesson: Next Lesson is visible and nothing
+      auto-advances until the lesson reports completion again.
+- [ ] Video lesson with a *Media completes* trigger.
+- [ ] A package **without** the script: no card appears. *Mark as complete*
+      reveals Next Lesson, and the menu works as before.
+
+## 7. Compatibility
+
+- Packages published with the older `{ action: "lessonComplete" }` trigger
+  keep working, including auto-advance.
+- Packages without any completion trigger behave as before. Nothing
+  auto-advances. For a Storyline lesson, *Next Lesson* appears once the
+  learner uses *Mark as complete*; *Previous Lesson* and the menu always
+  work.
+- Flat (module-less) Storyline courses are unchanged. They track the watch
+  percentage from `{ type: "progress", percent }` messages and have no next
+  lesson.
