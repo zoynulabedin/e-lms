@@ -85,20 +85,23 @@ After a valid message:
 
 Special cases:
 
-| Situation                        | Behaviour                                                                                              |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Next item is a **quiz**          | No countdown. The card offers **Start Quiz**, because a timed quiz starts its clock as soon as it opens. |
-| **Last item** in the course      | No countdown and no navigation. The card shows *Course complete* (with **Get Certificate**) once everything is finished, and otherwise points to the course menu. |
-| **Save fails**                   | The learner stays on the lesson. The card shows **Retry**. Next Lesson stays hidden until the completion is saved; the menu and *Mark as complete* still work. |
-| Learner presses **Cancel**       | The countdown stops, the completion stays saved and the Next Lesson button is available. The countdown does not restart. |
-| Learner navigates during the countdown (menu, Previous/Next, back button) | The countdown is cancelled; the learner's choice wins. |
-| Browser tab is hidden            | The countdown pauses until the tab is visible again.                                                  |
-| **Restart** button (LMS header)  | Reloads the Storyline and cancels any countdown. The next completion of the restarted lesson counts as new. |
-| Storyline is in its own fullscreen | The LMS leaves fullscreen so the countdown card is visible.                                          |
+| Situation | Behaviour |
+| --------- | --------- |
+| Next item is a **quiz** | No countdown. The card offers **Start Quiz** and **Close** (focus starts on Close), because a timed quiz starts its clock as soon as it opens. |
+| **Last item** in the course | No countdown and no navigation. The card shows *Course complete* (with **Get Certificate**) once everything is finished, and otherwise points to the course menu. |
+| **Save fails** (server error, or the connection drops) | The learner stays on the lesson and the Storyline keeps playing. The card shows **Retry**. Next Lesson stays hidden until the completion is saved; the menu and *Mark as complete* still work. |
+| Learner presses **Cancel** (or **Escape**) | The countdown stops, the completion stays saved and the Next Lesson button is available. The countdown does not restart. |
+| Learner presses a key or clicks on the card | The countdown holds ("Countdown paused") until they choose **Continue Now** or **Cancel**, so reaching Cancel never races the timer. |
+| Learner navigates during the countdown (menu, Previous/Next, header links, back button) | The countdown is cancelled; the learner's choice wins. |
+| Glossary / Resources drawer is open | The countdown waits under the drawer and does not take focus from it; it resumes when the drawer closes. |
+| Browser tab is hidden | The countdown pauses until the tab is visible again. |
+| **Restart** button (LMS header) | Reloads the Storyline and cancels any countdown, also while the completion is still saving. The next completion of the restarted lesson counts as new. |
+| **Mark as incomplete** | Cancels any countdown. The next completion Storyline reports saves the lesson again. |
+| Storyline is in its own fullscreen | The LMS leaves fullscreen so the card is visible. |
 
 Keyboard and screen-reader users: when the card needs an answer it takes
-focus, **Escape** cancels, and the countdown is announced once, not every
-second.
+focus, **Escape** cancels, any other key holds the countdown, and the
+countdown is announced once, not every second.
 
 ## 4. How the message is validated
 
@@ -142,8 +145,8 @@ localStorage.setItem("storyline-debug", "1"); // remove the key to turn it off
 Reload. The console then shows `[storyline] …` lines such as
 *completion event received*, *duplicate completion ignored*,
 *message rejected: origin not allowed*, *lesson completion started /
-successful / failed*, *countdown started*, *countdown cancelled* and
-*navigation started*.
+successful / failed*, *countdown started*, *countdown held*,
+*countdown cancelled* and *navigation started*.
 
 ### Without republishing Storyline
 
@@ -157,6 +160,33 @@ To simulate the trigger:
 It is exactly what the trigger does, so it exercises the real validation.
 The same line run in the **top** context is ignored, because it does not come
 from the iframe.
+
+### Local
+
+- The course player's Content-Security-Policy allows iframes from the LMS's
+  own origin or from `https:` hosts only. An `http://` content host on another
+  port, or a `story.html` opened from disk, will not load.
+- Simplest setup: copy the published **Web** output into
+  `public/storyline/<name>/`, then set the lesson's embed URL to
+  `/storyline/<name>/story.html`. It is same-origin, so no environment
+  variable is needed.
+- Alternatively, point the embed URL at the https staging or production
+  content host.
+- `npm run dev` uses whatever database `.env` points at. Test against a
+  development database, not production.
+- The trace is on automatically.
+
+### Staging and production
+
+- Use an **https** embed URL on the content host. An `http://` URL is blocked
+  by the CSP and as mixed content.
+- Set `STORYLINE_ALLOWED_ORIGINS` only if `story.html` ends up on a different
+  host than the embed URL (for example after a redirect to a CDN). Restart or
+  redeploy the app after changing it.
+- Turn on the trace in your own browser with the `localStorage` flag above.
+  Remove it when you are done.
+- Run the checklist below on staging first, then smoke-test a single lesson
+  on production.
 
 ### With a published package
 
@@ -173,17 +203,29 @@ from the iframe.
 
 - [ ] Countdown, **Continue Now**, **Cancel**. After Cancel, the Next Lesson
       button works.
-- [ ] Trigger fires twice: only one save request (Network tab) and one countdown.
+- [ ] Press Tab when the countdown appears: it holds, and Enter on
+      **Cancel** stays on the lesson.
+- [ ] Trigger fires twice: only one save request (Network tab) and one
+      countdown.
 - [ ] Last lesson of a module: the first item of the next module opens.
-- [ ] Next item is a quiz: **Start Quiz** is offered and nothing opens by itself.
+- [ ] Next item is a quiz: **Start Quiz** is offered and nothing opens by
+      itself.
 - [ ] Last lesson of the course: no countdown, end-of-course card.
-- [ ] Save failure: **Retry** is shown and the page does not navigate. To
-      test, stop the server or go offline in DevTools just before the end.
-- [ ] Previous / Next / menu clicked during the countdown: the learner's
-      choice wins.
+- [ ] Save failure: set DevTools **Network → Offline** just before the end.
+      **Retry** is shown, the page does not navigate, and **Retry** succeeds
+      once back online.
+- [ ] Previous / Next / menu / *Dashboard* clicked during the countdown: the
+      learner's choice wins and nothing navigates afterwards.
 - [ ] Refresh a completed lesson: Next Lesson is visible and nothing
       auto-advances until the lesson reports completion again.
 - [ ] Video lesson with a *Media completes* trigger.
+- [ ] Invalid origin is ignored:
+  1. In the Storyline frame's console context, run
+     `location.href = "https://example.com"`.
+  2. Select the new `example.com` frame's context and run the script from
+     section 1.
+  3. Expect the trace line *message rejected: origin not allowed*, no save
+     request and no card.
 - [ ] A package **without** the script: no card appears. *Mark as complete*
       reveals Next Lesson, and the menu works as before.
 

@@ -1,6 +1,6 @@
-import { data } from "react-router";
+import { data, isRouteErrorResponse } from "react-router";
 import { useLoaderData, useFetcher, Link } from "react-router";
-import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
+import type { LoaderFunctionArgs, ActionFunctionArgs, ClientActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireUser } from "../utils/auth.server";
 import { computeCourseAccess, requireCourseAccess } from "../utils/access.server";
@@ -118,6 +118,20 @@ function resolveVideoEmbed(raw: string): {
     return { type: "direct", src: trimmed };
   // Everything else (HTML pages, relative paths, unknown embeds) → iframe
   return { type: "iframe", src: trimmed };
+}
+
+/**
+ * Content copied from the old site can still carry its embed markup, e.g.
+ * `<iframe src=".../story.html">`. The player shows lesson text as plain
+ * text, so drop the tags instead of printing them (the embed itself plays
+ * from the lesson's own video/Storyline field). A bare "<" in prose is kept.
+ */
+function plainText(value: string | null | undefined): string {
+  if (!value) return "";
+  return value
+    .replace(/<(iframe|script|style)\b[\s\S]*?<\/\1\s*>/gi, " ")
+    .replace(/<\/?[a-z][^>]*>/gi, " ")
+    .trim();
 }
 
 function formatCountdown(totalSeconds: number): string {
@@ -724,6 +738,29 @@ export async function action({ request, params }: ActionFunctionArgs) {
   }
 
   return { ok: true };
+}
+
+/**
+ * A lesson-completion save that never reaches `action` (offline, a server
+ * restart, a proxy's 502 page, an unexpected server error) would otherwise go
+ * to the root ErrorBoundary and unmount the course player, Storyline session
+ * included. Hand it back as an ordinary failure so the player can offer
+ * Retry; the 503 also skips the post-action revalidation, which would fail
+ * the same way. Other intents keep their existing behaviour.
+ */
+export async function clientAction({ request, serverAction }: ClientActionFunctionArgs) {
+  const intent = (await request.clone().formData()).get("intent");
+  if (intent !== "complete_lesson") return serverAction();
+  try {
+    return await serverAction();
+  } catch (error) {
+    // A redirect (expired session) or a 4xx (access revoked) is handled as before.
+    if (error instanceof Response || (isRouteErrorResponse(error) && error.status < 500)) throw error;
+    return data(
+      { error: "We couldn't reach the server to save your progress. Check your connection and try again." },
+      { status: 503 },
+    );
+  }
 }
 
 // ── AnswerVideo ───────────────────────────────────────────────────────────────
@@ -1651,6 +1688,11 @@ export default function CourseViewer() {
   const embedUrl = currentLesson?.embedUrl || (!hasModules ? course.embedUrl : null);
   const videoSrc = iframeEmbed ? resolveVideoEmbed(iframeEmbed) : (videoUrl ? resolveVideoEmbed(videoUrl) : null);
   const isIframeVideo = videoSrc && (videoSrc.type === "youtube" || videoSrc.type === "vimeo" || videoSrc.type === "iframe");
+  // Text under the player: the lesson's content (a TEXT lesson shows it as the
+  // lesson itself), or the course description where there is no lesson.
+  const descriptionText = plainText(
+    currentLesson ? (currentLesson.lessonType !== "TEXT" ? currentLesson.content : null) : course.description,
+  );
   const isHlsVideo = videoSrc && videoSrc.type === "hls";
   const isDirectVideo = videoSrc && videoSrc.type === "direct";
 
@@ -1676,7 +1718,7 @@ export default function CourseViewer() {
 
   const markLessonIncomplete = (lessonId: string) => {
     lessonDoneRef.current = null; // allow the watch handler to re-complete later
-    autoAdvance.cancel("lesson marked incomplete");
+    autoAdvance.rearm("lesson marked incomplete"); // ...and Storyline's trigger
     const fd = new FormData();
     fd.append("intent", "uncomplete_lesson");
     fd.append("lessonId", lessonId);
@@ -1710,13 +1752,15 @@ export default function CourseViewer() {
     next: autoAdvanceNext,
     save: markLessonComplete,
     saveStatus: { state: lessonCompletionFetcher.state, data: lessonCompletionFetcher.data },
+    // The glossary/resources drawer covers the card; don't count down under it.
+    paused: drawer !== null,
   });
 
   // Restart remounts the Storyline iframe: reloading it through
   // contentWindow.location is blocked when the package is on another origin.
   const [storylineRestarts, setStorylineRestarts] = useState(0);
   const restartStoryline = () => {
-    autoAdvance.rearm();
+    autoAdvance.rearm("restarted");
     setStorylineRestarts((n) => n + 1);
   };
 
@@ -2317,12 +2361,15 @@ export default function CourseViewer() {
                   <LessonAutoAdvance
                     phase={autoAdvance.phase}
                     secondsLeft={autoAdvance.secondsLeft}
+                    held={autoAdvance.held}
                     error={autoAdvance.error}
                     next={autoAdvanceNext}
                     courseComplete={isCompleted}
                     certificateUrl={`/certificate/${course.id}`}
+                    suspended={drawer !== null}
                     onContinue={autoAdvance.continueNow}
                     onCancel={autoAdvance.cancel}
+                    onHold={autoAdvance.hold}
                     onRetry={autoAdvance.retry}
                   />
                 )}
@@ -2400,14 +2447,13 @@ export default function CourseViewer() {
           {activeItem && (
             <div className="shrink-0 border-t" style={{ background: "var(--color-brand-navy-deeper)", borderColor: "rgba(255,255,255,0.08)" }}>
               {/* Description strip */}
-              {((currentLesson?.content && currentLesson.lessonType !== "TEXT") ||
-                (course.description && !currentLesson)) && (
+              {descriptionText && (
                 <div
                   className="px-5 py-2.5 border-b max-h-20 overflow-y-auto"
                   style={{ borderColor: "rgba(255,255,255,0.06)" }}
                 >
                   <p className="text-[13px] leading-relaxed" style={{ color: "rgba(255,255,255,0.55)" }}>
-                    {currentLesson?.content || course.description}
+                    {descriptionText}
                   </p>
                 </div>
               )}

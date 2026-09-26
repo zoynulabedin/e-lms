@@ -26,6 +26,8 @@ export type AutoAdvanceState = {
   armed: boolean;
   /** Cancelled (or left) while saving: stay put once the save succeeds. */
   stayAfterSave: boolean;
+  /** The learner interacted with the countdown card: stop counting. */
+  held: boolean;
   secondsLeft: number;
   error: string | null;
 };
@@ -36,6 +38,7 @@ export type AutoAdvanceAction =
   | { type: "saveFailed"; error: string }
   | { type: "retry" }
   | { type: "tick" }
+  | { type: "hold" }
   | { type: "continue" }
   | { type: "cancel" }
   | { type: "rearm" }
@@ -45,13 +48,14 @@ export const initialAutoAdvanceState: AutoAdvanceState = {
   phase: "idle",
   armed: true,
   stayAfterSave: false,
+  held: false,
   secondsLeft: 0,
   error: null,
 };
 
 /** The lesson is saved: count down to a lesson, offer a quiz, or finish. */
 function afterSave(state: AutoAdvanceState, target: AutoAdvanceTarget, seconds: number): AutoAdvanceState {
-  const saved = { ...state, stayAfterSave: false, error: null };
+  const saved = { ...state, stayAfterSave: false, held: false, error: null };
   if (state.stayAfterSave) return { ...saved, phase: "idle", secondsLeft: 0 };
   // A quiz is never opened automatically: a timed quiz starts its clock the
   // moment it is shown.
@@ -83,9 +87,15 @@ export function autoAdvanceReducer(state: AutoAdvanceState, action: AutoAdvanceA
       return { ...state, phase: "saving", error: null };
 
     case "tick":
-      if (state.phase !== "countdown") return state;
+      if (state.phase !== "countdown" || state.held) return state;
       if (state.secondsLeft <= 1) return { ...state, phase: "navigating", secondsLeft: 0 };
       return { ...state, secondsLeft: state.secondsLeft - 1 };
+
+    case "hold":
+      // Someone reaching for Cancel - by keyboard, switch or screen reader -
+      // must not be overtaken by the timer (WCAG 2.2.1).
+      if (state.phase !== "countdown" || state.held) return state;
+      return { ...state, held: true };
 
     case "continue":
       if (state.phase !== "countdown" && state.phase !== "manual") return state;
@@ -96,11 +106,16 @@ export function autoAdvanceReducer(state: AutoAdvanceState, action: AutoAdvanceA
       // learner is not moved on when it does.
       if (state.phase === "saving") return state.stayAfterSave ? state : { ...state, stayAfterSave: true };
       if (state.phase === "idle") return state;
-      return { ...state, phase: "idle", secondsLeft: 0, error: null };
+      return { ...state, phase: "idle", held: false, secondsLeft: 0, error: null };
 
     case "rearm":
-      // The learner restarted the Storyline, so its next completion is new.
-      if (state.phase === "saving" || state.phase === "navigating") return state;
+      // The Storyline was restarted (or the lesson marked incomplete), so its
+      // next completion is a new one. A save in flight still finishes, but
+      // must not start a countdown over the restarted lesson.
+      if (state.phase === "navigating") return state;
+      if (state.phase === "saving") {
+        return state.armed && state.stayAfterSave ? state : { ...state, armed: true, stayAfterSave: true };
+      }
       if (state.phase === "idle" && state.armed) return state;
       return initialAutoAdvanceState;
 

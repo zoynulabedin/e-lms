@@ -20,6 +20,13 @@ export type CompletionSaveStatus = {
 
 const SAVE_FAILED = "We couldn't save your lesson progress. Please try again.";
 
+/**
+ * Baseline for a save that joined a request already in flight (the route
+ * does not send a second one for the same lesson): whatever the fetcher
+ * holds when it is next idle is that request's answer, and so ours.
+ */
+const JOINED: NonNullable<CompletionSaveStatus["data"]> = {};
+
 const targetOf = (next: AutoAdvanceNext | null): AutoAdvanceTarget => next?.kind ?? "none";
 
 /** Development trace of where a saved completion led. */
@@ -27,7 +34,7 @@ function logSaved(s: AutoAdvanceState, next: AutoAdvanceNext | null) {
   if (s.phase === "countdown") storylineDebug("countdown started", { seconds: s.secondsLeft, to: next?.url });
   else if (s.phase === "manual") storylineDebug("next item is a quiz; waiting for the learner", { to: next?.url });
   else if (s.phase === "finished") storylineDebug("no next item; course end reached");
-  else if (s.phase === "idle") storylineDebug("saved; staying on this lesson (cancelled while saving)");
+  else if (s.phase === "idle") storylineDebug("saved; staying on this lesson (cancelled or restarted while saving)");
 }
 
 /**
@@ -45,6 +52,7 @@ export function useLessonAutoAdvance({
   next,
   save,
   saveStatus,
+  paused = false,
   seconds = STORYLINE_AUTO_ADVANCE_SECONDS,
 }: {
   /** The Storyline lesson on screen; null turns auto-advance off. */
@@ -55,11 +63,18 @@ export function useLessonAutoAdvance({
   /** The existing lesson-completion submit. */
   save: (lessonId: string) => void;
   saveStatus: CompletionSaveStatus;
+  /** Something covers the card (e.g. a drawer): hold the countdown. */
+  paused?: boolean;
   seconds?: number;
 }) {
   const navigate = useNavigate();
   const navigation = useNavigation();
   const [state, setState] = useState<AutoAdvanceState>(initialAutoAdvanceState);
+  // The lesson `state` belongs to. It catches up in an effect after a lesson
+  // change; until then the new lesson renders as idle, never with the card
+  // (and live-region text) left over from the lesson before.
+  const [stateLesson, setStateLesson] = useState(lessonId);
+  const view = stateLesson === lessonId ? state : initialAutoAdvanceState;
   // Transitions run against this ref rather than render state, so two
   // messages that land before React re-renders are still seen in order.
   const stateRef = useRef(state);
@@ -90,7 +105,8 @@ export function useLessonAutoAdvance({
   }, []);
 
   const beginSave = useCallback((id: string) => {
-    saveStartDataRef.current = latest.current.saveStatus.data;
+    const { state: fetcherState, data } = latest.current.saveStatus;
+    saveStartDataRef.current = fetcherState === "idle" ? data : JOINED;
     storylineDebug("lesson completion started", { lessonId: id });
     latest.current.save(id);
   }, []);
@@ -115,6 +131,15 @@ export function useLessonAutoAdvance({
       if (s.phase === "navigating" && prev.phase !== "navigating") open();
     },
     [apply, open],
+  );
+
+  const resolveSaved = useCallback(
+    (how: string) => {
+      storylineDebug(`lesson completion successful${how}`, { lessonId: latest.current.lessonId });
+      const { next: target, seconds: secs } = latest.current;
+      logSaved(apply({ type: "saveSucceeded", target: targetOf(target), seconds: secs }), target);
+    },
+    [apply],
   );
 
   /** A validated Storyline completion message for `completedLessonId`. */
@@ -158,47 +183,77 @@ export function useLessonAutoAdvance({
 
   const continueNow = useCallback(() => advance("continue"), [advance]);
 
-  /** The Storyline was restarted: accept its next completion afresh. */
-  const rearm = useCallback(() => {
+  /** The learner is using the card: stop the countdown until they choose. */
+  const hold = useCallback(() => {
     const prev = stateRef.current;
-    if (apply({ type: "rearm" }) !== prev) storylineDebug("re-armed after restart", { phase: prev.phase });
+    if (apply({ type: "hold" }) !== prev) storylineDebug("countdown held by the learner");
   }, [apply]);
+
+  /** Restarted, or marked incomplete: accept the next completion afresh. */
+  const rearm = useCallback(
+    (reason = "restarted") => {
+      const prev = stateRef.current;
+      if (apply({ type: "rearm" }) !== prev) storylineDebug("re-armed", { reason, phase: prev.phase });
+    },
+    [apply],
+  );
 
   // A new lesson starts with a clean slate.
   useEffect(() => {
     apply({ type: "reset" });
+    setStateLesson(lessonId);
   }, [lessonId, apply]);
 
   // Resolve the save once the existing fetcher has answered and the route has
   // revalidated (it only goes idle after both), so the tick in the menu is
   // already there when the countdown starts.
   useEffect(() => {
-    if (state.phase !== "saving" || saveStatus.state !== "idle") return;
+    if (view.phase !== "saving" || saveStatus.state !== "idle") return;
     if (saveStatus.data === saveStartDataRef.current) return;
     saveStartDataRef.current = saveStatus.data;
-    if (saveStatus.data?.ok) {
-      storylineDebug("lesson completion successful", { lessonId });
-      const { next: target, seconds: secs } = latest.current;
-      logSaved(apply({ type: "saveSucceeded", target: targetOf(target), seconds: secs }), target);
-    } else {
+    if (saveStatus.data?.ok) resolveSaved("");
+    else {
       storylineDebug("lesson completion failed", { lessonId, error: saveStatus.data?.error });
       apply({ type: "saveFailed", error: saveStatus.data?.error ?? SAVE_FAILED });
     }
-  }, [state.phase, saveStatus.state, saveStatus.data, lessonId, apply]);
+  }, [view.phase, saveStatus.state, saveStatus.data, lessonId, apply, resolveSaved]);
 
-  // Completed some other way (the header's Mark as complete) while the error
-  // card was up: the error no longer applies.
+  // The loader lists the lesson as complete. While saving, that is the save's
+  // answer too (a safety net for the fetcher check above). While the error
+  // card is up, the lesson was completed another way (Mark as complete).
   useEffect(() => {
-    if (isSaved && stateRef.current.phase === "error") cancel("saved another way");
-  }, [isSaved, cancel]);
+    if (!isSaved) return;
+    const phase = stateRef.current.phase;
+    if (phase === "saving") resolveSaved(" (confirmed by the loader)");
+    else if (phase === "error") cancel("saved another way");
+  }, [isSaved, resolveSaved, cancel]);
 
   // The learner navigated elsewhere (menu, back button, header link) while the
-  // card was up. Our own navigation is already in the "navigating" phase.
+  // card was up. Our own navigation is already in the "navigating" phase; if
+  // it ends without leaving the lesson (superseded by a link back to it), the
+  // "Opening next lesson…" card must not stay behind.
   useEffect(() => {
-    if (navigation.state === "idle") return;
     const phase = stateRef.current.phase;
+    if (navigation.state === "idle") {
+      if (phase === "navigating") cancel("navigation ended on this lesson");
+      return;
+    }
     if (phase !== "idle" && phase !== "navigating") cancel("learner navigated elsewhere");
   }, [navigation.state, cancel]);
+
+  // A link click (menu, header, logo) cancels before the router renders its
+  // navigation, so a last tick in between cannot overtake the learner's choice.
+  useEffect(() => {
+    if (view.phase !== "countdown") return;
+    const onClick = (event: MouseEvent) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
+      if (!link || (link.getAttribute("target") || "_self") !== "_self") return;
+      cancel("link clicked");
+    };
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
+  }, [view.phase, cancel]);
 
   // Hold the countdown while the tab is hidden, so nobody comes back to find
   // the next lesson already playing.
@@ -212,18 +267,20 @@ export function useLessonAutoAdvance({
 
   // One timer per second; cleared on every state change and on unmount.
   useEffect(() => {
-    if (state.phase !== "countdown" || pageHidden) return;
+    if (view.phase !== "countdown" || view.held || pageHidden || paused) return;
     const timer = window.setTimeout(() => advance("tick"), 1_000);
     return () => window.clearTimeout(timer);
-  }, [state.phase, state.secondsLeft, pageHidden, advance]);
+  }, [view.phase, view.held, view.secondsLeft, pageHidden, paused, advance]);
 
   return {
-    phase: state.phase,
-    secondsLeft: state.secondsLeft,
-    error: state.error,
+    phase: view.phase,
+    secondsLeft: view.secondsLeft,
+    held: view.held,
+    error: view.error,
     handleCompletion,
     continueNow,
     cancel,
+    hold,
     retry,
     rearm,
   };

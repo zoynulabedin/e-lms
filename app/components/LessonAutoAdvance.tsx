@@ -19,28 +19,38 @@ const INTERACTIVE: ReadonlySet<AutoAdvancePhase> = new Set(["countdown", "manual
  *
  * Accessibility: when the card needs an answer it takes focus (so keyboard
  * and screen-reader users can cancel inside the countdown) and gives it back
- * on Cancel/Close or Escape. The per-second number is not announced; the
- * dialog's description is read once when focus arrives.
+ * on Cancel/Close or Escape. Any key press or pointer press on the card holds
+ * the countdown, so reaching Cancel never races the timer. The per-second
+ * number is not announced; the dialog's description is read once when focus
+ * arrives.
  */
 export function LessonAutoAdvance({
   phase,
   secondsLeft,
+  held,
   error,
   next,
   courseComplete,
   certificateUrl,
+  suspended = false,
   onContinue,
   onCancel,
+  onHold,
   onRetry,
 }: {
   phase: AutoAdvancePhase;
   secondsLeft: number;
+  /** The countdown is held because the learner is using the card. */
+  held: boolean;
   error: string | null;
   next: { kind: "lesson" | "quiz"; title: string } | null;
   courseComplete: boolean;
   certificateUrl: string;
+  /** A modal (e.g. the glossary drawer) is open over the card: don't take focus. */
+  suspended?: boolean;
   onContinue: () => void;
   onCancel: () => void;
+  onHold: () => void;
   onRetry: () => void;
 }) {
   const titleId = useId();
@@ -50,14 +60,19 @@ export function LessonAutoAdvance({
   const interactive = INTERACTIVE.has(phase);
 
   useEffect(() => {
-    if (!interactive) return;
+    if (!interactive || suspended) return;
     const card = cardRef.current;
     const active = document.activeElement;
     if (active instanceof HTMLElement && active !== document.body && !card?.contains(active)) {
       returnFocusRef.current = active;
     }
-    card?.querySelector<HTMLElement>("button, a[href]")?.focus();
-  }, [phase, interactive]);
+    // Two queries: one selector list would return whichever match comes first
+    // in the document, not the marked button.
+    (
+      card?.querySelector<HTMLElement>("[data-autofocus]") ??
+      card?.querySelector<HTMLElement>("button, a[href]")
+    )?.focus();
+  }, [phase, interactive, suspended]);
 
   // An element in fullscreen that does not contain the card (Storyline's own
   // fullscreen) would hide it while the countdown runs. Leave fullscreen so
@@ -97,7 +112,11 @@ export function LessonAutoAdvance({
     case "countdown":
       title = "Lesson complete";
       upNext = next ? `Up next: ${next.title}` : null;
-      lines = [`Next lesson starts in ${secondsLeft} ${secondsLeft === 1 ? "second" : "seconds"}.`];
+      lines = [
+        held
+          ? "Countdown paused. Continue when you're ready."
+          : `Next lesson starts in ${secondsLeft} ${secondsLeft === 1 ? "second" : "seconds"}.`,
+      ];
       break;
     case "manual":
       title = "Lesson complete";
@@ -137,8 +156,11 @@ export function LessonAutoAdvance({
             if (e.key === "Escape" && interactive) {
               e.stopPropagation();
               close();
+            } else {
+              onHold();
             }
           }}
+          onPointerDown={onHold}
           className="absolute right-4 bottom-4 z-20 w-[min(360px,calc(100%-2rem))] rounded-2xl border border-white/15 bg-brand-navy-deeper/95 p-4 text-white shadow-2xl backdrop-blur-sm animate-fade-in"
         >
           <div className="flex items-start gap-3">
@@ -191,7 +213,8 @@ export function LessonAutoAdvance({
                   <button type="button" onClick={onContinue} className={PRIMARY_BTN}>
                     Start Quiz
                   </button>
-                  <button type="button" onClick={close} className={SECONDARY_BTN}>
+                  {/* Initial focus: a stray Enter must not start a timed quiz. */}
+                  <button type="button" onClick={close} className={SECONDARY_BTN} data-autofocus>
                     Close
                   </button>
                 </div>
