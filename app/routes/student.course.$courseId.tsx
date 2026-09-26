@@ -1,5 +1,5 @@
 import { data } from "react-router";
-import { useLoaderData, useFetcher, Link } from "react-router";
+import { useLoaderData, useFetcher, Link, useNavigate } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireUser } from "../utils/auth.server";
@@ -28,6 +28,7 @@ function fileNameFromUrl(url: string | null): string | null {
 const HEADER_BG = "#FCF9F7";
 /** Footer lesson-navigation buttons. */
 const GOLD = "#BE924C";
+const STORYLINE_AUTO_ADVANCE_SECONDS = 5;
 import { randomUUID } from "crypto";
 import { Prisma } from "@prisma/client";
 import {
@@ -435,10 +436,9 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   const prevItem = currentIdx > 0 ? allItems[currentIdx - 1] : null;
   const nextItem = currentIdx < allItems.length - 1 ? allItems[currentIdx + 1] : null;
 
-  // Next item of type "lesson" only — used by Storyline auto-advance so we
-  // don't push the learner straight into a quiz without explicit consent.
-  const nextLessonItem =
-    allItems.slice(currentIdx + 1).find((i) => i.type === "lesson") ?? null;
+  // Storyline may auto-advance only when the immediately following curriculum
+  // item is another lesson. Never jump over or automatically enter a quiz.
+  const nextLessonItem = nextItem?.type === "lesson" ? nextItem : null;
 
   const lessonItems = allItems.filter((i) => i.type === "lesson");
   const totalLessons = lessonItems.length;
@@ -1588,6 +1588,7 @@ export default function CourseViewer() {
   } = useLoaderData<typeof loader>();
 
   const fetcher = useFetcher();
+  const navigate = useNavigate();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [drawer, setDrawer] = useState<null | "glossary" | "resources">(null);
   // The menu closes from its own header and reopens from the breadcrumb bar,
@@ -1661,8 +1662,12 @@ export default function CourseViewer() {
   // (postMessage { action: "lessonComplete" }). Until then "Next Lesson" stays
   // hidden so nobody skips half a lesson. Non-Storyline lessons are always ready.
   const [reachedLessonEnd, setReachedLessonEnd] = useState(false);
+  const [autoAdvanceSeconds, setAutoAdvanceSeconds] = useState<number | null>(null);
+  const autoAdvanceHandledRef = useRef(false);
   useEffect(() => {
     setReachedLessonEnd(false);
+    setAutoAdvanceSeconds(null);
+    autoAdvanceHandledRef.current = false;
   }, [currentLesson?.id, currentQuiz?.id]);
   // Latest values readable from long-lived event handlers without making
   // them effect dependencies (a re-subscribe would reset the 5 % throttle).
@@ -1681,10 +1686,36 @@ export default function CourseViewer() {
    */
   const onStorylineLessonEnd = (id: string) => {
     setReachedLessonEnd(true);
-    if (!id || completedSetRef.current.has(id) || lessonDoneRef.current === id) return;
-    lessonDoneRef.current = id;
-    markLessonComplete(id);
+    if (id && !completedSetRef.current.has(id) && lessonDoneRef.current !== id) {
+      lessonDoneRef.current = id;
+      markLessonComplete(id);
+    }
+
+    // Storyline can fire its final-slide trigger more than once. Start at most
+    // one countdown per visit, and do not restart it after the learner cancels.
+    if (nextLessonItem && !autoAdvanceHandledRef.current) {
+      autoAdvanceHandledRef.current = true;
+      setAutoAdvanceSeconds(STORYLINE_AUTO_ADVANCE_SECONDS);
+    }
   };
+
+  useEffect(() => {
+    if (autoAdvanceSeconds === null || !nextLessonItem) return;
+
+    if (autoAdvanceSeconds <= 0) {
+      setAutoAdvanceSeconds(null);
+      navigate(`/student/course/${course.id}?lesson=${nextLessonItem.item.id}`);
+      return;
+    }
+
+    const timer = window.setTimeout(
+      () => setAutoAdvanceSeconds((seconds) =>
+        seconds === null ? null : seconds - 1,
+      ),
+      1_000,
+    );
+    return () => window.clearTimeout(timer);
+  }, [autoAdvanceSeconds, course.id, navigate, nextLessonItem]);
 
   const reportWatchProgress = (pct: number) => {
     if (hasModules) {
@@ -2377,6 +2408,48 @@ export default function CourseViewer() {
                   </div>
                   <p className="text-gray-500 font-medium">Select a lesson to begin</p>
                   <p className="text-gray-400 text-sm mt-1">Choose from the sidebar</p>
+                </div>
+              </div>
+            )}
+
+            {/* Storyline final-slide handoff. The Storyline file sends
+                postMessage({ action: "lessonComplete" }); the LMS owns the
+                cross-lesson countdown and navigation. */}
+            {autoAdvanceSeconds !== null && nextLessonItem && (
+              <div
+                className="absolute right-4 bottom-4 z-20 w-[min(360px,calc(100%-2rem))] rounded-2xl border border-white/15 bg-brand-navy-deeper/95 p-4 text-white shadow-2xl backdrop-blur-sm animate-fade-in"
+                role="status"
+                aria-live="polite"
+              >
+                <div className="flex items-start gap-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-brand-mustard font-bold text-brand-navy-deeper">
+                    {autoAdvanceSeconds}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold">Lesson complete</p>
+                    <p className="mt-0.5 truncate text-xs text-white/65">
+                      Next: {nextLessonItem.item.title}
+                    </p>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAutoAdvanceSeconds(null);
+                          navigate(`/student/course/${course.id}?lesson=${nextLessonItem.item.id}`);
+                        }}
+                        className="rounded-lg bg-brand-mustard px-3 py-1.5 text-xs font-semibold text-brand-navy-deeper hover:opacity-90"
+                      >
+                        Continue now
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAutoAdvanceSeconds(null)}
+                        className="rounded-lg border border-white/20 px-3 py-1.5 text-xs font-semibold text-white/80 hover:bg-white/10"
+                      >
+                        Stay here
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

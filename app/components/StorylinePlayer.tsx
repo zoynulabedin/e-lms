@@ -26,13 +26,10 @@ const DEFAULT_HOST = "https://courses.instructionalgraphics.org";
  * Embeds a published Storyline scene and reports when the learner reaches its
  * final slide.
  *
- * This component deliberately does NOT advance the learner. It used to start a
- * five-second countdown on `lessonComplete` and navigate on its own, which
- * defeated the whole point of holding "Next Lesson" back until the scene is
- * finished — and auto-jumping is how slides get skipped, which is the problem
- * the gate exists to solve. Moving on is the learner's decision: the course
- * player reveals its own "Next Lesson" button, and the side menu is always
- * available. Do not reintroduce an auto-advance here.
+ * Navigation remains the parent course player's responsibility. Keeping this
+ * component focused on validating the Storyline message lets the parent mark
+ * progress, show a cancellable countdown, and choose whether the following
+ * curriculum item is safe to open automatically.
  */
 export const StorylinePlayer = forwardRef<HTMLIFrameElement, StorylinePlayerProps>(
   function StorylinePlayer(
