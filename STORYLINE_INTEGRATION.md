@@ -24,7 +24,9 @@ window.parent.postMessage({ type: "STORYLINE_LESSON_COMPLETED" }, "*");
 ```
 
 - `window.parent` is the LMS course player, because the LMS embeds the
-  published `story.html` directly in an iframe.
+  published `story.html` directly in an iframe. Either lesson setup works:
+  - a **Storyline** lesson with the URL in *Storyline Embed URL*;
+  - a **Video** lesson whose *iFrame Embed* is `<iframe src=".../story.html">`.
 - The target `"*"` lets the same published package work on local, staging and
   production. The message carries no data, and the LMS decides whether to
   trust it (see section 4).
@@ -237,6 +239,11 @@ from the iframe.
   auto-advances. For a Storyline lesson, *Next Lesson* appears once the
   learner uses *Mark as complete*; *Previous Lesson* and the menu always
   work.
+- A **Video** lesson whose *iFrame Embed* is a Storyline page auto-advances
+  in the same way. Its iframe is unchanged (no sandbox added), and its Next
+  Lesson button stays visible from the start, as for any video. Only
+  *Storyline*-type lessons hold Next Lesson back until the lesson is
+  complete. YouTube and Vimeo embeds are not affected.
 - Flat (module-less) Storyline courses are unchanged. They track the watch
   percentage from `{ type: "progress", percent }` messages and have no next
   lesson.

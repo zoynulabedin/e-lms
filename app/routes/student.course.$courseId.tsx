@@ -97,7 +97,7 @@ function resolveVideoEmbed(raw: string): {
   // Highest priority: if admin pasted a full <iframe> tag, extract its src
   if (trimmed.toLowerCase().startsWith("<iframe")) {
     const match = trimmed.match(/\bsrc=["']([^"']+)["']/i);
-    if (match) return { type: "iframe", src: match[1] };
+    if (match) return { type: "iframe", src: match[1].trim() };
   }
   const ytId = getYouTubeId(trimmed);
   if (ytId)
@@ -1688,6 +1688,11 @@ export default function CourseViewer() {
   const embedUrl = currentLesson?.embedUrl || (!hasModules ? course.embedUrl : null);
   const videoSrc = iframeEmbed ? resolveVideoEmbed(iframeEmbed) : (videoUrl ? resolveVideoEmbed(videoUrl) : null);
   const isIframeVideo = videoSrc && (videoSrc.type === "youtube" || videoSrc.type === "vimeo" || videoSrc.type === "iframe");
+  // A Video lesson whose iFrame Embed is a page rather than a YouTube/Vimeo
+  // player - in practice a published Storyline story.html. It can report its
+  // completion like a Storyline lesson, so it gets the same listener and
+  // auto-advance; its Next Lesson button stays as for any video.
+  const isEmbeddedPage = currentLesson?.lessonType === "VIDEO" && videoSrc?.type === "iframe";
   // Text under the player: the lesson's content (a TEXT lesson shows it as the
   // lesson itself), or the course description where there is no lesson.
   const descriptionText = plainText(
@@ -1747,7 +1752,7 @@ export default function CourseViewer() {
     ? { kind: nextItem.type, title: String(nextItem.item.title ?? ""), url: itemNavUrl(nextItem) }
     : null;
   const autoAdvance = useLessonAutoAdvance({
-    lessonId: currentLesson?.lessonType === "STORYLINE" ? currentLesson.id : null,
+    lessonId: currentLesson?.lessonType === "STORYLINE" || isEmbeddedPage ? currentLesson.id : null,
     isSaved: isLessonDone,
     next: autoAdvanceNext,
     save: markLessonComplete,
@@ -1755,6 +1760,25 @@ export default function CourseViewer() {
     // The glossary/resources drawer covers the card; don't count down under it.
     paused: drawer !== null,
   });
+
+  // Completion hand-off card. Rendered inside the player's wrapper so it stays
+  // visible when that wrapper is fullscreen.
+  const autoAdvanceCard = (
+    <LessonAutoAdvance
+      phase={autoAdvance.phase}
+      secondsLeft={autoAdvance.secondsLeft}
+      held={autoAdvance.held}
+      error={autoAdvance.error}
+      next={autoAdvanceNext}
+      courseComplete={isCompleted}
+      certificateUrl={`/certificate/${course.id}`}
+      suspended={drawer !== null}
+      onContinue={autoAdvance.continueNow}
+      onCancel={autoAdvance.cancel}
+      onHold={autoAdvance.hold}
+      onRetry={autoAdvance.retry}
+    />
+  );
 
   // Restart remounts the Storyline iframe: reloading it through
   // contentWindow.location is blocked when the package is on another origin.
@@ -2271,7 +2295,21 @@ export default function CourseViewer() {
             {/* Video */}
             {currentLesson?.lessonType === "VIDEO" && !currentQuiz && (
               <div className="absolute inset-0 bg-black">
-                {isIframeVideo && videoSrc && (
+                {isEmbeddedPage && videoSrc ? (
+                  // Same iframe as below (no sandbox), plus the validated
+                  // completion listener.
+                  <StorylinePlayer
+                    key={currentLesson.id}
+                    ref={iframeRef}
+                    src={videoSrc.src}
+                    title={currentLesson.title}
+                    allow="autoplay; fullscreen; picture-in-picture"
+                    className="absolute inset-0 w-full h-full border-0"
+                    lessonId={currentLesson.id}
+                    allowedOrigins={storylineOrigins}
+                    onComplete={autoAdvance.handleCompletion}
+                  />
+                ) : isIframeVideo && videoSrc && (
                   <iframe
                     ref={iframeRef}
                     src={videoSrc.src}
@@ -2305,6 +2343,7 @@ export default function CourseViewer() {
                     </div>
                   </div>
                 )}
+                {isEmbeddedPage && autoAdvanceCard}
               </div>
             )}
 
@@ -2355,24 +2394,7 @@ export default function CourseViewer() {
                   </div>
                 )}
 
-                {/* Completion hand-off. Inside the Storyline wrapper so it
-                    stays visible when this wrapper is fullscreen. */}
-                {currentLesson && (
-                  <LessonAutoAdvance
-                    phase={autoAdvance.phase}
-                    secondsLeft={autoAdvance.secondsLeft}
-                    held={autoAdvance.held}
-                    error={autoAdvance.error}
-                    next={autoAdvanceNext}
-                    courseComplete={isCompleted}
-                    certificateUrl={`/certificate/${course.id}`}
-                    suspended={drawer !== null}
-                    onContinue={autoAdvance.continueNow}
-                    onCancel={autoAdvance.cancel}
-                    onHold={autoAdvance.hold}
-                    onRetry={autoAdvance.retry}
-                  />
-                )}
+                {currentLesson && autoAdvanceCard}
               </div>
             )}
 
