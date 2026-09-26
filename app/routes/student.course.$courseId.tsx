@@ -436,9 +436,10 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   const prevItem = currentIdx > 0 ? allItems[currentIdx - 1] : null;
   const nextItem = currentIdx < allItems.length - 1 ? allItems[currentIdx + 1] : null;
 
-  // Storyline may auto-advance only when the immediately following curriculum
-  // item is another lesson. Never jump over or automatically enter a quiz.
-  const nextLessonItem = nextItem?.type === "lesson" ? nextItem : null;
+  // Resolve across module boundaries. Storyline completion moves to another
+  // lesson, never directly into a quiz; quizzes still use manual navigation.
+  const nextLessonItem =
+    allItems.slice(currentIdx + 1).find((i) => i.type === "lesson") ?? null;
 
   const lessonItems = allItems.filter((i) => i.type === "lesson");
   const totalLessons = lessonItems.length;
@@ -527,13 +528,21 @@ export async function action({ request, params }: ActionFunctionArgs) {
       : null;
     if (!lesson)
       return data({ error: "Lesson not found in this course." }, { status: 400 });
-    await prisma.lessonProgress.upsert({
-      where: { userId_lessonId: { userId: user.id, lessonId } },
-      update: { isCompleted: true, completedAt: new Date() },
-      create: { userId: user.id, lessonId, isCompleted: true, completedAt: new Date() },
-    });
-    await recomputeCourseProgress(user.id, courseId);
-    return data({ ok: true });
+    try {
+      await prisma.lessonProgress.upsert({
+        where: { userId_lessonId: { userId: user.id, lessonId } },
+        update: { isCompleted: true, completedAt: new Date() },
+        create: { userId: user.id, lessonId, isCompleted: true, completedAt: new Date() },
+      });
+      await recomputeCourseProgress(user.id, courseId);
+      return data({ ok: true });
+    } catch (error) {
+      console.error(`[course] failed to complete lesson ${lessonId} for user ${user.id}:`, error);
+      return data(
+        { error: "We couldn't save your lesson progress. Please try again." },
+        { status: 500 },
+      );
+    }
   }
 
   if (intent === "submit_quiz") {
@@ -1588,6 +1597,7 @@ export default function CourseViewer() {
   } = useLoaderData<typeof loader>();
 
   const fetcher = useFetcher();
+  const lessonCompletionFetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const navigate = useNavigate();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [drawer, setDrawer] = useState<null | "glossary" | "resources">(null);
@@ -1619,6 +1629,16 @@ export default function CourseViewer() {
   const currentLesson = activeItem?.type === "lesson" ? activeItem.item : null;
   const currentQuiz = activeItem?.type === "quiz" ? activeItem.item : null;
 
+  // One URL builder is shared by the existing Previous/Next controls and the
+  // automatic Storyline handoff, so navigation cannot drift between them.
+  const itemNavUrl = (item: { type: string; item: any } | null) => {
+    if (!item) return "#";
+    return item.type === "lesson"
+      ? `/student/course/${course.id}?lesson=${item.item.id}`
+      : `/student/course/${course.id}?quiz=${item.item.id}`;
+  };
+  const nextLessonUrl = nextLessonItem ? itemNavUrl(nextLessonItem) : null;
+
   const hasModules = course.modules.length > 0 && totalItems > 0;
   const hasIntroModule = isIntroModuleTitle(course.modules[0]?.title);
 
@@ -1643,7 +1663,7 @@ export default function CourseViewer() {
     const fd = new FormData();
     fd.append("intent", "complete_lesson");
     fd.append("lessonId", lessonId);
-    fetcher.submit(fd, { method: "post" });
+    lessonCompletionFetcher.submit(fd, { method: "post" });
   };
 
   const markLessonIncomplete = (lessonId: string) => {
@@ -1659,15 +1679,25 @@ export default function CourseViewer() {
   // lesson - the server derives the course percent from all lessons/quizzes.
   const lessonDoneRef = useRef<string | null>(null);
   // Storyline tells us when the learner reaches the last slide of the scene
-  // (postMessage { action: "lessonComplete" }). Until then "Next Lesson" stays
+  // (postMessage { type: "STORYLINE_LESSON_COMPLETED" }). Until then "Next Lesson" stays
   // hidden so nobody skips half a lesson. Non-Storyline lessons are always ready.
-  const [reachedLessonEnd, setReachedLessonEnd] = useState(false);
   const [autoAdvanceSeconds, setAutoAdvanceSeconds] = useState<number | null>(null);
+  const [autoAdvanceStatus, setAutoAdvanceStatus] = useState<
+    "idle" | "saving" | "countdown" | "error" | "course-complete"
+  >("idle");
+  const [autoAdvanceError, setAutoAdvanceError] = useState<string | null>(null);
+  const [storylineCompletionSaved, setStorylineCompletionSaved] = useState(false);
   const autoAdvanceHandledRef = useRef(false);
+  const completionRequestBecameBusyRef = useRef(false);
+  const navigationStartedRef = useRef(false);
   useEffect(() => {
-    setReachedLessonEnd(false);
     setAutoAdvanceSeconds(null);
+    setAutoAdvanceStatus("idle");
+    setAutoAdvanceError(null);
+    setStorylineCompletionSaved(false);
     autoAdvanceHandledRef.current = false;
+    completionRequestBecameBusyRef.current = false;
+    navigationStartedRef.current = false;
   }, [currentLesson?.id, currentQuiz?.id]);
   // Latest values readable from long-lived event handlers without making
   // them effect dependencies (a re-subscribe would reset the 5 % throttle).
@@ -1684,27 +1714,83 @@ export default function CourseViewer() {
    * marks the lesson done. Guarded so a scene that fires the trigger twice
    * (or a re-render) cannot submit twice.
    */
-  const onStorylineLessonEnd = (id: string) => {
-    setReachedLessonEnd(true);
-    if (id && !completedSetRef.current.has(id) && lessonDoneRef.current !== id) {
-      lessonDoneRef.current = id;
-      markLessonComplete(id);
-    }
+  const beginStorylineCompletionSave = (id: string) => {
+    lessonDoneRef.current = id;
+    completionRequestBecameBusyRef.current = false;
+    setAutoAdvanceError(null);
+    setAutoAdvanceStatus("saving");
+    markLessonComplete(id);
+  };
 
-    // Storyline can fire its final-slide trigger more than once. Start at most
-    // one countdown per visit, and do not restart it after the learner cancels.
-    if (nextLessonItem && !autoAdvanceHandledRef.current) {
-      autoAdvanceHandledRef.current = true;
-      setAutoAdvanceSeconds(STORYLINE_AUTO_ADVANCE_SECONDS);
+  const onStorylineLessonEnd = (id: string) => {
+    // The component passes the lesson id it was rendered with. This extra
+    // context check prevents a late message from a departing iframe from
+    // completing the newly selected lesson.
+    if (!id || id !== currentLessonIdRef.current) return;
+    if (autoAdvanceHandledRef.current) return;
+    autoAdvanceHandledRef.current = true;
+    if (completedSetRef.current.has(id)) {
+      setStorylineCompletionSaved(true);
+      if (nextLessonUrl) {
+        setAutoAdvanceStatus("countdown");
+        setAutoAdvanceSeconds(STORYLINE_AUTO_ADVANCE_SECONDS);
+      } else {
+        setAutoAdvanceStatus("course-complete");
+      }
+    } else {
+      beginStorylineCompletionSave(id);
     }
   };
 
+  // Wait for the existing completion action and its route revalidation to
+  // finish. Navigation never starts merely because Storyline emitted a signal.
   useEffect(() => {
-    if (autoAdvanceSeconds === null || !nextLessonItem) return;
+    if (autoAdvanceStatus !== "saving") return;
+
+    if (lessonCompletionFetcher.state !== "idle") {
+      completionRequestBecameBusyRef.current = true;
+      return;
+    }
+    if (!completionRequestBecameBusyRef.current) return;
+
+    completionRequestBecameBusyRef.current = false;
+    if (lessonCompletionFetcher.data?.ok) {
+      setStorylineCompletionSaved(true);
+      if (nextLessonUrl) {
+        setAutoAdvanceStatus("countdown");
+        setAutoAdvanceSeconds(STORYLINE_AUTO_ADVANCE_SECONDS);
+      } else {
+        setAutoAdvanceStatus("course-complete");
+        setAutoAdvanceSeconds(null);
+      }
+    } else {
+      lessonDoneRef.current = null;
+      setAutoAdvanceStatus("error");
+      setAutoAdvanceError(
+        lessonCompletionFetcher.data?.error ??
+          "We couldn't save your lesson progress. Please try again.",
+      );
+    }
+  }, [
+    autoAdvanceStatus,
+    lessonCompletionFetcher.data,
+    lessonCompletionFetcher.state,
+    nextLessonUrl,
+  ]);
+
+  useEffect(() => {
+    if (
+      autoAdvanceStatus !== "countdown" ||
+      autoAdvanceSeconds === null ||
+      !nextLessonUrl
+    ) return;
 
     if (autoAdvanceSeconds <= 0) {
       setAutoAdvanceSeconds(null);
-      navigate(`/student/course/${course.id}?lesson=${nextLessonItem.item.id}`);
+      if (!navigationStartedRef.current) {
+        navigationStartedRef.current = true;
+        navigate(nextLessonUrl);
+      }
       return;
     }
 
@@ -1715,7 +1801,7 @@ export default function CourseViewer() {
       1_000,
     );
     return () => window.clearTimeout(timer);
-  }, [autoAdvanceSeconds, course.id, navigate, nextLessonItem]);
+  }, [autoAdvanceSeconds, autoAdvanceStatus, navigate, nextLessonUrl]);
 
   const reportWatchProgress = (pct: number) => {
     if (hasModules) {
@@ -1803,13 +1889,6 @@ export default function CourseViewer() {
   useEffect(() => {
     if (activeItem?.module?.id) setOpenModuleId(activeItem.module.id);
   }, [activeItem?.module?.id]);
-
-  const itemNavUrl = (item: { type: string; item: any } | null) => {
-    if (!item) return "#";
-    return item.type === "lesson"
-      ? `/student/course/${course.id}?lesson=${item.item.id}`
-      : `/student/course/${course.id}?quiz=${item.item.id}`;
-  };
 
   const isLessonDone = currentLesson ? completedSet.has(currentLesson.id) : false;
 
@@ -2412,43 +2491,102 @@ export default function CourseViewer() {
               </div>
             )}
 
-            {/* Storyline final-slide handoff. The Storyline file sends
-                postMessage({ action: "lessonComplete" }); the LMS owns the
-                cross-lesson countdown and navigation. */}
-            {autoAdvanceSeconds !== null && nextLessonItem && (
+            {/* Storyline final-slide handoff. Storyline only reports completion;
+                the LMS saves progress and owns countdown/navigation. */}
+            {autoAdvanceStatus !== "idle" && (
               <div
                 className="absolute right-4 bottom-4 z-20 w-[min(360px,calc(100%-2rem))] rounded-2xl border border-white/15 bg-brand-navy-deeper/95 p-4 text-white shadow-2xl backdrop-blur-sm animate-fade-in"
-                role="status"
-                aria-live="polite"
+                role="dialog"
+                aria-labelledby="storyline-completion-title"
               >
                 <div className="flex items-start gap-3">
-                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-brand-mustard font-bold text-brand-navy-deeper">
-                    {autoAdvanceSeconds}
+                  <div
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-brand-mustard font-bold text-brand-navy-deeper"
+                    aria-hidden="true"
+                  >
+                    {autoAdvanceStatus === "countdown" ? autoAdvanceSeconds : (
+                      <Check size={20} strokeWidth={3} />
+                    )}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold">Lesson complete</p>
-                    <p className="mt-0.5 truncate text-xs text-white/65">
-                      Next: {nextLessonItem.item.title}
+                    <p id="storyline-completion-title" className="text-sm font-semibold">
+                      {autoAdvanceStatus === "saving" && "Saving lesson progress…"}
+                      {autoAdvanceStatus === "countdown" && "Lesson complete"}
+                      {autoAdvanceStatus === "error" && "Progress was not saved"}
+                      {autoAdvanceStatus === "course-complete" && "Course complete"}
                     </p>
-                    <div className="mt-3 flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAutoAdvanceSeconds(null);
-                          navigate(`/student/course/${course.id}?lesson=${nextLessonItem.item.id}`);
-                        }}
-                        className="rounded-lg bg-brand-mustard px-3 py-1.5 text-xs font-semibold text-brand-navy-deeper hover:opacity-90"
-                      >
-                        Continue now
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setAutoAdvanceSeconds(null)}
-                        className="rounded-lg border border-white/20 px-3 py-1.5 text-xs font-semibold text-white/80 hover:bg-white/10"
-                      >
-                        Stay here
-                      </button>
-                    </div>
+
+                    {autoAdvanceStatus === "saving" && (
+                      <p className="mt-1 text-xs text-white/65">
+                        Please wait before continuing.
+                      </p>
+                    )}
+
+                    {autoAdvanceStatus === "countdown" && nextLessonItem && (
+                      <>
+                        <p className="mt-0.5 truncate text-xs text-white/65">
+                          Next: {nextLessonItem.item.title}
+                        </p>
+                        <p className="mt-1 text-xs text-white/80" aria-live="polite">
+                          Starting automatically in {STORYLINE_AUTO_ADVANCE_SECONDS} seconds.
+                        </p>
+                        <div className="mt-3 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAutoAdvanceSeconds(null);
+                              if (nextLessonUrl && !navigationStartedRef.current) {
+                                navigationStartedRef.current = true;
+                                navigate(nextLessonUrl);
+                              }
+                            }}
+                            className="rounded-lg bg-brand-mustard px-3 py-1.5 text-xs font-semibold text-brand-navy-deeper hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                          >
+                            Continue Now
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAutoAdvanceSeconds(null);
+                              setAutoAdvanceStatus("idle");
+                            }}
+                            className="rounded-lg border border-white/20 px-3 py-1.5 text-xs font-semibold text-white/80 hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </>
+                    )}
+
+                    {autoAdvanceStatus === "error" && (
+                      <>
+                        <p className="mt-1 text-xs leading-relaxed text-red-200" role="alert">
+                          {autoAdvanceError}
+                        </p>
+                        <div className="mt-3 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => currentLesson?.id && beginStorylineCompletionSave(currentLesson.id)}
+                            className="rounded-lg bg-brand-mustard px-3 py-1.5 text-xs font-semibold text-brand-navy-deeper hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                          >
+                            Retry
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setAutoAdvanceStatus("idle")}
+                            className="rounded-lg border border-white/20 px-3 py-1.5 text-xs font-semibold text-white/80 hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                          >
+                            Stay here
+                          </button>
+                        </div>
+                      </>
+                    )}
+
+                    {autoAdvanceStatus === "course-complete" && (
+                      <p className="mt-1 text-xs text-white/70">
+                        You reached the final lesson. Your completion has been saved.
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2476,7 +2614,14 @@ export default function CourseViewer() {
                 {/* Previous lesson */}
                 <div className="flex-1 flex items-center justify-start gap-4 min-w-0">
                   {prevItem ? (
-                    <Link to={itemNavUrl(prevItem)} className="group min-w-0 max-w-[260px]">
+                    <Link
+                      to={itemNavUrl(prevItem)}
+                      onClick={() => {
+                        setAutoAdvanceSeconds(null);
+                        setAutoAdvanceStatus("idle");
+                      }}
+                      className="group min-w-0 max-w-[260px]"
+                    >
                       <span
                         className="flex items-center gap-2 rounded-lg px-4 py-2 text-[15px] font-semibold transition-colors"
                         style={{ border: `1px solid ${GOLD}`, color: "#ffffff" }}
@@ -2523,10 +2668,12 @@ export default function CourseViewer() {
                     style={{ background: "rgba(255,255,255,0.18)" }}
                     aria-hidden="true"
                   />
-                  {nextItem && (isStoryline ? reachedLessonEnd || isLessonDone : true) ? (
+                  {nextItem && (isStoryline ? storylineCompletionSaved || isLessonDone : true) ? (
                     <Link
                       to={itemNavUrl(nextItem)}
                       onClick={() => {
+                        setAutoAdvanceSeconds(null);
+                        setAutoAdvanceStatus("idle");
                         if (currentLesson && !completedSet.has(currentLesson.id)) markLessonComplete(currentLesson.id);
                       }}
                       className="group min-w-0 max-w-[260px] text-right animate-fade-in"

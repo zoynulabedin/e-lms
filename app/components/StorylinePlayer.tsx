@@ -20,8 +20,6 @@ interface StorylinePlayerProps {
   sandbox?: string;
 }
 
-const DEFAULT_HOST = "https://courses.instructionalgraphics.org";
-
 /**
  * Embeds a published Storyline scene and reports when the learner reaches its
  * final slide.
@@ -60,12 +58,11 @@ export const StorylinePlayer = forwardRef<HTMLIFrameElement, StorylinePlayerProp
         // Resolve relative src (e.g. "/storyline/x/story.html") against the
         // page origin so same-origin iframes are accepted too.
         const base =
-          typeof window !== "undefined" ? window.location.origin : DEFAULT_HOST;
+          typeof window !== "undefined" ? window.location.origin : "http://localhost";
         set.add(new URL(src, base).origin);
       } catch {
         // invalid src — fall back to defaults only
       }
-      set.add(DEFAULT_HOST);
       for (const o of allowedOrigins ?? []) set.add(o);
       return set;
     }, [src, allowedOrigins]);
@@ -77,9 +74,20 @@ export const StorylinePlayer = forwardRef<HTMLIFrameElement, StorylinePlayerProp
         const frame = innerRef.current;
         if (!frame || event.source !== frame.contentWindow) return;
         if (!allowedOriginSet.has(event.origin)) return;
-        const payload = event.data;
+        let payload = event.data;
+        if (typeof payload === "string") {
+          try {
+            payload = JSON.parse(payload);
+          } catch {
+            return;
+          }
+        }
         if (!payload || typeof payload !== "object") return;
-        if (payload.action !== "lessonComplete") return;
+        const isCompletion =
+          payload.type === "STORYLINE_LESSON_COMPLETED" ||
+          // Keep existing published packages working while they are migrated.
+          payload.action === "lessonComplete";
+        if (!isCompletion) return;
 
         onComplete?.(lessonId);
       }
