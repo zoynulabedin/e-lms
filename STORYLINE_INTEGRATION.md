@@ -264,9 +264,14 @@ same as for Storyline.
 | Anything else (Wistia, other pages) | Not detected; the Next Lesson button works as before |
 
 **Autoplay.** When auto-advance opens a video lesson, its video starts by
-itself. The learner has just interacted with the page, which browsers
-usually require before playing sound. Opening a lesson any other way
-(menu, Next/Previous, a reload) leaves the video paused, as before.
+itself. Opening a lesson any other way (menu, Next/Previous, a reload)
+leaves the video paused, as before.
+
+Some browsers block video with sound until the learner clicks the page, for
+example Edge with its "Limit" autoplay setting, or any browser before the
+first click. In that case the video starts **muted**, which every browser
+allows, and the learner turns the sound on with the player's own speaker
+button. This applies to MP4, HLS, YouTube and Vimeo lessons.
 
 MP4 lessons still count as complete at 95 % watched, as before. The end of
 the video only adds the countdown.

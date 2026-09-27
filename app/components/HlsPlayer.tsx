@@ -15,6 +15,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { playWithMutedFallback } from "../utils/video-playback";
 
 export interface HlsPlayerProps {
   src: string;
@@ -109,7 +110,8 @@ export function HlsPlayer({
           }));
           setQualities(levels.length > 1 ? levels : []);
 
-          if (autoPlay) video!.play().catch(() => {});
+          // Muted where the browser blocks sound without a click.
+          if (autoPlay) void playWithMutedFallback(video!);
         });
 
         // Track which quality level is active
@@ -152,7 +154,7 @@ export function HlsPlayer({
         video.src = src;
         video.load();
         setStatus("ready");
-        if (autoPlay) video.play().catch(() => {});
+        if (autoPlay) void playWithMutedFallback(video);
 
       // ── Unsupported browser ───────────────────────────────────────────────
       } else {

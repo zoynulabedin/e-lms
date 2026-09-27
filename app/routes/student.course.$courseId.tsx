@@ -6,7 +6,7 @@ import { requireUser } from "../utils/auth.server";
 import { computeCourseAccess, requireCourseAccess } from "../utils/access.server";
 import { recomputeCourseProgress } from "../utils/progress.server";
 import { moduleIcon, GETTING_STARTED_ICON, isIntroModuleTitle } from "../utils/module-icons";
-import { parseOriginList } from "../utils/storyline";
+import { parseOriginList, storylineDebug } from "../utils/storyline";
 
 /** Cream highlight + navy text used for the lesson/quiz currently playing. */
 const ACTIVE_BG = "#F5E7C8";
@@ -66,7 +66,8 @@ import { HlsPlayer } from "../components/HlsPlayer";
 import { StorylinePlayer } from "../components/StorylinePlayer";
 import { LessonAutoAdvance } from "../components/LessonAutoAdvance";
 import { useLessonAutoAdvance } from "../hooks/useLessonAutoAdvance";
-import { useEmbedEnded } from "../hooks/useEmbedEnded";
+import { useEmbedPlayer } from "../hooks/useEmbedPlayer";
+import { playWithMutedFallback } from "../utils/video-playback";
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
 
@@ -1816,7 +1817,7 @@ export default function CourseViewer() {
 
   // A Video lesson's own player finished: the same hand-off as a Storyline
   // completion (save, countdown, next lesson). <video> and HLS report it with
-  // onEnded; YouTube and Vimeo through useEmbedEnded.
+  // onEnded; YouTube and Vimeo through useEmbedPlayer.
   const onVideoEnded = () => {
     if (currentLesson) autoAdvance.handleCompletion(currentLesson.id);
   };
@@ -1826,7 +1827,25 @@ export default function CourseViewer() {
       : null;
   const iframeVideoSrc =
     videoSrc && embedProvider && autoplayVideo ? withParams(videoSrc.src, { autoplay: "1" }) : videoSrc?.src ?? null;
-  useEmbedEnded({ frameRef: iframeRef, provider: embedProvider, src: iframeVideoSrc, onEnded: onVideoEnded });
+  useEmbedPlayer({
+    frameRef: iframeRef,
+    provider: embedProvider,
+    src: iframeVideoSrc,
+    autoplay: autoplayVideo,
+    onEnded: onVideoEnded,
+  });
+
+  // Start the MP4 auto-advance opened - muted where the browser blocks sound
+  // without a click (Edge's "Limit" autoplay setting, for one). HLS does the
+  // same inside HlsPlayer.
+  const directVideoSrc = videoSrc?.type === "direct" ? videoSrc.src : null;
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!autoplayVideo || !directVideoSrc || !video) return;
+    void playWithMutedFallback(video).then((how) => {
+      if (how !== "sound") storylineDebug(`autoplay: ${how}`, { src: directVideoSrc });
+    });
+  }, [autoplayVideo, directVideoSrc]);
 
   // Completion hand-off card. Rendered inside the player's wrapper so it stays
   // visible when that wrapper is fullscreen.
@@ -2398,7 +2417,6 @@ export default function CourseViewer() {
                   <video
                     ref={videoRef}
                     src={videoSrc.src}
-                    autoPlay={autoplayVideo}
                     onEnded={onVideoEnded}
                     controls
                     playsInline
