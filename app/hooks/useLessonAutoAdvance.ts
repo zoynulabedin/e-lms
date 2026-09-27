@@ -53,6 +53,7 @@ export function useLessonAutoAdvance({
   save,
   saveStatus,
   paused = false,
+  onNavigate,
   seconds = STORYLINE_AUTO_ADVANCE_SECONDS,
 }: {
   /** The Storyline lesson on screen; null turns auto-advance off. */
@@ -65,6 +66,8 @@ export function useLessonAutoAdvance({
   saveStatus: CompletionSaveStatus;
   /** Something covers the card (e.g. a drawer): hold the countdown. */
   paused?: boolean;
+  /** Called just before the hook opens `next`. */
+  onNavigate?: (next: AutoAdvanceNext) => void;
   seconds?: number;
 }) {
   const navigate = useNavigate();
@@ -83,8 +86,9 @@ export function useLessonAutoAdvance({
   const saveStartDataRef = useRef<CompletionSaveStatus["data"]>(undefined);
 
   // Latest values for handlers that outlive a render (message, timer).
-  const latest = useRef({ lessonId, isSaved, next, save, seconds, saveStatus, navigationIdle: true });
+  const latest = useRef({ lessonId, isSaved, next, save, onNavigate, seconds, saveStatus, navigationIdle: true });
   latest.current = {
+    onNavigate,
     lessonId,
     isSaved,
     next,
@@ -121,6 +125,7 @@ export function useLessonAutoAdvance({
       return;
     }
     storylineDebug("navigation started", { to: target.url });
+    latest.current.onNavigate?.(target);
     navigate(target.url);
   }, [apply, navigate]);
 

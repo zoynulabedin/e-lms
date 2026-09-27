@@ -66,6 +66,7 @@ import { HlsPlayer } from "../components/HlsPlayer";
 import { StorylinePlayer } from "../components/StorylinePlayer";
 import { LessonAutoAdvance } from "../components/LessonAutoAdvance";
 import { useLessonAutoAdvance } from "../hooks/useLessonAutoAdvance";
+import { useEmbedEnded } from "../hooks/useEmbedEnded";
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
 
@@ -89,31 +90,60 @@ function getVimeoId(url: string): string | null {
 
 const VIDEO_EXTENSIONS = /\.(mp4|webm|ogg|mov|avi|mkv|flv|wmv)(\?.*)?$/i;
 
-function resolveVideoEmbed(raw: string): {
-  type: "youtube" | "vimeo" | "iframe" | "hls" | "direct";
-  src: string;
-} {
+type VideoEmbed = { type: "youtube" | "vimeo" | "iframe" | "hls" | "direct"; src: string };
+
+/** `url` with `params` added where not already set. A relative URL is returned unchanged. */
+function withParams(url: string, params: Record<string, string>): string {
+  try {
+    const u = new URL(url.startsWith("//") ? `https:${url}` : url);
+    for (const [key, value] of Object.entries(params)) {
+      if (!u.searchParams.has(key)) u.searchParams.set(key, value);
+    }
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+function hlsEmbed(url: string): VideoEmbed {
+  // The proxy only relays the Storyline host (needed there for CORS);
+  // HLS hosted anywhere else keeps playing directly.
+  let proxied = false;
+  try { proxied = new URL(url).hostname === "courses.instructionalgraphics.org"; } catch {}
+  return { type: "hls", src: proxied ? `/api/video-proxy?url=${encodeURIComponent(url)}` : url };
+}
+
+/**
+ * The src of a pasted <iframe>. A video file, or a YouTube/Vimeo player, is
+ * played the way its URL on its own would be, so the LMS can tell when it
+ * ends; the pasted player URL keeps its own parameters. Anything else - a
+ * Storyline story.html, another page - stays a plain iframe.
+ */
+function resolveIframeSrc(src: string): VideoEmbed {
+  if (src.includes(".m3u8")) return hlsEmbed(src);
+  if (VIDEO_EXTENSIONS.test(src)) return { type: "direct", src };
+  // enablejsapi lets the player report that the video ended.
+  if (/youtube(?:-nocookie)?\.com\/embed\//.test(src)) return { type: "youtube", src: withParams(src, { enablejsapi: "1" }) };
+  if (/player\.vimeo\.com\/video\/\d+/.test(src)) return { type: "vimeo", src };
+  return { type: "iframe", src };
+}
+
+function resolveVideoEmbed(raw: string): VideoEmbed {
   const trimmed = raw.trim();
   // Highest priority: if admin pasted a full <iframe> tag, extract its src
   if (trimmed.toLowerCase().startsWith("<iframe")) {
     const match = trimmed.match(/\bsrc=["']([^"']+)["']/i);
-    if (match) return { type: "iframe", src: match[1].trim() };
+    if (match) return resolveIframeSrc(match[1].trim());
   }
   const ytId = getYouTubeId(trimmed);
   if (ytId)
-    return { type: "youtube", src: `https://www.youtube.com/embed/${ytId}?rel=0&modestbranding=1` };
+    return { type: "youtube", src: `https://www.youtube.com/embed/${ytId}?rel=0&modestbranding=1&enablejsapi=1` };
   const vimeoId = getVimeoId(trimmed);
   if (vimeoId)
     return { type: "vimeo", src: `https://player.vimeo.com/video/${vimeoId}` };
   if (trimmed.includes("wistia.com"))
     return { type: "iframe", src: trimmed.replace("/medias/", "/embed/iframe/") };
-  if (trimmed.includes(".m3u8")) {
-    // The proxy only relays the Storyline host (needed there for CORS);
-    // HLS hosted anywhere else keeps playing directly.
-    let proxied = false;
-    try { proxied = new URL(trimmed).hostname === "courses.instructionalgraphics.org"; } catch {}
-    return { type: "hls", src: proxied ? `/api/video-proxy?url=${encodeURIComponent(trimmed)}` : trimmed };
-  }
+  if (trimmed.includes(".m3u8")) return hlsEmbed(trimmed);
   if (VIDEO_EXTENSIONS.test(trimmed))
     return { type: "direct", src: trimmed };
   // Everything else (HTML pages, relative paths, unknown embeds) → iframe
@@ -1751,15 +1781,52 @@ export default function CourseViewer() {
   const autoAdvanceNext = nextItem
     ? { kind: nextItem.type, title: String(nextItem.item.title ?? ""), url: itemNavUrl(nextItem) }
     : null;
+  // Set by auto-advance just before it opens the next lesson.
+  const autoplayUrlRef = useRef<string | null>(null);
   const autoAdvance = useLessonAutoAdvance({
-    lessonId: currentLesson?.lessonType === "STORYLINE" || isEmbeddedPage ? currentLesson.id : null,
+    // Storyline reports the end by postMessage; a Video lesson's own player
+    // reports it through onVideoEnded below.
+    lessonId:
+      currentLesson?.lessonType === "STORYLINE" || currentLesson?.lessonType === "VIDEO" ? currentLesson.id : null,
     isSaved: isLessonDone,
     next: autoAdvanceNext,
     save: markLessonComplete,
     saveStatus: { state: lessonCompletionFetcher.state, data: lessonCompletionFetcher.data },
     // The glossary/resources drawer covers the card; don't count down under it.
     paused: drawer !== null,
+    onNavigate: (next) => {
+      autoplayUrlRef.current = next.url;
+    },
   });
+
+  // The next video starts by itself when auto-advance opened it - the learner
+  // has just watched the one before. Reaching a lesson any other way leaves
+  // its video paused, as before.
+  const currentItemUrl = activeItem ? itemNavUrl(activeItem) : null;
+  const autoplayVideo = useMemo(
+    () => autoplayUrlRef.current !== null && autoplayUrlRef.current === currentItemUrl,
+    // Decided once per lesson. The next auto-advance sets the ref while this
+    // lesson is still showing; re-deciding then would reload its video.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [currentItemUrl],
+  );
+  useEffect(() => {
+    if (autoplayUrlRef.current !== currentItemUrl) autoplayUrlRef.current = null;
+  }, [currentItemUrl]);
+
+  // A Video lesson's own player finished: the same hand-off as a Storyline
+  // completion (save, countdown, next lesson). <video> and HLS report it with
+  // onEnded; YouTube and Vimeo through useEmbedEnded.
+  const onVideoEnded = () => {
+    if (currentLesson) autoAdvance.handleCompletion(currentLesson.id);
+  };
+  const embedProvider =
+    currentLesson?.lessonType === "VIDEO" && (videoSrc?.type === "youtube" || videoSrc?.type === "vimeo")
+      ? videoSrc.type
+      : null;
+  const iframeVideoSrc =
+    videoSrc && embedProvider && autoplayVideo ? withParams(videoSrc.src, { autoplay: "1" }) : videoSrc?.src ?? null;
+  useEmbedEnded({ frameRef: iframeRef, provider: embedProvider, src: iframeVideoSrc, onEnded: onVideoEnded });
 
   // Completion hand-off card. Rendered inside the player's wrapper so it stays
   // visible when that wrapper is fullscreen.
@@ -2312,7 +2379,7 @@ export default function CourseViewer() {
                 ) : isIframeVideo && videoSrc && (
                   <iframe
                     ref={iframeRef}
-                    src={videoSrc.src}
+                    src={iframeVideoSrc ?? videoSrc.src}
                     title={currentLesson.title}
                     allow="autoplay; fullscreen; picture-in-picture"
                     className="absolute inset-0 w-full h-full border-0"
@@ -2320,12 +2387,19 @@ export default function CourseViewer() {
                   />
                 )}
                 {isHlsVideo && videoSrc && (
-                  <HlsPlayer src={videoSrc.src} className="absolute inset-0 w-full h-full rounded-none" />
+                  <HlsPlayer
+                    src={videoSrc.src}
+                    autoPlay={autoplayVideo}
+                    onEnded={onVideoEnded}
+                    className="absolute inset-0 w-full h-full rounded-none"
+                  />
                 )}
                 {isDirectVideo && videoSrc && (
                   <video
                     ref={videoRef}
                     src={videoSrc.src}
+                    autoPlay={autoplayVideo}
+                    onEnded={onVideoEnded}
                     controls
                     playsInline
                     controlsList="nodownload"
@@ -2343,7 +2417,7 @@ export default function CourseViewer() {
                     </div>
                   </div>
                 )}
-                {isEmbeddedPage && autoAdvanceCard}
+                {autoAdvanceCard}
               </div>
             )}
 

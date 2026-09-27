@@ -243,7 +243,30 @@ from the iframe.
   in the same way. Its iframe is unchanged (no sandbox added), and its Next
   Lesson button stays visible from the start, as for any video. Only
   *Storyline*-type lessons hold Next Lesson back until the lesson is
-  complete. YouTube and Vimeo embeds are not affected.
+  complete.
 - Flat (module-less) Storyline courses are unchanged. They track the watch
   percentage from `{ type: "progress", percent }` messages and have no next
   lesson.
+
+## 8. Video lessons without Storyline
+
+A *Video* lesson auto-advances when its own video ends, with nothing to add
+to the video. Saving, the countdown and the choice of next lesson are the
+same as for Storyline.
+
+| The lesson's video | How the LMS learns it ended |
+| ------------------ | --------------------------- |
+| MP4/WebM file (*Video URL*, or `<iframe src="….mp4">` in *iFrame Embed*) | The LMS's own player |
+| HLS `.m3u8` | The LMS's own player |
+| YouTube (URL or pasted `<iframe>`) | YouTube's player API; the LMS adds `enablejsapi=1` to the embed |
+| Vimeo (URL or pasted `<iframe>`) | Vimeo's player API |
+| Storyline `story.html` in *iFrame Embed* | The Storyline trigger (section 2) |
+| Anything else (Wistia, other pages) | Not detected; the Next Lesson button works as before |
+
+**Autoplay.** When auto-advance opens a video lesson, its video starts by
+itself. The learner has just interacted with the page, which browsers
+usually require before playing sound. Opening a lesson any other way
+(menu, Next/Previous, a reload) leaves the video paused, as before.
+
+MP4 lessons still count as complete at 95 % watched, as before. The end of
+the video only adds the countdown.
