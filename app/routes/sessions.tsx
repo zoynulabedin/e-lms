@@ -1,4 +1,4 @@
-import { useLoaderData, useFetcher, useNavigation } from "react-router";
+import { useLoaderData, useFetcher, useNavigation, Link } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { data } from "react-router";
 import { prisma } from "../utils/db.server";
@@ -27,7 +27,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   const url = new URL(request.url);
   const q = url.searchParams.get("q") || "";
-  const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+  // ?page=abc must fall back to page 1, not reach Prisma as NaN (a 500).
+  const rawPage = Number.parseInt(url.searchParams.get("page") || "1", 10);
+  const requestedPage = Number.isFinite(rawPage) && rawPage >= 1 ? rawPage : 1;
 
   const where = {
     isActive: true,
@@ -44,16 +46,33 @@ export async function loader({ request }: LoaderFunctionArgs) {
       : {}),
   };
 
-  const [sessions, totalCount, totalActiveSessions, uniqueActiveUsers, bannedUsers, suspendedUsers] =
+  // Counted first so the requested page can be clamped to the last one.
+  const totalCount = await prisma.userSession.count({ where });
+  const totalPages = Math.max(1, Math.ceil(totalCount / PER_PAGE));
+  const page = Math.min(requestedPage, totalPages);
+
+  const [sessions, totalActiveSessions, uniqueActiveUsers, bannedUsers, suspendedUsers] =
     await Promise.all([
       prisma.userSession.findMany({
         where,
-        include: { user: true },
+        // Only what the table renders. Loader data is serialized into the page:
+        // `include: { user: true }` shipped every listed user's passwordHash,
+        // and the session row's own `token` (the session-token hash) is not
+        // needed either.
+        select: {
+          id: true,
+          userId: true,
+          deviceId: true,
+          ipAddress: true,
+          userAgent: true,
+          lastActiveAt: true,
+          createdAt: true,
+          user: { select: { id: true, name: true, email: true, isBanned: true, isSuspended: true } },
+        },
         orderBy: { lastActiveAt: "desc" },
         take: PER_PAGE,
         skip: (page - 1) * PER_PAGE,
       }),
-      prisma.userSession.count({ where }),
       prisma.userSession.count({
         where: { isActive: true, expiresAt: { gt: new Date() } },
       }),
@@ -67,8 +86,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
       prisma.user.count({ where: { isBanned: true } }),
       prisma.user.count({ where: { isSuspended: true } }),
     ]);
-
-  const totalPages = Math.max(1, Math.ceil(totalCount / PER_PAGE));
 
   return {
     sessions,
@@ -90,16 +107,20 @@ export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
 
-  // Same lockout guard as /users: never ban/suspend yourself or the last admin.
-  if (intent === "ban_user" || intent === "suspend_user") {
+  if (intent === "ban_user" || intent === "suspend_user" || intent === "unban_user") {
     const userId = String(formData.get("userId") || "");
-    if (userId === admin.id)
+    const restricts = intent !== "unban_user";
+    // Same lockout guard as /users: never ban/suspend yourself or the last admin.
+    if (restricts && userId === admin.id)
       return data({ error: "You cannot ban or suspend your own account." }, { status: 400 });
     const target = await prisma.user.findUnique({
       where: { id: userId },
       select: { role: true, isBanned: true, isSuspended: true },
     });
-    if (target?.role === "ADMIN" && !target.isBanned && !target.isSuspended) {
+    // A row left on screen after the account was deleted gets a 404, not
+    // Prisma's "record not found" 500.
+    if (!target) return data({ error: "User not found." }, { status: 404 });
+    if (restricts && target.role === "ADMIN" && !target.isBanned && !target.isSuspended) {
       const admins = await prisma.user.count({ where: { role: "ADMIN", isBanned: false, isSuspended: false } });
       if (admins <= 1)
         return data({ error: "This is the last active admin account." }, { status: 400 });
@@ -272,17 +293,22 @@ export default function SessionsManagement() {
         ))}
       </div>
 
-      {/* Security notice */}
+      {/* Device-limit notice */}
       <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-4 flex items-start gap-3">
         <AlertTriangle size={18} className="text-amber-600 shrink-0 mt-0.5" />
         <div>
           <p className="text-sm font-semibold text-amber-800">
-            Single-Device Enforcement Active
+            Device Limits Enforced
           </p>
           <p className="text-xs text-amber-700 mt-0.5">
-            When a user logs in from a new device, all previous sessions are
-            automatically invalidated. Use the controls below to manually force
-            logout or ban accounts.
+            Each account can stay signed in on as many devices as its Device
+            Limit, set per user on the{" "}
+            <Link to="/users" className="font-semibold underline hover:text-amber-900">
+              Users page
+            </Link>{" "}
+            (default 1; 0 = unlimited). Signing in on one more device signs out
+            that account's least recently used session. Use the controls below
+            to force a logout or ban an account.
           </p>
         </div>
       </div>

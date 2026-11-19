@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { parse, serialize } from "cookie";
 import crypto, { randomUUID } from "crypto";
 import { prisma } from "./db.server";
+import { clientIp, isProxyTrusted } from "./rate-limit.server";
 import { redirect } from "react-router";
 
 const JWT_SECRET = (() => {
@@ -130,12 +131,20 @@ export function getDeviceInfo(request: Request): {
   ipAddress: string;
   userAgent: string;
   deviceId: string;
+  /** False when the IP is client-supplied (no TRUST_PROXY): display only. */
+  ipTrusted: boolean;
 } {
   const userAgent = request.headers.get("user-agent") || "unknown";
-  const ipAddress =
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    request.headers.get("x-real-ip") ||
-    "unknown";
+  // The client can write anything into the LEFT of X-Forwarded-For; only the
+  // hop our own proxy appended is real, and clientIp knows which one that is.
+  // Without a trusted proxy nothing is reliable, so keep a best guess for the
+  // /sessions page.
+  const ipTrusted = isProxyTrusted();
+  const ipAddress = ipTrusted
+    ? clientIp(request)
+    : request.headers.get("x-real-ip")?.trim() ||
+      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+      "unknown";
   // Create a deterministic device ID from UA + IP (simplified fingerprint)
   const deviceId = crypto
     .createHash("sha256")
@@ -143,24 +152,29 @@ export function getDeviceInfo(request: Request): {
     .digest("hex")
     .substring(0, 16);
 
-  return { ipAddress, userAgent, deviceId };
+  return { ipAddress, userAgent, deviceId, ipTrusted };
 }
 
 // ─── Session management ────────────────────────────────────────────────────────
 
 /**
- * Creates a new session in DB, invalidating all previous sessions for the
- * same user (single-device enforcement).
+ * Creates a new session in DB, ending the user's least recently used
+ * sessions when they are over their device limit (User.maxDevices).
  */
 export async function createSession(
   userId: string,
   role: string,
   request: Request,
 ): Promise<string> {
-  const { ipAddress, userAgent, deviceId } = getDeviceInfo(request);
+  const { ipAddress, userAgent, deviceId, ipTrusted } = getDeviceInfo(request);
 
+  // Times are bound from the app clock, never NOW(): the columns are
+  // TIMESTAMP without a zone holding UTC (that's how Prisma writes them), and
+  // NOW() is read in the database session's TimeZone, which is only UTC by
+  // default. getSessionState also decides "expired" with the app clock.
+  const now = new Date();
   const expiresAt = new Date(
-    Date.now() + SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000,
+    now.getTime() + SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000,
   );
 
   // Generate session ID upfront so we can embed it in the JWT
@@ -178,12 +192,25 @@ export async function createSession(
     const limit = rows[0]?.maxDevices ?? 1;
 
     if (limit > 0) {
-      // Oldest sessions first; keep (limit - 1) so the new one fits.
-      const activeSessions = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT id FROM "UserSession"
-        WHERE "userId" = ${userId} AND "isActive" = true
-        ORDER BY "lastActiveAt" ASC
-      `;
+      // Oldest sessions first; keep (limit - 1) so the new one fits. With a
+      // trusted IP, sessions from this same device (cookie lost, private
+      // window) go first, so signing in again here doesn't sign out the
+      // learner's other device. An untrusted IP makes deviceId meaningless.
+      // COALESCE: rows saved without a deviceId count as another device.
+      // Expired rows can never be used again, so they neither take a slot nor
+      // get evicted ahead of a live session. They stay isActive, so that
+      // browser is still told "expired" rather than "ended".
+      const activeSessions = ipTrusted
+        ? await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT id FROM "UserSession"
+            WHERE "userId" = ${userId} AND "isActive" = true AND "expiresAt" > ${now}
+            ORDER BY COALESCE("deviceId" = ${deviceId}, false) DESC, "lastActiveAt" ASC
+          `
+        : await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT id FROM "UserSession"
+            WHERE "userId" = ${userId} AND "isActive" = true AND "expiresAt" > ${now}
+            ORDER BY "lastActiveAt" ASC
+          `;
       const excess = activeSessions.length - limit + 1;
       if (excess > 0) {
         const ids = activeSessions.slice(0, excess).map((s) => s.id);
@@ -193,7 +220,7 @@ export async function createSession(
 
     await tx.$executeRaw`
       INSERT INTO "UserSession" (id, "userId", token, "deviceId", "ipAddress", "userAgent", "isActive", "expiresAt", "lastActiveAt", "createdAt")
-      VALUES (${sessionId}, ${userId}, ${tokenHash}, ${deviceId}, ${ipAddress}, ${userAgent}, true, ${expiresAt}, NOW(), NOW())
+      VALUES (${sessionId}, ${userId}, ${tokenHash}, ${deviceId}, ${ipAddress}, ${userAgent}, true, ${expiresAt}, ${now}, ${now})
     `;
   });
 
@@ -202,26 +229,39 @@ export async function createSession(
 
 // ─── Session helpers ──────────────────────────────────────────────────────────
 
-export async function getSessionUser(request: Request) {
+/**
+ * What the request's session cookie amounts to. "ended" = the session was
+ * switched off (device limit, admin force logout, password changed on another
+ * device); "expired" = it timed out from inactivity. Kept apart so the login
+ * page can tell the learner why they were signed out.
+ */
+export type SessionState =
+  | { status: "ok"; user: SessionUser }
+  | { status: "none" }
+  | { status: "invalid" }
+  | { status: "ended" }
+  | { status: "expired" }
+  | { status: "blocked" };
+
+export async function getSessionState(request: Request): Promise<SessionState> {
   const token = getTokenFromRequest(request);
-  if (!token) return null;
+  if (!token) return { status: "none" };
 
   const payload = verifyToken(token);
-  if (!payload) return null;
+  if (!payload || typeof payload.sessionId !== "string" || typeof payload.userId !== "string") {
+    return { status: "invalid" };
+  }
 
   const tokenHash = hashToken(token);
 
-  // Validate session exists, is active, and not expired
   const sessions = await prisma.$queryRaw<Array<{ id: string; lastActiveAt: Date; isActive: boolean; expiresAt: Date }>>`
     SELECT id, "lastActiveAt", "isActive", "expiresAt" FROM "UserSession"
     WHERE id = ${payload.sessionId} AND token = ${tokenHash}
   `;
-
-  const validSession = sessions.find(
-    (s) => s.isActive && new Date(s.expiresAt) > new Date()
-  );
-
-  if (!validSession) return null;
+  const session = sessions[0];
+  if (!session) return { status: "invalid" };
+  if (!session.isActive) return { status: "ended" };
+  if (new Date(session.expiresAt) <= new Date()) return { status: "expired" };
 
   // NOTE: never select "passwordHash" here — this object is returned from
   // loaders and serialized into the HTML sent to the browser.
@@ -229,26 +269,36 @@ export async function getSessionUser(request: Request) {
     SELECT id, email, name, role, "isBanned", "isSuspended"
     FROM "User" WHERE id = ${payload.userId} LIMIT 1
   `;
-  const user = users[0] ?? null;
-  if (!user) return null;
+  const user = users[0];
+  if (!user) return { status: "invalid" };
 
   // Block banned/suspended users
-  if (user.isBanned || user.isSuspended) return null;
+  if (user.isBanned || user.isSuspended) return { status: "blocked" };
 
   // Sliding expiry: activity pushes the DB expiry out again (debounced to
   // one write per 5 minutes). The JWT/cookie carry a longer hard ceiling so a
   // daily-active learner is no longer logged out mid-lesson on day 7.
-  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-  if (validSession.lastActiveAt < fiveMinutesAgo) {
+  // App-clock times, not NOW() - see createSession.
+  const nowMs = Date.now();
+  const fiveMinutesAgo = new Date(nowMs - 5 * 60 * 1000);
+  if (session.lastActiveAt < fiveMinutesAgo) {
+    const touchedAt = new Date(nowMs);
+    const slidTo = new Date(nowMs + SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000);
     prisma.$executeRaw`
       UPDATE "UserSession"
-      SET "lastActiveAt" = NOW(),
-          "expiresAt" = NOW() + (${SESSION_DURATION_DAYS}::int * INTERVAL '1 day')
-      WHERE id = ${validSession.id}
+      SET "lastActiveAt" = ${touchedAt},
+          "expiresAt" = ${slidTo}
+      WHERE id = ${session.id}
     `.catch(() => {}); // Non-critical
   }
 
-  return user;
+  return { status: "ok", user };
+}
+
+/** The signed-in user, or null when there is no usable session. */
+export async function getSessionUser(request: Request): Promise<SessionUser | null> {
+  const state = await getSessionState(request);
+  return state.status === "ok" ? state.user : null;
 }
 
 export async function invalidateSession(request: Request): Promise<void> {
@@ -263,26 +313,80 @@ export async function invalidateSession(request: Request): Promise<void> {
     .catch(() => {});
 }
 
-export async function requireUser(request: Request) {
-  const user = await getSessionUser(request);
-  if (!user) {
-    throw redirect("/auth/login");
+export type RequireUserOptions = {
+  /**
+   * Where sign-in returns to instead of the current page; null = nowhere (the
+   * role's default landing). For routes that answer with a file: a sign-in
+   * that ends in a download never leaves the login page, which then sits on
+   * "Signing in…" for good.
+   */
+  returnTo?: string | null;
+};
+
+/**
+ * The signed-in user, or a redirect to the login page that says why the
+ * session ended and, for a page load, brings the learner back to it (or to
+ * opts.returnTo) after signing in.
+ */
+export async function requireUser(request: Request, opts?: RequireUserOptions): Promise<SessionUser> {
+  const state = await getSessionState(request);
+  if (state.status === "ok") return state.user;
+
+  const url = new URL(request.url);
+  const isApi = url.pathname.startsWith("/api/");
+  const params = new URLSearchParams();
+  if (state.status === "ended" || state.status === "expired") {
+    params.set("signedOut", state.status);
   }
-  return user;
+  // Only a GET page can be resumed (a POST body is gone after the redirect).
+  // Plain "/" is left out: the role default, with its welcome toast, is the
+  // better landing there.
+  const returnTo = opts?.returnTo === undefined ? url.pathname + url.search : opts.returnTo;
+  if (returnTo && returnTo !== "/" && request.method === "GET" && !isApi && !url.pathname.startsWith("/auth/")) {
+    params.set("redirect", returnTo);
+  }
+  const query = params.toString();
+  const location = query ? `/auth/login?${query}` : "/auth/login";
+
+  // Drop the dead cookie. Not on /api/ calls (video segments): the learner
+  // never sees those redirects, and clearing the cookie there would make the
+  // next page load look like "never signed in" and lose the reason above.
+  if (state.status === "none" || isApi) throw redirect(location);
+  throw redirect(location, { headers: { "Set-Cookie": clearSessionCookie() } });
 }
 
-export async function requireAdmin(request: Request) {
-  const user = await requireUser(request);
+/** requireUser for admin pages; anyone else goes to /student. opts as for requireUser. */
+export async function requireAdmin(request: Request, opts?: RequireUserOptions) {
+  const user = await requireUser(request, opts);
   if (user.role !== "ADMIN") {
     throw redirect("/student");
   }
   return user;
 }
 
+// ─── Derived secrets ───────────────────────────────────────────────────────────
+
+/**
+ * A purpose-specific key derived from JWT_SECRET, for HMAC-signing things that
+ * are not sessions (e.g. video-proxy URLs). A distinct label per purpose means
+ * a signature minted for one feature can never be replayed against another.
+ */
+export function deriveSecret(label: string): Buffer {
+  return crypto.createHmac("sha256", JWT_SECRET).update(`lms:${label}`).digest();
+}
+
 // ─── License key generation ────────────────────────────────────────────────────
 
+/**
+ * No 0/O, 1/I/L: keys are printed on paper and typed by hand, and those pairs
+ * are the usual "Invalid license key" support ticket. 31 symbols x 12
+ * positions is still ~59 bits. Keys minted before this change may contain the
+ * ambiguous characters; the redeem lookup tolerates them (license.server.ts).
+ */
+export const LICENSE_KEY_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+
 export function generateLicenseKey(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const chars = LICENSE_KEY_ALPHABET;
   const segment = (len: number) =>
     Array.from({ length: len }, () =>
       chars.charAt(crypto.randomInt(chars.length)),

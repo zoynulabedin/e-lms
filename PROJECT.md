@@ -244,7 +244,7 @@ Relations: `course`, `lessons`, `quizzes`
 - `Answer`: belongs to Question, text + `isCorrect`, optional image/video, `matchText` for matching questions
 
 #### Enrollment
-Free course access record linking `userId` → `courseId`.
+Bookkeeping row linking `userId` → `courseId`, created when a key is redeemed or granted. It does NOT grant access — only an ACTIVE licence does (for FREE and PAID courses alike).
 
 #### License
 | Field | Type | Notes |
@@ -350,7 +350,7 @@ location ~* \.(m3u8|ts|key)$ {
 }
 ```
 
-**Video proxy route** (`/api/video-proxy`) exists as fallback — rewrites `.m3u8` segment URLs to route through the LMS server, bypassing CORS. Currently not in use (raw URL mode active).
+**Video proxy route** (`/api/video-proxy`) relays HLS from `courses.instructionalgraphics.org` same-origin (the player uses it for `.m3u8` URLs on that host). The first playlist request must belong to a course the learner holds an ACTIVE licence for; every URL inside the returned playlist is HMAC-signed for that account (~12 h). See projectv2.md §9.7.2.
 
 ---
 
@@ -385,14 +385,16 @@ frame-src   'self' https:;
 
 ## Shopify Integration
 
-Shopify sends a POST to `/shopify/webhook` on order completion.
+Shopify sends a POST to `/shopify/webhook` for `orders/paid`, `refunds/create` and `orders/cancelled` (register all three, same URL, JSON).
 
 Flow:
 1. Webhook received → HMAC verified with `SHOPIFY_WEBHOOK_SECRET`
-2. Parse order: extract `shopifyProductId`, customer email
-3. Find matching Course by `shopifyProductId`
-4. Create a `License` record with status `ACTIVE`
-5. Student redeems via `/redeem` with their license key → enrolled in course
+2. `orders/paid`: each line item maps to a course by variant SKU = course id, else by `product_id` = `Course.shopifyProductId`
+3. One `PENDING` licence per seat (per line item, idempotent; refunded seats excluded), one email to the buyer with all keys
+4. Student redeems via `/redeem` with their license key → licence becomes `ACTIVE` → course unlocked
+5. `refunds/create` / `orders/cancelled` revoke the matching keys and email the admin (restorable on `/licenses`)
+
+Every course, FREE or PAID, opens only with an ACTIVE licence. Details: projectv2.md §15.
 
 ---
 
@@ -432,7 +434,7 @@ Static files may be served directly by Nginx, bypassing Apache + Passenger. This
 | Issue | Status | Notes |
 |-------|--------|-------|
 | HLS CORS in Chrome/Firefox | **Active** | Videos on `courses.instructionalgraphics.org` blocked by CORS. Nginx CORS headers being configured. |
-| Video proxy 500 errors | Dormant | Proxy route exists at `/api/video-proxy` but raw URL mode is active. |
+| Video proxy 500 errors | Resolved | `/api/video-proxy` is in use for `.m3u8` on courses.instructionalgraphics.org; licence-checked and signed (see above). |
 | Safari login | Fixed | `COOKIE_SECURE` + SameSite cookie config resolved |
 | License role badge | Fixed | CORPORATE role showing Admin — resolved |
 | CSP blocking hls.js | Fixed | Added `'unsafe-eval'` to script-src |

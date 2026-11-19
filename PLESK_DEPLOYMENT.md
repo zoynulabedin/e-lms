@@ -131,8 +131,9 @@ Crucial variables include:
 - `APP_URL`: Your actual live URL (e.g., `https://lms.instructionalgraphics.org`)
 - `DATABASE_URL`: Your production database URL 
 - `JWT_SECRET`: A secure, random string (≥ 16 chars — the app refuses to start in production without it)
-- `TRUST_PROXY`: `true` (Plesk's nginx/Apache sit in front of Node; enables IP-based rate limiting)
-- `ADMIN_EMAIL`: where Shopify order notifications go
+- `TRUST_PROXY`: `true` — exactly that lowercase word (Plesk's nginx/Apache sit in front of Node). It enables per-IP rate limiting on login/register/redeem, the real client IP on the Sessions page and same-device-first sign-out. `1`, `TRUE` or `yes` are ignored; with more than one proxy in front use `TRUST_PROXY_HOPS=<n>` instead. When it is missing or not understood the app logs `[rate-limit] TRUST_PROXY ...` once per start — on the first sign-in / register / redeem request, not at boot — and `npm run doctor` reports it any time.
+- `ADMIN_EMAIL`: where Shopify order, refund and cancellation notifications go
+- `SUPPORT_EMAIL` (optional): Reply-To on learner emails; defaults to `info@instructionalgraphics.org`
 - All other API keys (Resend, Cloudinary, Shopify, etc.)
 
 ## 4. Install Dependencies
@@ -194,6 +195,26 @@ npm run doctor
 
 It reports `✗ model "x" MISSING from the generated client` when the client is
 stale, alongside the migration and schema checks.
+
+## Shopify webhooks (licences)
+
+Register the **same URL** — `https://lms.instructionalgraphics.org/shopify/webhook`, format **JSON** — for three events in Shopify admin → Settings → Notifications → Webhooks:
+
+| Event | What the app does |
+|---|---|
+| `orders/paid` (Order payment) | Mints one key per seat and sends the buyer ONE email with all keys |
+| `refunds/create` (Refund create) | Revokes the keys of the refunded seats and emails `ADMIN_EMAIL` |
+| `orders/cancelled` (Order cancellation) | Revokes every key of the order and emails `ADMIN_EMAIL` |
+
+All three are signed with the store's webhook secret shown on that page (`SHOPIFY_WEBHOOK_SECRET`). A revoked key can be restored from the License Keys page. Before 2026-11 only `orders/paid` was used — add the other two once, **after** the new build is running (Restart App done, `npm run doctor` clean): the old build answers those topics with 200 "ignored", and Shopify never re-sends a delivery that got a 2xx.
+
+A refund that returns the course items in full revokes their keys. A *partial-amount* refund (items ticked, but less money returned than they cost — e.g. a goodwill refund) revokes nothing; the admin email says so, and the key can be revoked by hand.
+
+Each course is matched by variant SKU = the course ID, or by the numeric Shopify product ID set in the course builder (FREE or PAID). `npm run doctor` warns about product IDs that are duplicated or not numeric.
+
+## Licence migration of 2026-11
+
+`prisma/migrations/20261119120000_license_line_items_refunds` adds nullable columns to `License` (`shopifyLineItemId`, `amountPaid`, `revokedAt`, `revokedReason`) and `ShopifyOrder` (`cancelledAt`), and the `ShopifyRefund` table. It is applied automatically by **Restart App** (`server.js` → `scripts/migrate.mjs`). Check with `npm run doctor` afterwards — the licence pages, the dashboard and the Shopify webhook need these columns.
 
 ## Updating the App in the Future
 

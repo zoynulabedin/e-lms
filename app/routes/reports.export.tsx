@@ -1,13 +1,16 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireAdmin } from "../utils/auth.server";
+import { revokeReasonLabel } from "../utils/license";
 
 /**
  * GET /reports/export
  * Streams a CSV of all license data for admin export.
  */
 export async function loader({ request }: LoaderFunctionArgs) {
-  await requireAdmin(request);
+  // After a sign-in, land on /reports, not here: a redirect that ends in a
+  // download leaves the login tab stuck on "Signing in…".
+  await requireAdmin(request, { returnTo: "/reports" });
 
   const licenses = await prisma.license.findMany({
     include: {
@@ -31,20 +34,32 @@ export async function loader({ request }: LoaderFunctionArgs) {
     "Course",
     "Customer Email",
     "User Name",
+    "User Email",
+    "Shopify Order",
+    "Amount Paid",
     "Created At",
     "Redeemed At",
+    "Revoked Reason",
+    "Revoked At",
   ].map(csvCell).join(",");
-  const rows = licenses.map((l) =>
-    [
+  const rows = licenses.map((l) => {
+    // A restored key keeps no reason, but guard anyway so only revoked rows say why.
+    const revoked = l.status === "REVOKED";
+    return [
       l.key,
       l.status,
       l.course?.title || "",
       l.customerEmail,
       l.user?.name || "",
+      l.user?.email || "",
+      l.shopifyOrderId || "",
+      l.amountPaid != null ? l.amountPaid.toFixed(2) : "", // per key, shop currency; blank = not recorded
       new Date(l.createdAt).toISOString(),
       l.redeemedAt ? new Date(l.redeemedAt).toISOString() : "",
-    ].map(csvCell).join(","),
-  );
+      revoked ? revokeReasonLabel(l.revokedReason) : "",
+      revoked && l.revokedAt ? new Date(l.revokedAt).toISOString() : "",
+    ].map(csvCell).join(",");
+  });
 
   const csv = [header, ...rows].join("\n");
 

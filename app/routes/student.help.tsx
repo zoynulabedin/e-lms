@@ -3,6 +3,7 @@ import type { LoaderFunctionArgs } from "react-router";
 import { useState } from "react";
 import { requireUser } from "../utils/auth.server";
 import { prisma } from "../utils/db.server";
+import { SUPPORT_EMAIL_ADDRESS } from "../utils/email.server";
 import {
   StudentSidebar,
   StudentMobileTopbar,
@@ -21,7 +22,6 @@ import {
   MessageCircleQuestion,
 } from "lucide-react";
 
-const SUPPORT_EMAIL = "info@instructionalgraphics.org";
 const SUPPORT_HOURS = "Monday – Friday, 9 AM – 5 PM (Eastern)";
 const RESPONSE_SLA = "We typically respond within 1 business day.";
 
@@ -30,10 +30,12 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const completedCount = await prisma.progress.count({
     where: { userId: user.id, completedAt: { not: null } },
   });
-  return { user, hasCertificates: completedCount > 0 };
+  // SUPPORT_EMAIL env (default info@instructionalgraphics.org): the same
+  // address the learner emails use as Reply-To, so the two never disagree.
+  return { user, hasCertificates: completedCount > 0, supportEmail: SUPPORT_EMAIL_ADDRESS };
 }
 
-const FAQS: Array<{ q: string; a: React.ReactNode }> = [
+const faqs = (SUPPORT_EMAIL: string): Array<{ q: string; a: React.ReactNode }> => [
   {
     q: "I have a license key — how do I unlock my course?",
     a: (
@@ -116,7 +118,8 @@ const FAQS: Array<{ q: string; a: React.ReactNode }> = [
 ];
 
 export default function StudentHelp() {
-  const { user, hasCertificates } = useLoaderData<typeof loader>();
+  const { user, hasCertificates, supportEmail: SUPPORT_EMAIL } = useLoaderData<typeof loader>();
+  const FAQS = faqs(SUPPORT_EMAIL);
 
   return (
     <div className="min-h-screen bg-brand-beige">

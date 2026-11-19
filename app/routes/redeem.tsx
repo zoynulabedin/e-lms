@@ -14,32 +14,98 @@ import {
   createSession,
   createSessionCookie,
 } from "../utils/auth.server";
-import { Key, CheckCircle2, AlertCircle, BookOpen } from "lucide-react";
+import { Key, CheckCircle2, AlertCircle, BookOpen, ShieldAlert, ArrowRight } from "lucide-react";
 import { rateLimitResponse, recordFailure } from "../utils/rate-limit.server";
-import { isPlaceholderEmail } from "../utils/license";
+import { isPlaceholderEmail, normalizeLicenseKey } from "../utils/license";
+import {
+  resolveLicenseKey,
+  lockUserAndFindActiveLicense,
+  ensureEnrollment,
+} from "../utils/license.server";
 import { useState } from "react";
+
+const TOO_MANY_ATTEMPTS = "Too many attempts. Please wait a few minutes and try again.";
+const ACCOUNT_EXISTS =
+  "An account with this email already exists. Enter its password, or sign in first and redeem from your dashboard.";
+
+/**
+ * Everything the page renders and nothing more. Anyone holding a key gets
+ * this without signing in, so the licence and course rows (buyer email, order
+ * id, embed / video URLs...) are never sent whole.
+ */
+type RedeemPage = {
+  /** The STORED key once found; otherwise what was typed, normalised. */
+  key: string;
+  /** null = no key yet, not found, or the lookup was rate-limited. */
+  status: "PENDING" | "ACTIVE" | "REVOKED" | null;
+  courseTitle: string | null;
+  /** Pre-fills the account form; "" unless the key is unused and names its buyer. */
+  prefillEmail: string;
+  user: { email: string; role: string } | null;
+  error?: string;
+};
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url);
-  // Same normalisation as the action, so a lowercase / padded key still resolves.
-  const key = (url.searchParams.get("key") || "").trim().toUpperCase();
+  // Keys are typed from paper: spaces, missing dashes, lowercase and a missing
+  // LIC prefix all reduce to the canonical form (same as the action).
+  const input = normalizeLicenseKey(url.searchParams.get("key"));
+  const page: RedeemPage = {
+    key: input,
+    status: null,
+    courseTitle: null,
+    prefillEmail: "",
+    user: null,
+  };
+  if (!input) return page;
 
-  if (!key) return { key: "", license: null, user: null };
+  // Per IP only (a no-op when the IP is unknown): a guesser changes the key on
+  // every try, so a per-key bucket would never fill. Its own generous bucket,
+  // so a classroom's typos on this page can't block redeeming (the action's
+  // stricter "redeem" bucket is separate).
+  if (rateLimitResponse("redeem_lookup", request)) {
+    const limitedPage: RedeemPage = { ...page, error: TOO_MANY_ATTEMPTS };
+    return data(limitedPage, { status: 429 });
+  }
+
+  const storedKey = await resolveLicenseKey(input);
+  const license = storedKey
+    ? await prisma.license.findUnique({
+        where: { key: storedKey },
+        select: {
+          key: true,
+          status: true,
+          customerEmail: true,
+          isBulk: true,
+          course: { select: { title: true } },
+        },
+      })
+    : null;
+  if (!license) {
+    recordFailure("redeem_lookup", request);
+    return page;
+  }
 
   const sessionUser = await getSessionUser(request);
-  const license = await prisma.license.findUnique({
-    where: { key },
-    include: { course: true },
-  });
-
-  return { key, license, user: sessionUser };
+  const found: RedeemPage = {
+    key: license.key,
+    status: license.status,
+    courseTitle: license.course.title,
+    // A bulk key's email is whoever ordered the batch, not the person redeeming.
+    prefillEmail:
+      license.status === "PENDING" &&
+      !license.isBulk &&
+      !isPlaceholderEmail(license.customerEmail)
+        ? license.customerEmail
+        : "",
+    user: sessionUser ? { email: sessionUser.email, role: sessionUser.role } : null,
+  };
+  return found;
 }
 
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
-  const key = String(formData.get("key") || "")
-    .trim()
-    .toUpperCase();
+  const input = normalizeLicenseKey(formData.get("key"));
   const name = String(formData.get("name") || "").trim();
   const email = String(formData.get("email") || "")
     .trim()
@@ -47,17 +113,29 @@ export async function action({ request }: ActionFunctionArgs) {
   const password = String(formData.get("password") || "");
   const intent = String(formData.get("intent") || "");
 
-  if (!key) return data({ error: "License key is required." }, { status: 400 });
-  const limited = rateLimitResponse("redeem", request, key);
+  if (!input) return data({ error: "License key is required." }, { status: 400 });
+  const limited = rateLimitResponse("redeem", request, input);
   if (limited) return limited;
 
-  const license = await prisma.license.findUnique({
-    where: { key },
-    include: { course: true },
-  });
+  // From here on only the STORED key is used (a typed O/0 or I/1 slip resolves to it).
+  const storedKey = await resolveLicenseKey(input);
+  const license = storedKey
+    ? await prisma.license.findUnique({
+        where: { key: storedKey },
+        select: {
+          id: true,
+          key: true,
+          status: true,
+          customerEmail: true,
+          shopifyOrderId: true,
+          courseId: true,
+          course: { select: { title: true } },
+        },
+      })
+    : null;
 
   if (!license) {
-    recordFailure("redeem", request, key);
+    recordFailure("redeem", request, input);
     return data({ error: "Invalid license key." }, { status: 404 });
   }
   if (license.status === "REVOKED")
@@ -71,13 +149,24 @@ export async function action({ request }: ActionFunctionArgs) {
   // ─── Get or create user ───────────────────────────────────────────────────
   let userId: string;
   let userEmail: string = email;
-  let responseHeaders: Record<string, string> = {};
+  const responseHeaders: Record<string, string> = {};
 
   if (intent === "redeem_existing") {
     // User is already logged in
     const sessionUser = await getSessionUser(request);
     if (!sessionUser)
-      return redirect(`/auth/login?redirect=${encodeURIComponent(`/redeem?key=${key}`)}`);
+      return redirect(
+        `/auth/login?redirect=${encodeURIComponent(`/redeem?key=${encodeURIComponent(license.key)}`)}`,
+      );
+    // An admin opening a customer's link must not spend the key with one click.
+    if (sessionUser.role === "ADMIN" && formData.get("confirmAdmin") !== "1") {
+      return data(
+        {
+          error: `You're signed in as an admin, so this key would be used up for your admin account and the customer couldn't use it. Tick "Use this key for my admin account" to go ahead, or sign out first.`,
+        },
+        { status: 400 },
+      );
+    }
     userId = sessionUser.id;
     userEmail = sessionUser.email;
   } else {
@@ -96,29 +185,39 @@ export async function action({ request }: ActionFunctionArgs) {
     const limitedByEmail = rateLimitResponse("redeem", request, email);
     if (limitedByEmail) return limitedByEmail;
 
-    let user = await prisma.user.findUnique({ where: { email } });
+    const accountFields = {
+      id: true,
+      role: true,
+      passwordHash: true,
+      isBanned: true,
+      isSuspended: true,
+    } as const;
+    let user = await prisma.user.findUnique({ where: { email }, select: accountFields });
     if (!user) {
       const passwordHash = await hashPassword(password);
-      user = await prisma.user.create({
-        data: { name, email, passwordHash, role: "STUDENT" },
-      });
+      try {
+        user = await prisma.user.create({
+          data: { name, email, passwordHash, role: "STUDENT" },
+          select: accountFields,
+        });
+      } catch (e: any) {
+        // Created a moment ago by a parallel submit with the same email.
+        if (e?.code === "P2002") return data({ error: ACCOUNT_EXISTS }, { status: 409 });
+        throw e;
+      }
     } else {
       // Existing account: never issue a session without verifying the password.
+      // The password is checked BEFORE the ban flags, so a valid key plus a
+      // guessed password can't reveal that an account is banned or suspended.
+      const ok = await verifyPassword(password, user.passwordHash);
+      if (!ok) {
+        recordFailure("redeem", request, email);
+        return data({ error: ACCOUNT_EXISTS }, { status: 401 });
+      }
       if (user.isBanned || user.isSuspended) {
         return data(
           { error: "This account is unavailable. Please contact support." },
           { status: 403 },
-        );
-      }
-      const ok = await verifyPassword(password, user.passwordHash);
-      if (!ok) {
-        recordFailure("redeem", request, email);
-        return data(
-          {
-            error:
-              "An account with this email already exists. Enter its password, or sign in first and redeem from your dashboard.",
-          },
-          { status: 401 },
         );
       }
     }
@@ -130,10 +229,21 @@ export async function action({ request }: ActionFunctionArgs) {
   // Activate license atomically: the conditional updateMany is the lock -
   // two people submitting the same key at once can't both win, and a failure
   // after the flip can't leave an ACTIVE key without an enrolment.
-  const redeemedEmail = isPlaceholderEmail(license.customerEmail) ? userEmail || null : null;
-  const activated = await prisma.$transaction(async (tx) => {
+  // An unaddressed ADMIN key takes the redeemer's address, so the list and
+  // "Resend Email" have a real one. A Shopify key's address belongs to the
+  // order: when the order had none it stays the placeholder, so a later
+  // Release Seat / "Resend Email" never treats this learner as the buyer.
+  const redeemedEmail =
+    !license.shopifyOrderId && isPlaceholderEmail(license.customerEmail) ? userEmail || null : null;
+  const outcome = await prisma.$transaction(async (tx) => {
+    // Already holds the course (e.g. a 3-seat buyer clicking the second email
+    // link while signed in): leave this key PENDING so the seat isn't lost.
+    // The user-row lock also stops two keys for one course landing at once.
+    if (await lockUserAndFindActiveLicense(tx, userId, license.courseId, license.id)) {
+      return "has_course" as const;
+    }
     const r = await tx.license.updateMany({
-      where: { key, status: "PENDING" },
+      where: { key: license.key, status: "PENDING" },
       data: {
         status: "ACTIVE",
         userId,
@@ -141,20 +251,21 @@ export async function action({ request }: ActionFunctionArgs) {
         ...(redeemedEmail ? { customerEmail: redeemedEmail } : {}),
       },
     });
-    if (r.count === 0) return false;
-    await tx.enrollment.upsert({
-      where: { userId_courseId: { userId, courseId: license.courseId } },
-      update: {},
-      create: { userId, courseId: license.courseId },
-    });
-    await tx.progress.upsert({
-      where: { userId_courseId: { userId, courseId: license.courseId } },
-      update: {},
-      create: { userId, courseId: license.courseId },
-    });
-    return true;
+    if (r.count === 0) return "taken" as const;
+    await ensureEnrollment(tx, userId, license.courseId);
+    return "activated" as const;
   });
-  if (!activated) {
+
+  if (outcome === "has_course") {
+    return data(
+      {
+        error: `You already have access to "${license.course.title}". This key is still unused - you can give it to someone else.`,
+        courseId: license.courseId,
+      },
+      { status: 409, headers: responseHeaders },
+    );
+  }
+  if (outcome === "taken") {
     return data(
       { error: "This license key has already been redeemed." },
       { status: 409, headers: responseHeaders },
@@ -167,9 +278,17 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export default function Redeem() {
-  const { key: paramKey, license, user } = useLoaderData<typeof loader>();
+  const { key, status, courseTitle, prefillEmail, user, error: loaderError } =
+    useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Set when the account already holds this course: offer the way in. (The
+  // inferred action type folds { error, courseId } into { error }, hence typeof.)
+  const ownedCourseId =
+    actionData && "courseId" in actionData && typeof actionData.courseId === "string"
+      ? actionData.courseId
+      : null;
+  const isAdmin = user?.role === "ADMIN";
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-brand-navy-dark via-brand-green-dark to-brand-navy-dark flex items-center justify-center p-4">
@@ -186,19 +305,37 @@ export default function Redeem() {
 
         <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-8 shadow-2xl">
           {actionData?.error && (
-            <div className="flex items-center gap-3 bg-red-500/10 border border-red-500/20 text-red-400 rounded-lg px-4 py-3 text-sm mb-5">
-              <AlertCircle size={16} className="shrink-0" />
-              {actionData.error}
+            <div className="flex items-start gap-3 bg-red-500/10 border border-red-500/20 text-red-400 rounded-lg px-4 py-3 text-sm mb-5">
+              <AlertCircle size={16} className="shrink-0 mt-0.5" />
+              <div>
+                {actionData.error}
+                {ownedCourseId && (
+                  <Link
+                    to={`/student/course/${ownedCourseId}`}
+                    className="mt-2 flex items-center gap-1 text-brand-mustard hover:text-brand-mustard font-medium"
+                  >
+                    Go to your course <ArrowRight size={14} />
+                  </Link>
+                )}
+              </div>
             </div>
           )}
 
           {/* Step 1: enter key first if not pre-filled (or the key was not found) */}
-          {!license && (
+          {!status && (
             <Form method="get" className="space-y-5">
-              {paramKey && (
+              {loaderError && (
                 <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 text-red-300 rounded-lg px-4 py-3 text-sm">
                   <AlertCircle size={15} className="shrink-0" />
-                  We couldn't find a license with the key <span className="font-mono">{paramKey}</span>. Check for typos and try again.
+                  {loaderError}
+                </div>
+              )}
+              {key && !loaderError && (
+                <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 text-red-300 rounded-lg px-4 py-3 text-sm">
+                  <AlertCircle size={15} className="shrink-0" />
+                  <span>
+                    We couldn't find a license with the key <span className="font-mono">{key}</span>. Check for typos and try again.
+                  </span>
                 </div>
               )}
               <div>
@@ -208,11 +345,16 @@ export default function Redeem() {
                 >
                   License Key
                 </label>
+                {/* No pattern: "lic abcd efgh jkmn" is fine, the server normalises it. */}
                 <input
                   id="key-input"
                   name="key"
                   type="text"
                   required
+                  defaultValue={key}
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  spellCheck={false}
                   className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-navy text-sm transition uppercase tracking-widest font-mono"
                   placeholder="LIC-XXXX-XXXX-XXXX"
                 />
@@ -227,7 +369,7 @@ export default function Redeem() {
           )}
 
           {/* Verified license + registration form */}
-          {license && license.status === "PENDING" && (
+          {status === "PENDING" && (
             <div className="space-y-6">
               <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-4 flex items-start gap-3">
                 <CheckCircle2 className="text-green-400 w-5 h-5 shrink-0 mt-0.5" />
@@ -236,19 +378,43 @@ export default function Redeem() {
                     Valid license key!
                   </p>
                   <p className="text-green-400/80 text-xs mt-0.5 flex items-center gap-1">
-                    <BookOpen size={12} /> {license.course.title}
+                    <BookOpen size={12} /> {courseTitle}
                   </p>
                   <code className="text-green-300/60 text-xs font-mono mt-1 block">
-                    {license.key}
+                    {key}
                   </code>
                 </div>
               </div>
 
               {user ? (
                 // Already logged in → just redeem
-                <Form method="post" reloadDocument onSubmit={() => setIsSubmitting(true)}>
-                  <input type="hidden" name="key" value={paramKey} />
+                <Form method="post" reloadDocument onSubmit={() => setIsSubmitting(true)} className="space-y-4">
+                  <input type="hidden" name="key" value={key} />
                   <input type="hidden" name="intent" value="redeem_existing" />
+                  {isAdmin && (
+                    // Usually a customer's link opened from the admin side: one
+                    // click would spend their key, so make it a deliberate choice.
+                    <>
+                      <div className="flex items-start gap-3 bg-brand-mustard/15 border border-brand-mustard/40 text-slate-200 rounded-lg px-4 py-3 text-sm">
+                        <ShieldAlert size={16} className="text-brand-mustard shrink-0 mt-0.5" />
+                        <p>
+                          You're signed in as an admin. Activating uses this key up for your admin
+                          account, so the customer can't use it. Sign out first to redeem it as a
+                          student.
+                        </p>
+                      </div>
+                      <label className="flex items-center gap-2.5 text-sm text-slate-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          name="confirmAdmin"
+                          value="1"
+                          required
+                          className="w-4 h-4 rounded accent-brand-mustard"
+                        />
+                        Use this key for my admin account
+                      </label>
+                    </>
+                  )}
                   <button
                     type="submit"
                     disabled={isSubmitting}
@@ -260,7 +426,7 @@ export default function Redeem() {
               ) : (
                 // Create account & redeem
                 <Form method="post" reloadDocument onSubmit={() => setIsSubmitting(true)} className="space-y-4">
-                  <input type="hidden" name="key" value={paramKey} />
+                  <input type="hidden" name="key" value={key} />
                   <p className="text-slate-400 text-sm">
                     Create an account to access your course:
                   </p>
@@ -283,9 +449,7 @@ export default function Redeem() {
                     <input
                       name="email"
                       type="email"
-                      defaultValue={
-                        isPlaceholderEmail(license.customerEmail) ? "" : license.customerEmail
-                      }
+                      defaultValue={prefillEmail}
                       required
                       className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-navy text-sm"
                       placeholder="you@example.com"
@@ -316,7 +480,7 @@ export default function Redeem() {
                   <p className="text-center text-xs text-slate-500">
                     Already have an account?{" "}
                     <Link
-                      to={`/auth/login?redirect=${encodeURIComponent(`/redeem?key=${paramKey}`)}`}
+                      to={`/auth/login?redirect=${encodeURIComponent(`/redeem?key=${encodeURIComponent(key)}`)}`}
                       className="text-brand-mustard hover:text-brand-mustard"
                     >
                       Sign in
@@ -327,11 +491,11 @@ export default function Redeem() {
             </div>
           )}
 
-          {license && license.status !== "PENDING" && (
+          {status && status !== "PENDING" && (
             <div className="text-center space-y-3">
               <AlertCircle className="mx-auto text-red-400 w-10 h-10" />
               <p className="text-white font-semibold">
-                {license.status === "REVOKED"
+                {status === "REVOKED"
                   ? "This license has been revoked."
                   : "This license has already been redeemed."}
               </p>

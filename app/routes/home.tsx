@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import type { LoaderFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireAdmin } from "../utils/auth.server";
+import { isPlaceholderEmail } from "../utils/license";
 import {
   Users,
   Key,
@@ -50,11 +51,17 @@ export async function loader({ request }: LoaderFunctionArgs) {
     prisma.license.findMany({
       orderBy: { redeemedAt: "desc" },
       take: 8,
-      include: {
+      // Only what the list renders.
+      select: {
+        id: true,
+        key: true,
+        customerEmail: true,
+        redeemedAt: true,
         course: { select: { title: true } },
-        user: { select: { name: true } },
+        user: { select: { name: true, email: true } },
       },
-      where: { redeemedAt: { not: null } },
+      // A released seat keeps redeemedAt but has no holder: not a redemption to show.
+      where: { redeemedAt: { not: null }, userId: { not: null } },
     }),
     prisma.course.findMany({
       take: 5,
@@ -75,14 +82,17 @@ export async function loader({ request }: LoaderFunctionArgs) {
       GROUP BY DATE("redeemedAt")
       ORDER BY day ASC
     `,
+    // Revenue is what buyers actually paid per key (after discounts, recorded
+    // by the Shopify webhook). Keys sold before that was recorded fall back to
+    // the course's current price. Refunded / cancelled keys are REVOKED.
     prisma.$queryRaw<Array<{ total: string | null }>>`
-      SELECT COALESCE(SUM(c.price), 0)::text as total
+      SELECT COALESCE(SUM(COALESCE(l."amountPaid", c.price)), 0)::text as total
       FROM "License" l
       JOIN "Course" c ON l."courseId" = c.id
       WHERE l."shopifyOrderId" IS NOT NULL   -- real purchases only, never admin-generated bulk keys
         AND l.status <> 'REVOKED'            -- redeemed or not, the sale happened
-        AND c."courseType" = 'PAID'
-        AND c.price IS NOT NULL
+        AND (l."amountPaid" IS NOT NULL      -- the real amount paid
+             OR (c."courseType" = 'PAID' AND c.price IS NOT NULL))  -- legacy keys: list price
     `,
   ]);
 
@@ -463,7 +473,9 @@ export default function Dashboard() {
                     )}
                   </p>
                   <p className="text-xs text-gray-400 truncate">
-                    {a.customerEmail}
+                    {/* Keys from a Shopify order without an email keep the
+                        placeholder after redeem - show the learner instead. */}
+                    {isPlaceholderEmail(a.customerEmail) && a.user?.email ? a.user.email : a.customerEmail}
                   </p>
                 </div>
 

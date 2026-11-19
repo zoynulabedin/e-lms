@@ -178,8 +178,11 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   const courseId = params.courseId!;
 
   const [license, enrollment, course] = await Promise.all([
+    // Only the id (all computeCourseAccess reads): without a select every
+    // column is listed, and a License column not migrated yet 500s the player.
     prisma.license.findFirst({
       where: { courseId, userId: user.id, status: "ACTIVE" },
+      select: { id: true },
     }),
     prisma.enrollment.findUnique({
       where: { userId_courseId: { userId: user.id, courseId } },

@@ -6,6 +6,7 @@
  * Prints, in plain language:
  *   • which migrations the database has recorded (and any that FAILED)
  *   • whether every table/column the app needs is present
+ *   • Shopify product ids that can't map an order to a course (warnings)
  *   • the result of running the /student dashboard's own queries for a real
  *     student account — the query that throws here is the one causing the 500
  *
@@ -30,6 +31,8 @@ if (!url) {
 const pool = new Pool({ connectionString: url });
 const ok = (m) => console.log(`  ✓ ${m}`);
 const bad = (m) => console.log(`  ✗ ${m}`);
+// Worth fixing, but not counted as a problem (the exit code stays 0).
+const warn = (m) => console.log(`  ! ${m}`);
 const firstLine = (m) => String(m).split(String.fromCharCode(10))[0];
 const head = (m) => console.log(`\n${m}\n${"-".repeat(m.length)}`);
 
@@ -115,7 +118,7 @@ try {
       "watchVideo", "shopifyOrder",
       // Added after the first deploy - the usual reason a feature "does
       // nothing" on the server while working locally.
-      "courseResource", "glossaryTerm", "certificateTemplate",
+      "courseResource", "glossaryTerm", "certificateTemplate", "shopifyRefund",
     ];
     const missing = required.filter((m) => typeof client[m] !== "object");
     if (missing.length === 0) {
@@ -136,6 +139,15 @@ try {
   head("Tables and columns the app needs");
   await tryQuery('table "WatchVideo"', 'SELECT 1 FROM "WatchVideo" LIMIT 1');
   await tryQuery('table "ShopifyOrder"', 'SELECT 1 FROM "ShopifyOrder" LIMIT 1');
+  // Without these the Shopify webhook fails on every order and refund (and
+  // Shopify keeps retrying), and the dashboard revenue and licence pages error.
+  await tryQuery('table "ShopifyRefund"', 'SELECT 1 FROM "ShopifyRefund" LIMIT 1');
+  await tryQuery('column License."shopifyLineItemId"', 'SELECT "shopifyLineItemId" FROM "License" LIMIT 1');
+  await tryQuery('column License."amountPaid"', 'SELECT "amountPaid" FROM "License" LIMIT 1');
+  await tryQuery('column License."revokedAt"', 'SELECT "revokedAt" FROM "License" LIMIT 1');
+  await tryQuery('column License."revokedReason"', 'SELECT "revokedReason" FROM "License" LIMIT 1');
+  await tryQuery('column ShopifyOrder."cancelledAt"', 'SELECT "cancelledAt" FROM "ShopifyOrder" LIMIT 1');
+  await tryQuery('column ShopifyRefund."lineItems"', 'SELECT "lineItems" FROM "ShopifyRefund" LIMIT 1');
   // Without these the Resources page and the certificate designer degrade to
   // empty rather than erroring, which looks like "the feature does nothing".
   await tryQuery('table "CourseResource"', 'SELECT 1 FROM "CourseResource" LIMIT 1');
@@ -146,6 +158,45 @@ try {
   await tryQuery('column Answer."order"', 'SELECT "order" FROM "Answer" LIMIT 1');
   await tryQuery('column Lesson."iframeEmbed"', 'SELECT "iframeEmbed" FROM "Lesson" LIMIT 1');
   await tryQuery('column Progress."completedAt"', 'SELECT "completedAt" FROM "Progress" LIMIT 1');
+
+  // ── Shopify product ids ───────────────────────────────────────────────────
+  // An order maps to a course by variant SKU or by this id. The webhook
+  // refuses to guess when two courses share an id (a gid://shopify/Product/<n>
+  // counts as <n>), and anything else that is not a plain number never
+  // matches - either way the buyer gets no key. Warnings, not problems.
+  head("Shopify product ids");
+  try {
+    const { rows: shared } = await pool.query(
+      `SELECT COALESCE(substring("shopifyProductId" from '^gid://shopify/Product/([0-9]+)$'), "shopifyProductId") AS product,
+              array_agg(title ORDER BY title) AS titles
+         FROM "Course"
+        WHERE "shopifyProductId" IS NOT NULL AND "shopifyProductId" <> ''
+        GROUP BY 1
+       HAVING count(*) > 1`,
+    );
+    const { rows: odd } = await pool.query(
+      `SELECT title, "shopifyProductId" AS product,
+              "shopifyProductId" ~ '^gid://shopify/Product/[0-9]+$' AS gid
+         FROM "Course"
+        WHERE "shopifyProductId" IS NOT NULL AND "shopifyProductId" <> ''
+          AND "shopifyProductId" !~ '^[0-9]+$'
+        ORDER BY title`,
+    );
+    for (const s of shared) {
+      warn(`product ${s.product} is set on ${s.titles.length} courses (${s.titles.join(", ")}) - orders for it get no key`);
+    }
+    for (const c of odd) {
+      warn(
+        `"${c.title}": product id "${c.product}" is not a plain number` +
+          (c.gid ? " (orders still match it)" : " - orders never match it") +
+          "; re-save the course in the course builder to normalise it",
+      );
+    }
+    if (shared.length + odd.length === 0) ok("every Shopify product id is a plain number on one course");
+  } catch (e) {
+    problems++;
+    bad(`could not check the Shopify product ids: ${firstLine(e.message)}`);
+  }
 
   // ── The /student dashboard's own queries, for a real student ─────────────
   head("/student dashboard queries");
@@ -187,13 +238,25 @@ try {
     ["RESEND_API_KEY", false],
     ["CLOUDINARY_CLOUD_NAME", false],
     ["SHOPIFY_WEBHOOK_SECRET", false],
-    ["TRUST_PROXY", false],
   ]) {
     const v = process.env[k];
     if (v) ok(`${k} set`);
     else if (required) { problems++; bad(`${k} MISSING`); }
     else console.log(`  - ${k} not set (optional)`);
   }
+  // Recommended, not required. Plesk's nginx sits in front of Node, and without
+  // a trusted proxy the per-IP rate limits (login, redeem, password reset) see
+  // no client address, so only the per-account limits apply. Same rule as
+  // clientIp() in app/utils/rate-limit.server.ts: only "true" or a hop count counts.
+  const proxyHops = Number.parseInt(process.env.TRUST_PROXY_HOPS ?? "", 10);
+  if (Number.isInteger(proxyHops) && proxyHops > 0) ok(`TRUST_PROXY_HOPS set (${proxyHops})`);
+  else if (process.env.TRUST_PROXY === "true") ok("TRUST_PROXY set");
+  else if (process.env.TRUST_PROXY === "false")
+    console.log("  - TRUST_PROXY=false (deliberately off: only per-account rate limits apply; use true behind Plesk/nginx)");
+  else console.log(
+    `  - TRUST_PROXY ${process.env.TRUST_PROXY ? `is "${process.env.TRUST_PROXY}", which is ignored` : "not set"}` +
+      " (recommended on Plesk: TRUST_PROXY=true turns on the per-IP rate limits)",
+  );
   if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 16) {
     problems++;
     bad("JWT_SECRET is shorter than 16 characters — the app refuses to start in production");

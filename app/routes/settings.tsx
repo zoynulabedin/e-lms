@@ -1,6 +1,7 @@
 import { data } from "react-router";
 import {
   Form,
+  Link,
   useLoaderData,
   useActionData,
   useNavigation,
@@ -130,16 +131,43 @@ export default function Settings() {
             </button>
           </div>
           <p className="text-xs text-gray-400 mt-2">
-            Register this URL in your Shopify admin under{" "}
+            Register this <strong>same URL</strong> in your Shopify admin under{" "}
             <a
               href={`https://${shopifyDomain}/admin/settings/notifications`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-brand-navy hover:underline inline-flex items-center gap-0.5"
             >
-              Settings → Notifications <ExternalLink size={11} />
+              Settings → Notifications → Webhooks <ExternalLink size={11} />
             </a>{" "}
-            for the <strong>orders/paid</strong> event.
+            three times, once for each event, with the format set to{" "}
+            <strong>JSON</strong>:
+          </p>
+          <ul className="text-xs text-gray-400 mt-1.5 space-y-0.5 list-disc pl-5">
+            <li>
+              <strong>orders/paid</strong> (Order payment) — creates the
+              license keys and emails them to the buyer
+            </li>
+            <li>
+              <strong>refunds/create</strong> (Refund create) — revokes the
+              keys of the refunded items
+            </li>
+            <li>
+              <strong>orders/cancelled</strong> (Order cancellation) — revokes
+              every key of the order
+            </li>
+          </ul>
+          <p className="text-xs text-gray-400 mt-1.5">
+            A refund or cancellation revokes the matching keys automatically
+            and emails you the list. A key revoked by mistake can be restored on
+            the{" "}
+            <Link
+              to="/licenses?status=REVOKED"
+              className="text-brand-navy hover:underline"
+            >
+              License Keys
+            </Link>{" "}
+            page.
           </p>
         </div>
       </div>
@@ -174,6 +202,7 @@ COOKIE_SECURE=true                   # HTTPS only (default in production)
 APP_URL=https://yourapp.com
 RESEND_API_KEY=re_...
 EMAIL_FROM=noreply@yourdomain.com
+SUPPORT_EMAIL=help@yourdomain.com    # optional: Reply-To on customer emails (default info@instructionalgraphics.org)
 ADMIN_EMAIL=you@yourdomain.com       # Shopify order notifications
 SHOPIFY_WEBHOOK_SECRET=...
 SHOPIFY_STORE_DOMAIN=yourstore.myshopify.com

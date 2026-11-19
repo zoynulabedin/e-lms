@@ -40,6 +40,21 @@ export function HlsPlayer({
   const hlsRef = useRef<import("hls.js").default | null>(null);
   const retryRef = useRef(0);
   const MAX_RETRIES = 3;
+  // Recovery budget. Failures are forgiven only by real progress: a MAIN
+  // (video) fragment at or past the point that failed reaching the buffer.
+  // Audio/subtitle fragments can keep loading while a broken main segment keeps
+  // failing, a reload re-buffers the fragments BEFORE the broken one, and
+  // elapsed time can't count either (slow timeouts outlast any window) - each
+  // of those used to loop forever. Per stretch without such progress:
+  // MAX_RETRIES startLoad() retries, then ONE automatic reload, then the
+  // error; and one recoverMediaError().
+  const failuresRef = useRef(0);
+  const reloadUsedRef = useRef(false);
+  const mediaRecoveryUsedRef = useRef(false);
+  // Media time of the latest failure; null while nothing is failing.
+  const failedAtRef = useRef<number | null>(null);
+  // Set by that reload: whether to carry on playing once the new playlist is in.
+  const resumePlayingRef = useRef<boolean | null>(null);
 
   const [status, setStatus] = useState<Status>("loading");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -60,6 +75,11 @@ export function HlsPlayer({
 
     // Reset state for each new src
     retryRef.current = 0;
+    failuresRef.current = 0;
+    reloadUsedRef.current = false;
+    mediaRecoveryUsedRef.current = false;
+    failedAtRef.current = null;
+    resumePlayingRef.current = null;
     setErrorMsg(null);
     setStatus("loading");
     setQualities([]);
@@ -110,8 +130,29 @@ export function HlsPlayer({
           }));
           setQualities(levels.length > 1 ? levels : []);
 
-          // Muted where the browser blocks sound without a click.
-          if (autoPlay) void playWithMutedFallback(video!);
+          // Muted where the browser blocks sound without a click. After the
+          // automatic reload it plays on only if it was playing before.
+          const play = resumePlayingRef.current ?? autoPlay;
+          resumePlayingRef.current = null;
+          if (play) void playWithMutedFallback(video!);
+        });
+
+        // A fragment came through, so the start position a reload set is used
+        // up: left in the config it would also apply to the next playlist load.
+        hls.on(Hls.Events.FRAG_LOADED, () => {
+          hls.config.startPosition = -1;
+        });
+
+        // Real progress: video at or past the failure reached the buffer, so
+        // the next stall gets a fresh retry / reload / media-recovery budget.
+        hls.on(Hls.Events.FRAG_BUFFERED, (_e, { frag }) => {
+          if (String(frag.type) !== "main") return; // PlaylistLevelType.MAIN
+          const failedAt = failedAtRef.current;
+          if (failedAt !== null && frag.start + frag.duration <= failedAt + 0.05) return;
+          failedAtRef.current = null;
+          failuresRef.current = 0;
+          reloadUsedRef.current = false;
+          mediaRecoveryUsedRef.current = false;
         });
 
         // Track which quality level is active
@@ -123,14 +164,49 @@ export function HlsPlayer({
         hls.on(Hls.Events.ERROR, (_e, data) => {
           if (cancelled || !data.fatal) return;
 
+          // Where it broke: the failing fragment, else (a playlist) the playhead.
+          failedAtRef.current = Math.max(
+            failedAtRef.current ?? 0,
+            data.frag && String(data.frag.type) === "main" ? data.frag.start : video.currentTime,
+          );
+
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            if (retryRef.current < MAX_RETRIES) {
-              retryRef.current += 1;
+            // The proxy answers 401 once the session has ended (e.g. the
+            // account signed in on another device). Retrying can't help.
+            if (data.response?.code === 401) {
+              setStatus("error");
+              setErrorMsg("You were signed out. Reload the page to sign in again.");
+              return;
+            }
+            failuresRef.current += 1;
+            retryRef.current = failuresRef.current;
+            // startLoad() only resumes from playlists already loaded, so it
+            // cannot help when the main playlist itself failed (no levels).
+            if (retryRef.current <= MAX_RETRIES && hls.levels.length > 0) {
               console.warn(
                 `[HlsPlayer] network error — retry ${retryRef.current}/${MAX_RETRIES}`,
                 data.details,
               );
-              setTimeout(() => hls.startLoad(), 1500);
+              setTimeout(() => {
+                if (!cancelled) hls.startLoad();
+              }, 1500);
+            } else if (!reloadUsedRef.current) {
+              // The proxy signs segment URLs for ~12 h, so after a long pause
+              // startLoad() keeps asking for dead links. Load the playlist once
+              // more (fresh signatures) and carry on from the same spot; the
+              // error shows if that fails too.
+              reloadUsedRef.current = true;
+              failuresRef.current = 0;
+              console.warn("[HlsPlayer] retries used up — reloading the playlist", data.details);
+              setTimeout(() => {
+                if (cancelled) return;
+                setStatus("loading");
+                // Plays on if it was playing; one that never started still
+                // follows autoPlay.
+                resumePlayingRef.current = video.played.length > 0 ? !video.paused : null;
+                hls.config.startPosition = video.currentTime > 0 ? video.currentTime : -1;
+                hls.loadSource(src);
+              }, 1500);
             } else {
               setStatus("error");
               setErrorMsg(
@@ -138,8 +214,16 @@ export function HlsPlayer({
               );
             }
           } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-            console.warn("[HlsPlayer] media error — attempting recovery");
-            hls.recoverMediaError();
+            // One recovery per stretch without progress: a segment that can't
+            // be decoded (or isn't video at all) would otherwise loop forever.
+            if (!mediaRecoveryUsedRef.current) {
+              mediaRecoveryUsedRef.current = true;
+              console.warn("[HlsPlayer] media error — attempting recovery");
+              hls.recoverMediaError();
+            } else {
+              setStatus("error");
+              setErrorMsg(`Playback error (${data.details}). Try again.`);
+            }
           } else {
             setStatus("error");
             setErrorMsg(`Playback error (${data.details})`);
@@ -183,7 +267,12 @@ export function HlsPlayer({
   function handleRetry() {
     const video = videoRef.current;
     if (!video) return;
+    // A manual "Try Again" starts a fresh retry budget.
     retryRef.current = 0;
+    failuresRef.current = 0;
+    reloadUsedRef.current = false;
+    mediaRecoveryUsedRef.current = false;
+    failedAtRef.current = null;
     setStatus("loading");
     setErrorMsg(null);
 

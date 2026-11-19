@@ -10,25 +10,25 @@ import {
   DUMMY_HASH,
 } from "../utils/auth.server";
 import { rateLimitResponse, recordFailure } from "../utils/rate-limit.server";
+import { safeRedirect } from "../utils/safe-redirect";
 
-/** Only same-origin relative paths are honoured - never "//evil" or "https://…". */
-function safeRedirect(to: string | null, fallback: string): string {
-  if (!to || !to.startsWith("/") || to.startsWith("//") || to.startsWith("/\\")) return fallback;
-  return to;
-}
-
-import { Eye, EyeOff, CheckCircle2, Mail, Lock, ArrowLeft } from "lucide-react";
+import { Eye, EyeOff, CheckCircle2, Mail, Lock, ArrowLeft, LogOut, Clock } from "lucide-react";
 import { useState } from "react";
 
 export async function loader({ request }: LoaderFunctionArgs) {
+  const url = new URL(request.url);
+  const redirectTo = safeRedirect(url.searchParams.get("redirect"), "");
   const user = await getSessionUser(request);
   if (user) {
-    return redirect(user.role === "ADMIN" ? "/" : "/student");
+    // Already signed in (e.g. a second tab): go where the link was heading.
+    return redirect(redirectTo || (user.role === "ADMIN" ? "/" : "/student"));
   }
-  const url = new URL(request.url);
   const passwordReset = url.searchParams.get("reset") === "1";
-  const redirectTo = safeRedirect(url.searchParams.get("redirect"), "");
-  return data({ passwordReset, redirectTo });
+  // Set by requireUser when it finds a session that was ended or timed out.
+  const signedOutParam = url.searchParams.get("signedOut");
+  const signedOut =
+    signedOutParam === "ended" || signedOutParam === "expired" ? signedOutParam : null;
+  return data({ passwordReset, redirectTo, signedOut });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -45,7 +45,7 @@ export async function action({ request }: ActionFunctionArgs) {
   if (limited) return limited;
 
   const redirectTo = safeRedirect(
-    String(formData.get("redirect") || new URL(request.url).searchParams.get("redirect") || ""),
+    formData.get("redirect") || new URL(request.url).searchParams.get("redirect"),
     "",
   );
 
@@ -126,6 +126,8 @@ export default function Login() {
     loaderData && "passwordReset" in loaderData ? loaderData.passwordReset : false;
   const redirectTo =
     loaderData && "redirectTo" in loaderData ? (loaderData.redirectTo as string) : "";
+  const signedOut =
+    loaderData && "signedOut" in loaderData ? loaderData.signedOut : null;
 
   return (
     <div
@@ -193,6 +195,18 @@ export default function Login() {
               onSubmit={() => setIsSubmitting(true)}
             >
               {redirectTo && <input type="hidden" name="redirect" value={redirectTo} />}
+              {signedOut && (
+                <div className="mb-5 flex items-start gap-2 rounded-lg border border-amber-600/20 bg-amber-600/10 px-4 py-3 text-sm text-amber-800">
+                  {signedOut === "expired" ? (
+                    <Clock size={15} className="mt-0.5 shrink-0" />
+                  ) : (
+                    <LogOut size={15} className="mt-0.5 shrink-0" />
+                  )}
+                  {signedOut === "expired"
+                    ? "Your session expired. Please sign in again."
+                    : "You were signed out on this device. Your account may have signed in somewhere else, its password or email may have been changed, or an administrator ended the session. Sign in again to continue."}
+                </div>
+              )}
               {passwordReset && (
                 <div className="mb-5 flex items-center gap-2 rounded-lg border border-green-600/20 bg-green-600/10 px-4 py-3 text-sm text-green-800">
                   <CheckCircle2 size={15} className="shrink-0" />

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { data, redirect, useFetcher, useLoaderData } from "react-router";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
@@ -7,6 +8,8 @@ import {
   verifyPassword,
   getCurrentSessionTokenHash,
 } from "../utils/auth.server";
+import { sendEmailChangedNotice } from "../utils/email.server";
+import { rateLimitResponse, recordFailure, TOO_MANY_ATTEMPTS } from "../utils/rate-limit.server";
 import {
   StudentSidebar,
   StudentMobileTopbar,
@@ -53,6 +56,34 @@ export async function action({ request }: ActionFunctionArgs) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return data({ intent, error: "Please enter a valid email address." }, { status: 400 });
     }
+
+    // Same test as the form uses to show the password field, so the server
+    // never demands a password the form gave no field for.
+    const oldEmail = user.email;
+    if (email === oldEmail.trim().toLowerCase()) {
+      await prisma.user.update({ where: { id: user.id }, data: { name } });
+      return data({ intent, success: "Profile updated." });
+    }
+
+    // Whoever controls the email can reset the password. Without this check,
+    // anyone at an unattended signed-in browser could point the account at
+    // their own address and take it over for good. Checked before the "email
+    // taken" lookup so the form can't be used to probe which addresses exist.
+    // Rate-limited per account, or that same browser could guess the password.
+    // The 429 carries the intent so this card shows it.
+    if (rateLimitResponse("account_password", request, user.id)) {
+      return data({ intent, error: TOO_MANY_ATTEMPTS }, { status: 429 });
+    }
+    const current = String(formData.get("currentPassword") || "");
+    const row = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: { passwordHash: true },
+    });
+    if (!current || !row || !(await verifyPassword(current, row.passwordHash))) {
+      recordFailure("account_password", request, user.id);
+      return data({ intent, error: "Enter your current password to change your email." }, { status: 401 });
+    }
+
     const conflict = await prisma.user.findFirst({
       where: { email, NOT: { id: user.id } },
       select: { id: true },
@@ -60,8 +91,40 @@ export async function action({ request }: ActionFunctionArgs) {
     if (conflict) {
       return data({ intent, error: "That email is already used by another account." }, { status: 409 });
     }
-    await prisma.user.update({ where: { id: user.id }, data: { name, email } });
-    return data({ intent, success: "Profile updated." });
+
+    const keep = getCurrentSessionTokenHash(request);
+    try {
+      // Switch the address, kill any reset link already mailed to the old one,
+      // and sign out every OTHER device; this session stays.
+      await prisma.$transaction([
+        prisma.user.update({ where: { id: user.id }, data: { name, email } }),
+        prisma.passwordReset.deleteMany({ where: { userId: user.id } }),
+        prisma.userSession.updateMany({
+          where: { userId: user.id, isActive: true, ...(keep ? { token: { not: keep } } : {}) },
+          data: { isActive: false },
+        }),
+      ]);
+    } catch (e: any) {
+      // Another account took the address between the check above and the update.
+      if (e?.code === "P2002") {
+        return data({ intent, error: "That email is already used by another account." }, { status: 409 });
+      }
+      throw e;
+    }
+
+    // Tell the OLD address, so a change the owner didn't make can't go
+    // unnoticed. Not awaited: the change is already saved, and a slow or
+    // failing mail provider must not hold up or fail this response.
+    void sendEmailChangedNotice({ to: oldEmail, newEmail: email })
+      .then((r) => {
+        if (!r.ok) console.error(`[settings] email-changed notice for user ${user.id} failed: ${r.error}`);
+      })
+      .catch(console.error);
+
+    return data({
+      intent,
+      success: "Profile updated. We sent a notice to your previous email address and signed out your other devices.",
+    });
   }
 
   if (intent === "change_password") {
@@ -75,19 +138,27 @@ export async function action({ request }: ActionFunctionArgs) {
     if (next !== confirm) {
       return data({ intent, error: "New password and confirmation do not match." }, { status: 400 });
     }
+    // Same budget as the email change above: wrong guesses here count too.
+    if (rateLimitResponse("account_password", request, user.id)) {
+      return data({ intent, error: TOO_MANY_ATTEMPTS }, { status: 429 });
+    }
     const row = await prisma.user.findUnique({
       where: { id: user.id },
       select: { passwordHash: true },
     });
     if (!row || !(await verifyPassword(current, row.passwordHash))) {
+      recordFailure("account_password", request, user.id);
       return data({ intent, error: "Current password is incorrect." }, { status: 401 });
     }
 
     const passwordHash = await hashPassword(next);
     const keep = getCurrentSessionTokenHash(request);
-    // Set the new password and sign out every OTHER device; this session stays.
+    // Set the new password, void any outstanding reset link (it would still let
+    // someone set a password of their own), and sign out every OTHER device;
+    // this session stays.
     await prisma.$transaction([
       prisma.user.update({ where: { id: user.id }, data: { passwordHash } }),
+      prisma.passwordReset.deleteMany({ where: { userId: user.id } }),
       prisma.userSession.updateMany({
         where: { userId: user.id, isActive: true, ...(keep ? { token: { not: keep } } : {}) },
         data: { isActive: false },
@@ -208,6 +279,14 @@ function Card({
 function ProfileCard({ user }: { user: { name: string; email: string } }) {
   const fetcher = useFetcher<ActionResult>();
   const busy = fetcher.state !== "idle";
+  // Tracked so the form knows when the email is being changed: that needs the
+  // current password (the action applies the same comparison).
+  const [email, setEmail] = useState(user.email);
+  // After a successful change the loader revalidates with the saved address;
+  // adopt it so the input shows what was stored and the password field closes.
+  useEffect(() => { setEmail(user.email); }, [user.email]);
+  const emailChanged = email.trim().toLowerCase() !== user.email.trim().toLowerCase();
+
   return (
     <Card icon={User} title="Profile" description="Your name appears on certificates and in the dashboard greeting.">
       <fetcher.Form method="post" className="space-y-4">
@@ -220,8 +299,35 @@ function ProfileCard({ user }: { user: { name: string; email: string } }) {
           </div>
           <div>
             <label htmlFor="email" className={labelCls}>Email</label>
-            <input id="email" name="email" type="email" defaultValue={user.email} required className={inputCls} />
+            <input
+              id="email"
+              name="email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              className={inputCls}
+            />
           </div>
+          {emailChanged && (
+            // Sits under the Email column; unmounting it when the email is put
+            // back (or saved) also clears whatever was typed into it.
+            <div className="sm:col-start-2">
+              <label htmlFor="profileCurrentPassword" className={labelCls}>Current password</label>
+              <input
+                id="profileCurrentPassword"
+                name="currentPassword"
+                type="password"
+                autoComplete="current-password"
+                required
+                aria-describedby="profileCurrentPasswordHint"
+                className={inputCls}
+              />
+              <p id="profileCurrentPasswordHint" className="text-xs text-brand-navy/55 mt-1.5">
+                Required to change your email.
+              </p>
+            </div>
+          )}
         </div>
         <button type="submit" disabled={busy} className={buttonCls}>
           {busy ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}

@@ -34,7 +34,9 @@ function redact(text) {
     .replace(/((?:password|secret|token|api[_-]?key|authorization)\s*[=:]\s*)\S+/gi, "$1***")
     // long opaque strings that look like keys (re_..., shpat_..., sk_..., JWTs)
     .replace(/\b(re_|shpat_|sk_|pk_)[A-Za-z0-9_-]{8,}/g, "$1***")
-    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "<jwt>");
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "<jwt>")
+    // licence keys: an unused one is redeemable by whoever reads the report
+    .replace(/\bLIC-[A-Z0-9]{4}-[A-Z0-9]{4}-([A-Z0-9]{4})\b/g, "LIC-****-****-$1");
 }
 
 function run(cmd, args) {

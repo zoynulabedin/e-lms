@@ -68,7 +68,10 @@ function errorPage(status: number, title: string, detail: string, backTo = "/stu
 }
 
 export async function loader({ request, params }: LoaderFunctionArgs) {
-  const user = await requireUser(request);
+  // After a sign-in, land on the resources page, not here: a .docx or .zip
+  // downloads instead of opening, which leaves the login tab stuck on
+  // "Signing in…".
+  const user = await requireUser(request, { returnTo: "/student/resources" });
   const id = params.resourceId!;
 
   type Gated = {

@@ -8,6 +8,29 @@ import { rateLimitResponse, recordAttempt } from "../utils/rate-limit.server";
 import crypto from "crypto";
 import { Store, Mail } from "lucide-react";
 
+/** Stores a fresh reset token and emails the link. Never throws. */
+async function issuePasswordReset(userId: string, email: string) {
+  try {
+    // The raw token goes in the email only; the DB keeps a SHA-256 of it so a
+    // leaked backup / log can't be replayed as a live reset link.
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    await prisma.$transaction([
+      prisma.passwordReset.deleteMany({ where: { userId } }),
+      prisma.passwordReset.create({
+        data: { userId, token: hashToken(token), expiresAt },
+      }),
+    ]);
+    const sent = await sendPasswordResetEmail({ to: email, token });
+    if (!sent.ok) {
+      console.error(`[forgot-password] reset email for user ${userId} failed: ${sent.error}`);
+    }
+  } catch (err) {
+    console.error(`[forgot-password] could not issue a reset for user ${userId}:`, err);
+  }
+}
+
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
   const email = String(formData.get("email") || "")
@@ -23,21 +46,10 @@ export async function action({ request }: ActionFunctionArgs) {
 
   const user = await prisma.user.findUnique({ where: { email } });
 
-  // Always return success to prevent email enumeration
-  if (user) {
-    // The raw token goes in the email only; the DB keeps a SHA-256 of it so a
-    // leaked backup / log can't be replayed as a live reset link.
-    const token = crypto.randomBytes(32).toString("hex");
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
-
-    await prisma.$transaction([
-      prisma.passwordReset.deleteMany({ where: { userId: user.id } }),
-      prisma.passwordReset.create({
-        data: { userId: user.id, token: hashToken(token), expiresAt },
-      }),
-    ]);
-    await sendPasswordResetEmail({ to: email, token });
-  }
+  // Always return success to prevent email enumeration. Not awaited: the DB
+  // write and the Resend round trip happen only for real accounts, so
+  // waiting for them would let response time reveal who is registered.
+  if (user) void issuePasswordReset(user.id, email);
 
   return data({ success: true });
 }

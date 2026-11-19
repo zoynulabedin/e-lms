@@ -240,6 +240,25 @@ model CertificateTemplate {
 model ShopifyOrder {
   orderId     String   @id
   processedAt DateTime @default(now())
+  // Set by orders/cancelled under this row's lock. Shopify does not guarantee
+  // delivery order, so a late or retried orders/paid must find out the order
+  // was cancelled even when no key existed yet at cancel time. Never cleared.
+  cancelledAt DateTime?
+}
+
+// One row per processed Shopify refund (refunds/create). Inserted in the same
+// transaction as the revocations, so a re-delivered refund webhook can never
+// revoke a second batch of keys.
+model ShopifyRefund {
+  refundId    String   @id
+  orderId     String
+  // [{ lineItemId, quantity }] returned by this refund. orders/paid adds these
+  // to the refunds in its own payload, so a refund processed BEFORE the order's
+  // keys were minted (or a stale orders/paid retry) can't mint refunded seats.
+  lineItems   Json?
+  processedAt DateTime @default(now())
+
+  @@index([orderId])
 }
 
 // ─── Course ───────────────────────────────────────────────────────────────────
@@ -254,7 +273,7 @@ model Course {
   instructor        String?
   courseType        CourseType   @default(FREE)
   price             Float? // Only for PAID courses, in USD
-  shopifyProductId  String? // Shopify Product ID for PAID courses
+  shopifyProductId  String? // Numeric Shopify product id; orders for it mint keys for this course (FREE or PAID). One course per product.
   status            CourseStatus @default(DRAFT)
   contentType       ContentType  @default(STORYLINE)
   embedUrl          String? // Articulate Storyline / iframe URL (flat courses)
@@ -427,8 +446,24 @@ model License {
   userId         String?
   user           User?         @relation(fields: [userId], references: [id])
   shopifyOrderId String?
+  // Shopify line item the key was minted for. Lets a refund revoke exactly the
+  // seats that were returned, and lets a re-sent orders/paid webhook top up a
+  // line item whose key was deleted. Null on admin keys and on keys minted
+  // before this column existed ("legacy" orders).
+  shopifyLineItemId String?
+  // Per-unit amount actually paid (shop currency, after discounts). Revenue is
+  // summed from this; null on admin keys and legacy keys (revenue then falls
+  // back to Course.price).
+  amountPaid     Float?
+  // True when the key may end up with someone other than customerEmail
+  // (multi-seat orders, admin batches, released seats). The redeem page then
+  // does not pre-fill that address for whoever opens the link.
   isBulk         Boolean       @default(false)
   redeemedAt     DateTime?
+  // Why and when the key was last revoked: "ADMIN" | "REFUND" | "CANCELLED" |
+  // "USER_DELETED" (see REVOKE_REASON in utils/license.ts). Cleared on restore.
+  revokedAt      DateTime?
+  revokedReason  String?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 

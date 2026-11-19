@@ -9,6 +9,7 @@ import { requireAdmin } from "../utils/auth.server";
 import { isIconSet, iconSetImages } from "../utils/module-icons";
 import { recomputeCourseProgressForAllUsers } from "../utils/progress.server";
 import { normalizeModuleOrder } from "../utils/curriculum.server";
+import { normalizeShopifyProductId, shopifyProductIdVariants } from "../utils/shopify-product";
 import { useState, useRef, useEffect } from "react";
 import {
   AlertCircle,
@@ -294,7 +295,9 @@ export async function action({ request, params }: ActionFunctionArgs) {
     const courseType = courseTypeRaw;
     const priceRaw = formData.get("price") as string;
     const price = priceRaw ? parseFloat(priceRaw) : null;
-    const shopifyProductId = (formData.get("shopifyProductId") as string)?.trim() || null;
+    // Stored as the bare number the orders/paid webhook carries, whichever
+    // form was pasted (number, GID or admin URL).
+    const shopifyProductId = normalizeShopifyProductId(formData.get("shopifyProductId"));
     const embedUrl = (formData.get("embedUrl") as string)?.trim() || null;
     const videoUrl = (formData.get("videoUrl") as string)?.trim() || null;
     const introVideoUrl = (formData.get("introVideoUrl") as string)?.trim() || null;
@@ -307,7 +310,23 @@ export async function action({ request, params }: ActionFunctionArgs) {
 
     if (!title) return data({ error: "Title is required." }, { status: 400 });
     const finalPrice = courseType === "PAID" ? price : null;
-    const finalShopifyId = courseType === "PAID" ? shopifyProductId : null;
+    // The product id is kept for FREE courses too: every course opens only with
+    // a licence key, so a free course can be given out through Shopify as well.
+    // One product maps to one course - the webhook refuses an id set on two.
+    // Every stored form counts, as the webhook matches them all: a course
+    // still holding the GID saved before ids were normalised clashes too.
+    if (shopifyProductId) {
+      const clash = await prisma.course.findFirst({
+        where: { shopifyProductId: { in: shopifyProductIdVariants(shopifyProductId) }, id: { not: courseId } },
+        select: { title: true },
+      });
+      if (clash) {
+        return data(
+          { error: `Shopify product ID ${shopifyProductId} is already used by "${clash.title}". Each Shopify product can map to one course only.` },
+          { status: 400 },
+        );
+      }
+    }
     const isPublic = isPublicCourse;
     await prisma.$executeRaw`
       UPDATE "Course" SET
@@ -322,7 +341,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
         "contentType" = ${contentType}::"ContentType",
         "courseType" = ${courseType}::"CourseType",
         price = ${finalPrice},
-        "shopifyProductId" = ${finalShopifyId},
+        "shopifyProductId" = ${shopifyProductId},
         "embedUrl" = ${embedUrl},
         "videoUrl" = ${videoUrl},
         "introVideoUrl" = ${introVideoUrl},
@@ -1936,7 +1955,11 @@ function QuizModal({
 
 // ── Step 1: Basics ────────────────────────────────────────────────────────────
 
-function BasicsStep({ course, fetcher }: { course: any; fetcher: any }) {
+function BasicsStep({ course }: { course: any }) {
+  // Own fetcher: the page fetcher is shared with the top bar and the other
+  // steps, so its data could show (or hide) an error that is not this form's.
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
+  const basicsError = fetcher.state === "idle" ? fetcher.data?.error : undefined;
   const [courseType, setCourseType] = useState<string>(course.courseType || "FREE");
   const [contentType, setContentType] = useState<string>(course.contentType || "STORYLINE");
   const [isQA, setIsQA] = useState<boolean>(course.isQA ?? false);
@@ -2178,15 +2201,25 @@ function BasicsStep({ course, fetcher }: { course: any; fetcher: any }) {
               </label>
             ))}
           </div>
-          {courseType === "PAID" && (
-            <div className="space-y-2 pt-1">
+          <div className="space-y-2 pt-1">
+            {courseType === "PAID" && (
               <div className="relative">
                 <span className="absolute inset-y-0 left-3 flex items-center text-gray-400 text-sm">$</span>
                 <input type="number" name="price" defaultValue={course.price || ""} min="0" step="0.01" placeholder="0.00" className="w-full border border-gray-300 rounded-lg pl-7 pr-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
               </div>
-              <input type="text" name="shopifyProductId" defaultValue={course.shopifyProductId || ""} placeholder="Shopify Product ID" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
-            </div>
-          )}
+            )}
+            {/* Shown for Free too: a free course also needs a key, so it can be given out through Shopify.
+                Keyed on the stored id so that after a save it shows the number that was kept. */}
+            <input key={course.shopifyProductId || ""} type="text" name="shopifyProductId" defaultValue={course.shopifyProductId || ""} placeholder="Shopify Product ID" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
+            <p className="text-[11px] text-gray-400">
+              Accepts the numeric product ID, a <span className="font-mono text-gray-500">gid://shopify/Product/…</span> ID
+              or the product's admin URL (saved as the number).
+            </p>
+            <p className="text-[11px] text-gray-400">
+              Shopify orders for this product create license keys for this course. Alternatively set the variant SKU to this course ID:{" "}
+              <span className="font-mono text-gray-500 break-all select-all">{course.id}</span>
+            </p>
+          </div>
         </div>
 
         {/* Categories & Instructor */}
@@ -2196,6 +2229,15 @@ function BasicsStep({ course, fetcher }: { course: any; fetcher: any }) {
           <label className="block text-sm font-semibold text-gray-900 pt-1">Instructor</label>
           <input type="text" name="instructor" defaultValue={course.instructor || ""} placeholder="e.g. Jane Smith" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
         </div>
+
+        {/* Next to the button, so a refused save (e.g. a Shopify product id
+            already used by another course) is seen where Save was clicked. */}
+        {basicsError && (
+          <div role="alert" className="flex items-start gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+            <AlertCircle size={14} className="shrink-0 mt-0.5" />
+            <span>{basicsError}</span>
+          </div>
+        )}
 
         {/* Save */}
         <button
@@ -3293,7 +3335,7 @@ export default function CourseBuilder() {
 
       {/* ── Body ─────────────────────────────────────────────────────────────── */}
       <main className="flex-1 p-6 overflow-y-auto">
-        {activeStep === 1 && <BasicsStep course={course} fetcher={fetcher} />}
+        {activeStep === 1 && <BasicsStep course={course} />}
         {activeStep === 2 && <CurriculumStep course={course} fetcher={fetcher} />}
         {activeStep === 3 && <AdditionalStep course={course} fetcher={fetcher} />}
         {activeStep === 4 && (
