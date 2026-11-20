@@ -8,6 +8,10 @@ import {
 } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { requireAdmin } from "../utils/auth.server";
+import { prisma } from "../utils/db.server";
+import { verifyUserTotp, issueRecoveryCodes } from "../utils/mfa.server";
+import { rateLimitResponse, recordFailure, TOO_MANY_ATTEMPTS } from "../utils/rate-limit.server";
+import { shopifyAdminConfigured } from "../utils/shopify-admin.server";
 import {
   CheckCircle2,
   ExternalLink,
@@ -17,8 +21,11 @@ import {
 } from "lucide-react";
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  await requireAdmin(request);
+  const admin = await requireAdmin(request);
+  const unusedRecovery = await prisma.mfaRecoveryCode.count({ where: { userId: admin.id, usedAt: null } });
   return {
+    unusedRecovery,
+    canResync: shopifyAdminConfigured(),
     shopifyDomain: process.env.SHOPIFY_STORE_DOMAIN || "",
     hasResendKey: !!process.env.RESEND_API_KEY,
     hasShopifySecret: !!process.env.SHOPIFY_WEBHOOK_SECRET,
@@ -27,7 +34,17 @@ export async function loader({ request }: LoaderFunctionArgs) {
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  await requireAdmin(request);
+  const admin = await requireAdmin(request);
+  const form = await request.formData();
+  // New recovery codes for this admin's own two-step verification.
+  if (form.get("intent") === "mfa_codes") {
+    if (rateLimitResponse("mfa_verify", request, admin.id)) return data({ error: TOO_MANY_ATTEMPTS }, { status: 429 });
+    if (!(await verifyUserTotp(admin.id, String(form.get("code") || "")))) {
+      recordFailure("mfa_verify", request, admin.id);
+      return data({ error: "That code is not correct." }, { status: 400 });
+    }
+    return data({ codes: await issueRecoveryCodes(admin.id) });
+  }
   // In a real app, settings would be persisted in the DB or a config file.
   // For this implementation, we remind the admin to set env vars.
   return data({
@@ -70,7 +87,7 @@ function SettingRow({
 }
 
 export default function Settings() {
-  const { shopifyDomain, hasResendKey, hasShopifySecret, appUrl } =
+  const { shopifyDomain, hasResendKey, hasShopifySecret, appUrl, unusedRecovery, canResync } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -81,11 +98,38 @@ export default function Settings() {
     <div className="space-y-8 max-w-3xl">
       <h1 className="text-2xl font-semibold text-gray-900">Settings</h1>
 
-      {actionData?.info && (
+      {actionData && "info" in actionData && actionData.info && (
         <div className="bg-blue-50 border border-blue-200 text-blue-800 rounded-lg px-4 py-3 text-sm">
           {actionData.info}
         </div>
       )}
+
+      {/* Your two-step verification (always on for admins) */}
+      <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-200 bg-gray-50/50">
+          <h2 className="text-base font-semibold text-gray-900 flex items-center gap-2">
+            <Shield size={16} className="text-brand-navy" /> Your two-step verification
+          </h2>
+        </div>
+        <div className="px-6 py-5 space-y-3 text-sm text-gray-700">
+          <p>
+            On (required for administrators). {unusedRecovery} unused recovery code{unusedRecovery === 1 ? "" : "s"} left.
+            A user who loses their phone can be reset on the Users page; you can't reset your own.
+          </p>
+          {actionData && "codes" in actionData && actionData.codes && (
+            <div className="rounded-lg bg-gray-50 border border-gray-200 p-4">
+              <p className="font-semibold">New recovery codes - save them now, they are shown once:</p>
+              <ul className="mt-2 grid grid-cols-2 gap-1 font-mono">{actionData.codes.map((c) => <li key={c}>{c}</li>)}</ul>
+            </div>
+          )}
+          {actionData && "error" in actionData && actionData.error && <p className="text-red-700">{actionData.error}</p>}
+          <Form method="post" className="flex flex-wrap items-center gap-2">
+            <input type="hidden" name="intent" value="mfa_codes" />
+            <input name="code" required inputMode="numeric" maxLength={6} placeholder="Code from your app" aria-label="Code from your authenticator app" className="w-44 border border-gray-300 rounded-md px-3 py-1.5" />
+            <button type="submit" className="bg-brand-navy text-white px-4 py-1.5 rounded-md font-medium hover:bg-brand-navy-dark">Create new recovery codes</button>
+          </Form>
+        </div>
+      </div>
 
       {/* Shopify Integration */}
       <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
@@ -111,6 +155,13 @@ export default function Settings() {
             description="Used to verify incoming Shopify webhook payloads (SHOPIFY_WEBHOOK_SECRET)"
             badge={hasShopifySecret ? "Configured" : "Not set"}
             badgeOk={hasShopifySecret}
+          />
+          <SettingRow
+            icon={ShoppingBag}
+            title="Admin API (order re-sync)"
+            description="Lets the Orders page pull an order whose webhook was lost (SHOPIFY_ACCESS_TOKEN with read_orders)"
+            badge={canResync ? "Configured" : "Not set - re-sync off"}
+            badgeOk={canResync}
           />
         </div>
 
@@ -206,6 +257,9 @@ SUPPORT_EMAIL=help@yourdomain.com    # optional: Reply-To on customer emails (de
 ADMIN_EMAIL=you@yourdomain.com       # Shopify order notifications
 SHOPIFY_WEBHOOK_SECRET=...
 SHOPIFY_STORE_DOMAIN=yourstore.myshopify.com
+SHOPIFY_ACCESS_TOKEN=shpat_...       # optional: order re-sync (read_orders scope)
+SHOPIFY_API_VERSION=2026-07          # optional: Admin API version for re-sync
+NEW_DEVICE_VERIFICATION=false        # optional: turn off emailed new-device codes
 SHOPIFY_ALLOW_TEST_ORDERS=true       # STAGING ONLY: test orders issue real keys
 CLOUDINARY_CLOUD_NAME=...
 CLOUDINARY_API_KEY=...

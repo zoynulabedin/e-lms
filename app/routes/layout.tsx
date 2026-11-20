@@ -20,6 +20,8 @@ import {
   HelpCircle,
   Youtube,
   Award,
+  ShoppingBag,
+  Building2,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -32,6 +34,8 @@ const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/courses", label: "Courses", icon: BookText },
   { to: "/licenses", label: "License Keys", icon: Key },
+  { to: "/orders", label: "Orders", icon: ShoppingBag },
+  { to: "/organizations", label: "Organizations", icon: Building2 },
   { to: "/sessions", label: "Sessions", icon: Shield },
   { to: "/users", label: "Users", icon: Users },
   { to: "/quiz-review", label: "Quiz Review", icon: HelpCircle },

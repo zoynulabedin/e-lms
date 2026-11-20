@@ -142,6 +142,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
       courseType: true,
       price: true,
       shopifyProductId: true,
+      shopifyBundleProductIds: true,
       status: true,
       contentType: true,
       embedUrl: true,
@@ -298,6 +299,16 @@ export async function action({ request, params }: ActionFunctionArgs) {
     // Stored as the bare number the orders/paid webhook carries, whichever
     // form was pasted (number, GID or admin URL).
     const shopifyProductId = normalizeShopifyProductId(formData.get("shopifyProductId"));
+    // Bundle products that also unlock this course (comma / space separated),
+    // each stored as the bare number, without duplicates or this course's own id.
+    const bundleIds = Array.from(
+      new Set(
+        String(formData.get("shopifyBundleProductIds") ?? "")
+          .split(/[\s,;]+/)
+          .map((v) => normalizeShopifyProductId(v))
+          .filter((v): v is string => !!v && v !== shopifyProductId),
+      ),
+    );
     const embedUrl = (formData.get("embedUrl") as string)?.trim() || null;
     const videoUrl = (formData.get("videoUrl") as string)?.trim() || null;
     const introVideoUrl = (formData.get("introVideoUrl") as string)?.trim() || null;
@@ -326,7 +337,32 @@ export async function action({ request, params }: ActionFunctionArgs) {
           { status: 400 },
         );
       }
+      // A single-course product must not also be listed as a bundle.
+      const asBundle = await prisma.course.findFirst({
+        where: { shopifyBundleProductIds: { hasSome: shopifyProductIdVariants(shopifyProductId) } },
+        select: { title: true },
+      });
+      if (asBundle) {
+        return data(
+          { error: `Shopify product ID ${shopifyProductId} is listed as a bundle on "${asBundle.title}". Use it either as one course's product or as a bundle, not both.` },
+          { status: 400 },
+        );
+      }
     }
+    // A bundle id must not be any course's single-course product.
+    for (const bundleId of bundleIds) {
+      const single = await prisma.course.findFirst({
+        where: { shopifyProductId: { in: shopifyProductIdVariants(bundleId) } },
+        select: { title: true },
+      });
+      if (single) {
+        return data(
+          { error: `Bundle product ID ${bundleId} is the single-course product of "${single.title}". A bundle needs its own Shopify product.` },
+          { status: 400 },
+        );
+      }
+    }
+    await prisma.course.update({ where: { id: courseId }, data: { shopifyBundleProductIds: bundleIds } });
     const isPublic = isPublicCourse;
     await prisma.$executeRaw`
       UPDATE "Course" SET
@@ -2218,6 +2254,19 @@ function BasicsStep({ course }: { course: any }) {
             <p className="text-[11px] text-gray-400">
               Shopify orders for this product create license keys for this course. Alternatively set the variant SKU to this course ID:{" "}
               <span className="font-mono text-gray-500 break-all select-all">{course.id}</span>
+            </p>
+            {/* Bundles: the same bundle product id goes on every course it contains. */}
+            <input
+              key={(course.shopifyBundleProductIds ?? []).join(",")}
+              type="text"
+              name="shopifyBundleProductIds"
+              defaultValue={(course.shopifyBundleProductIds ?? []).join(", ")}
+              placeholder="Bundle product IDs (optional)"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+            />
+            <p className="text-[11px] text-gray-400">
+              Shopify bundle products that also unlock this course, comma separated. Enter the bundle's product ID on
+              every course in the bundle: one bundle purchase then issues a key for each of them.
             </p>
           </div>
         </div>

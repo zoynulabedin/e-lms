@@ -152,6 +152,16 @@ try {
   await tryQuery('column License."shopifyOrderName"', 'SELECT "shopifyOrderName" FROM "License" LIMIT 1');
   await tryQuery('column ShopifyOrder."orderName"', 'SELECT "orderName" FROM "ShopifyOrder" LIMIT 1');
   await tryQuery('column ShopifyOrder."unmappedAt"', 'SELECT "unmappedAt", "unmappedItems", "customerEmail" FROM "ShopifyOrder" LIMIT 1');
+  // 2026-11 pre-launch features (migration 20261121100000_prelaunch_features)
+  await tryQuery('table "Organization"', 'SELECT 1 FROM "Organization" LIMIT 1');
+  await tryQuery('table "ShopifyDispute"', 'SELECT 1 FROM "ShopifyDispute" LIMIT 1');
+  await tryQuery('table "MfaRecoveryCode"', 'SELECT 1 FROM "MfaRecoveryCode" LIMIT 1');
+  await tryQuery('table "TrustedDevice"', 'SELECT 1 FROM "TrustedDevice" LIMIT 1');
+  await tryQuery('table "AuthToken"', 'SELECT 1 FROM "AuthToken" LIMIT 1');
+  await tryQuery('columns User MFA / organization', 'SELECT "mfaSecret", "mfaEnabledAt", "mfaLastStep", "organizationId" FROM "User" LIMIT 1');
+  await tryQuery('columns License organization seat', 'SELECT "organizationId", "assignedEmail", "invitedAt" FROM "License" LIMIT 1');
+  await tryQuery('column Course."shopifyBundleProductIds"', 'SELECT "shopifyBundleProductIds" FROM "Course" LIMIT 1');
+  await tryQuery('columns ShopifyOrder reconciliation', 'SELECT "financialStatus", "totalPrice", "lineItems", "organizationId", "lastSyncedAt" FROM "ShopifyOrder" LIMIT 1');
   // Without these the Resources page and the certificate designer degrade to
   // empty rather than erroring, which looks like "the feature does nothing".
   await tryQuery('table "CourseResource"', 'SELECT 1 FROM "CourseResource" LIMIT 1');

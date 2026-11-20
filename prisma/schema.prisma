@@ -69,6 +69,84 @@ model User {
   passwordResets PasswordReset[]
   sessions       UserSession[]
   quizAttempts   QuizAttempt[]
+
+  // Two-step verification (TOTP authenticator app). Required for ADMIN,
+  // optional for learners. The secret is stored AES-256-GCM encrypted
+  // (utils/mfa.server.ts); mfaLastStep is the last accepted 30-second time
+  // step, so a code can never be used twice.
+  mfaSecret        String?
+  mfaEnabledAt     DateTime?
+  mfaLastStep      Int?
+  mfaRecoveryCodes MfaRecoveryCode[]
+  trustedDevices   TrustedDevice[]
+  authTokens       AuthToken[]
+
+  // The organization this account manages (org manager portal at /org).
+  organizationId String?
+  organization   Organization? @relation("OrganizationManagers", fields: [organizationId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+}
+
+// One-time recovery codes for a lost authenticator device. Only a hash is
+// stored; each code works once.
+model MfaRecoveryCode {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// A browser that has passed new-device verification (emailed code or MFA).
+// The browser keeps the raw token in a long-lived cookie; only its hash is
+// stored here.
+model TrustedDevice {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String   @unique
+  label      String?
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// Short-lived emailed secrets: a 6-digit new-device code ("NEW_DEVICE") or a
+// "sign out my other devices" link ("RELEASE_DEVICES"). Hash only; single use;
+// attempts are counted so a code can't be guessed.
+model AuthToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose   String
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
+  attempts  Int       @default(0)
+  createdAt DateTime  @default(now())
+
+  @@index([userId, purpose])
+  @@index([tokenHash])
+}
+
+// ─── Organization (bulk / organizational purchases) ───────────────────────────
+// Created from a paid Shopify order with a company name or a multi-seat line
+// (or by an admin). Its keys form the seat pool its managers assign at /org.
+model Organization {
+  id                String         @id @default(uuid())
+  name              String
+  shopifyCustomerId String?        @unique
+  contactEmail      String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  licenses          License[]
+  orders            ShopifyOrder[]
+  managers          User[]         @relation("OrganizationManagers")
 }
 
 model PasswordReset {
@@ -254,8 +332,31 @@ model ShopifyOrder {
   // marks the order resolved on the License Keys page.
   unmappedItems Json?
   unmappedAt    DateTime?
+  // Reconciliation: payment state, total and the line items as last seen in
+  // Shopify ([{ lineItemId, title, sku, productId, quantity, courseIds }]).
+  financialStatus String?
+  totalPrice      String?
+  currency        String?
+  lineItems       Json?
+  lastSyncedAt    DateTime?
+  organizationId  String?
+  organization    Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
 
   @@index([unmappedAt])
+  @@index([organizationId])
+}
+
+// One row per Shopify payment dispute (chargeback). A chargeback suspends the
+// order's keys (revokedReason "DISPUTE"); a dispute the shop wins restores them.
+model ShopifyDispute {
+  disputeId   String   @id
+  orderId     String
+  kind        String?
+  status      String?
+  processedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([orderId])
 }
 
 // One row per processed Shopify refund (refunds/create). Inserted in the same
@@ -286,6 +387,9 @@ model Course {
   courseType        CourseType   @default(FREE)
   price             Float? // Only for PAID courses, in USD
   shopifyProductId  String? // Numeric Shopify product id; orders for it mint keys for this course (FREE or PAID). One course per product.
+  // Bundle products that also unlock this course: a bundle's product id is
+  // listed on every course it contains, and one bundle seat mints a key for each.
+  shopifyBundleProductIds String[] @default([])
   status            CourseStatus @default(DRAFT)
   contentType       ContentType  @default(STORYLINE)
   embedUrl          String? // Articulate Storyline / iframe URL (flat courses)
@@ -470,6 +574,14 @@ model License {
   // summed from this; null on admin keys and legacy keys (revenue then falls
   // back to Course.price).
   amountPaid     Float?
+  // Organization seat pool this key belongs to (bulk / company orders).
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  // A seat an org manager (or admin) has assigned to a learner by invitation:
+  // the learner's email and when the invitation went out. Cleared when the
+  // invitation is withdrawn or the seat is released.
+  assignedEmail  String?
+  invitedAt      DateTime?
   // True when the key may end up with someone other than customerEmail
   // (multi-seat orders, admin batches, released seats). The redeem page then
   // does not pre-fill that address for whoever opens the link.
@@ -486,6 +598,7 @@ model License {
   @@index([courseId])
   @@index([shopifyOrderId])
   @@index([shopifyOrderName])
+  @@index([organizationId])
 }
 
 // ─── QuizAttempt ──────────────────────────────────────────────────────────────

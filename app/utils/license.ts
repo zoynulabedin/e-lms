@@ -41,6 +41,8 @@ export const REVOKE_REASON = {
   REFUND: "REFUND",
   CANCELLED: "CANCELLED",
   USER_DELETED: "USER_DELETED",
+  // Suspended while a Shopify chargeback is open; restored if the shop wins.
+  DISPUTE: "DISPUTE",
 } as const;
 
 export type RevokeReason = (typeof REVOKE_REASON)[keyof typeof REVOKE_REASON];
@@ -56,12 +58,24 @@ export function revokeReasonLabel(reason: string | null | undefined): string {
       return "Order cancelled in Shopify";
     case REVOKE_REASON.USER_DELETED:
       return "Account deleted";
+    case REVOKE_REASON.DISPUTE:
+      return "Payment disputed (chargeback)";
     default:
       return "Revoked";
   }
 }
 
-/** A revocation the money side caused - restoring one needs an explicit confirmation. */
+/**
+ * A seat the money side took back for good (refund / cancellation): it is not
+ * re-issued by a later orders/paid, and restoring it needs a confirmation.
+ * A DISPUTE is deliberately NOT one of these: the seat still counts as issued
+ * (so a re-sync can't mint a replacement), it is only suspended.
+ */
 export function isMoneyRevocation(reason: string | null | undefined): boolean {
   return reason === REVOKE_REASON.REFUND || reason === REVOKE_REASON.CANCELLED;
+}
+
+/** Revoked because of the payment (refund, cancellation, open chargeback): restoring asks for confirmation. */
+export function isPaymentRevocation(reason: string | null | undefined): boolean {
+  return isMoneyRevocation(reason) || reason === REVOKE_REASON.DISPUTE;
 }

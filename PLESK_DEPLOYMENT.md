@@ -205,14 +205,29 @@ Register the **same URL** — `https://lms.instructionalgraphics.org/shopify/web
 | `orders/paid` (Order payment) | Mints one key per seat and sends the buyer ONE email with all keys |
 | `refunds/create` (Refund create) | Revokes the keys of the refunded seats and emails `ADMIN_EMAIL` |
 | `orders/cancelled` (Order cancellation) | Revokes every key of the order and emails `ADMIN_EMAIL` |
+| `disputes/create` (Dispute creation) | A chargeback suspends the order's keys (shown as "Payment disputed"); emails `ADMIN_EMAIL` |
+| `disputes/update` (Dispute update) | A chargeback the shop **wins** restores exactly those keys |
 
 All three are signed with the store's webhook secret shown on that page (`SHOPIFY_WEBHOOK_SECRET`). A revoked key can be restored from the License Keys page. Before 2026-11 only `orders/paid` was used — add the other two once, **after** the new build is running (Restart App done, `npm run doctor` clean): the old build answers those topics with 200 "ignored", and Shopify never re-sends a delivery that got a 2xx.
+
+**Bundles:** a bundle sold as its own Shopify product unlocks several courses when its product ID is entered under *Bundle product IDs* on **each** course in the bundle (course builder → Pricing). One bundle seat then issues a key for each course; refunding the bundle revokes all of them.
+
+**Organizations:** a paid order with a company name (B2B company, billing or shipping address) or several seats of one item becomes an organization seat pool. The buyer becomes its manager (an account is created with a 7-day set-password link if they had none) and invites learners at `/org`. Admins see every organization at **Organizations**, and every order with its seats at **Orders**.
+
+**Re-sync (lost webhooks):** with `SHOPIFY_ACCESS_TOKEN` set (a custom app's Admin API token with the `read_orders` scope) and `SHOPIFY_STORE_DOMAIN`, the **Orders** page can pull an order from Shopify by its number, or re-sync one it already knows (missing keys, a cancellation or refunds the LMS never heard of). `SHOPIFY_API_VERSION` overrides the API version (default `2026-07`).
 
 **Test orders:** Shopify test orders (Bogus Gateway / Shopify Payments test mode — no money taken) issue **no** keys; the admin gets an email saying so. For manual end-to-end tests on a **staging** copy, set `SHOPIFY_ALLOW_TEST_ORDERS=true` there. Never set it on the live server.
 
 A refund that returns the course items in full revokes their keys. A *partial-amount* refund (items ticked, but less money returned than they cost — e.g. a goodwill refund) revokes nothing; the admin email says so, and the key can be revoked by hand.
 
 Each course is matched by variant SKU = the course ID, or by the numeric Shopify product ID set in the course builder (FREE or PAID). `npm run doctor` warns about product IDs that are duplicated or not numeric.
+
+## Sign-in security (2026-11)
+
+- **Administrators must use two-step verification** (an authenticator app). The first time an admin signs in after this release, they are asked to set it up (scan a QR code, enter a code) and are shown 10 one-time recovery codes. Keep them safe.
+- Learners can turn it on in **Settings**. A learner who loses their phone can use a recovery code, or an admin can reset it on the **Users** page (after confirming who they are). The only admin locked out (no phone, no codes) can be reset from the server: `npx tsx scripts/reset-mfa.ts admin@example.com`.
+- **New-device check:** a learner signing in on a browser their account hasn't used gets a 6-digit code by email (needs `RESEND_API_KEY`; set `NEW_DEVICE_VERIFICATION=false` to switch it off).
+- **Device limit:** two devices per learner by default. A third sign-in is refused with a clear message and an "email me a link to sign out my other devices" button; admins can also end sessions on **Sessions** / **Users**.
 
 ## Licence migration of 2026-11
 

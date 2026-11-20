@@ -9,6 +9,18 @@ import {
   getCurrentSessionTokenHash,
 } from "../utils/auth.server";
 import { sendEmailChangedNotice } from "../utils/email.server";
+import {
+  generateTotpSecret,
+  encryptSecret,
+  decryptSecret,
+  otpauthUri,
+  qrSvg,
+  formatSecret,
+  matchTotp,
+  issueRecoveryCodes,
+  verifyUserTotp,
+  disableMfa,
+} from "../utils/mfa.server";
 import { rateLimitResponse, recordFailure, TOO_MANY_ATTEMPTS } from "../utils/rate-limit.server";
 import {
   StudentSidebar,
@@ -24,22 +36,24 @@ import {
   AlertCircle,
   Loader2,
   MonitorSmartphone,
+  ShieldCheck,
 } from "lucide-react";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const user = await requireUser(request);
   if (user.role === "ADMIN") return redirect("/settings");
 
-  const [completedCount, activeSessions] = await Promise.all([
+  const [completedCount, activeSessions, unusedRecovery] = await Promise.all([
     prisma.progress.count({
       where: { userId: user.id, completedAt: { not: null } },
     }),
     prisma.userSession.count({
       where: { userId: user.id, isActive: true, expiresAt: { gt: new Date() } },
     }),
+    prisma.mfaRecoveryCode.count({ where: { userId: user.id, usedAt: null } }),
   ]);
 
-  return { user, hasCertificates: completedCount > 0, activeSessions };
+  return { user, hasCertificates: completedCount > 0, activeSessions, unusedRecovery };
 }
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -176,13 +190,54 @@ export async function action({ request }: ActionFunctionArgs) {
     return data({ intent, success: "All other devices have been signed out." });
   }
 
+  // ── Two-step verification (optional for learners) ─────────────────────────
+  if (intent === "mfa_start") {
+    if (user.mfaEnabled) return data({ intent, error: "Two-step verification is already on." }, { status: 400 });
+    const secret = generateTotpSecret();
+    await prisma.user.update({ where: { id: user.id }, data: { mfaSecret: encryptSecret(secret), mfaLastStep: null } });
+    return data({ intent, qr: await qrSvg(otpauthUri(secret, user.email)), manualKey: formatSecret(secret) });
+  }
+  if (intent === "mfa_confirm") {
+    if (rateLimitResponse("mfa_verify", request, user.id)) return data({ intent, error: TOO_MANY_ATTEMPTS }, { status: 429 });
+    const row = await prisma.user.findUnique({ where: { id: user.id }, select: { mfaSecret: true, mfaEnabledAt: true } });
+    const secret = row?.mfaSecret ? decryptSecret(row.mfaSecret) : null;
+    if (!secret || row?.mfaEnabledAt) return data({ intent, error: "Start again: click Turn on." }, { status: 400 });
+    const step = matchTotp(secret, String(formData.get("code") || ""), null);
+    if (step === null) {
+      recordFailure("mfa_verify", request, user.id);
+      return data({ intent, error: "That code is not correct. Try the newest code from the app." }, { status: 400 });
+    }
+    await prisma.user.update({ where: { id: user.id }, data: { mfaEnabledAt: new Date(), mfaLastStep: step } });
+    return data({ intent, success: "Two-step verification is on.", codes: await issueRecoveryCodes(user.id) });
+  }
+  if (intent === "mfa_codes") {
+    if (rateLimitResponse("mfa_verify", request, user.id)) return data({ intent, error: TOO_MANY_ATTEMPTS }, { status: 429 });
+    if (!(await verifyUserTotp(user.id, String(formData.get("code") || "")))) {
+      recordFailure("mfa_verify", request, user.id);
+      return data({ intent, error: "That code is not correct." }, { status: 400 });
+    }
+    return data({ intent, success: "New recovery codes created. The old ones no longer work.", codes: await issueRecoveryCodes(user.id) });
+  }
+  if (intent === "mfa_disable") {
+    if (rateLimitResponse("account_password", request, user.id)) return data({ intent, error: TOO_MANY_ATTEMPTS }, { status: 429 });
+    const row = await prisma.user.findUnique({ where: { id: user.id }, select: { passwordHash: true } });
+    const passwordOk = row ? await verifyPassword(String(formData.get("password") || ""), row.passwordHash) : false;
+    const codeOk = passwordOk && (await verifyUserTotp(user.id, String(formData.get("code") || "")));
+    if (!passwordOk || !codeOk) {
+      recordFailure("account_password", request, user.id);
+      return data({ intent, error: "Password or code is not correct." }, { status: 400 });
+    }
+    await disableMfa(user.id);
+    return data({ intent, success: "Two-step verification is off." });
+  }
+
   return data({ intent, error: "Unknown action." }, { status: 400 });
 }
 
 type ActionResult = { intent: string; error?: string; success?: string };
 
 export default function StudentSettings() {
-  const { user, hasCertificates, activeSessions } = useLoaderData<typeof loader>();
+  const { user, hasCertificates, activeSessions, unusedRecovery } = useLoaderData<typeof loader>();
 
   return (
     <div className="min-h-screen bg-brand-beige">
@@ -212,6 +267,7 @@ export default function StudentSettings() {
 
             <ProfileCard user={user} />
             <PasswordCard />
+            <TwoStepCard enabled={user.mfaEnabled} unusedRecovery={unusedRecovery} />
             <DevicesCard activeSessions={activeSessions} />
           </div>
         </main>
@@ -398,6 +454,101 @@ function DevicesCard({ activeSessions }: { activeSessions: number }) {
           Sign out other devices
         </button>
       </fetcher.Form>
+    </Card>
+  );
+}
+
+// ── Two-step verification ───────────────────────────────────────────────────
+
+type MfaResult = ActionResult & { qr?: string; manualKey?: string; codes?: string[] };
+
+function RecoveryCodes({ codes }: { codes: string[] }) {
+  return (
+    <div className="rounded-lg border border-brand-beige-dark bg-brand-beige/50 p-4">
+      <p className="text-sm font-semibold text-brand-navy">Your recovery codes</p>
+      <p className="text-xs text-brand-navy/60 mt-0.5">
+        Each works once if you lose your phone. Save them somewhere safe - they are shown only now.
+      </p>
+      <ul className="mt-3 grid grid-cols-2 gap-1.5 font-mono text-sm text-brand-navy">
+        {codes.map((c) => <li key={c}>{c}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+function TwoStepCard({ enabled, unusedRecovery }: { enabled: boolean; unusedRecovery: number }) {
+  const fetcher = useFetcher<MfaResult>();
+  const busy = fetcher.state !== "idle";
+  const r = fetcher.data;
+  const setup = r?.intent === "mfa_start" && r.qr ? r : null;
+  const confirmed = r?.intent === "mfa_confirm" && r.codes;
+  const isOn = enabled || !!confirmed;
+
+  return (
+    <Card
+      icon={ShieldCheck}
+      title="Two-step verification"
+      description={
+        isOn
+          ? `On. Signing in asks for a code from your authenticator app. ${unusedRecovery} recovery code${unusedRecovery === 1 ? "" : "s"} left.`
+          : "Off. Turn it on to require a code from an authenticator app (on your phone) when you sign in."
+      }
+    >
+      <div className="space-y-4">
+        {r && ["mfa_start", "mfa_confirm", "mfa_codes", "mfa_disable"].includes(r.intent) && <Notice result={r} intent={r.intent} />}
+        {r?.codes && <RecoveryCodes codes={r.codes} />}
+
+        {!isOn && !setup && (
+          <fetcher.Form method="post">
+            <input type="hidden" name="intent" value="mfa_start" />
+            <button type="submit" disabled={busy} className={buttonCls}>
+              {busy ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />} Turn on
+            </button>
+          </fetcher.Form>
+        )}
+
+        {!isOn && setup && (
+          <div className="space-y-3">
+            <p className="text-sm text-brand-navy/80">Scan this with your authenticator app, or type the key, then enter the code it shows.</p>
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="bg-white border border-brand-beige-dark p-2 rounded-lg w-[200px] h-[200px]" aria-label="QR code for your authenticator app" dangerouslySetInnerHTML={{ __html: setup.qr ?? "" }} />
+              <p className="text-xs text-brand-navy/60">Key:<br /><span className="font-mono text-brand-navy select-all">{setup.manualKey}</span></p>
+            </div>
+            <fetcher.Form method="post" className="flex flex-wrap items-end gap-3">
+              <input type="hidden" name="intent" value="mfa_confirm" />
+              <label className={labelCls}>
+                Code
+                <input name="code" required inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="123456" className={`${inputCls} w-40 tracking-[0.3em]`} />
+              </label>
+              <button type="submit" disabled={busy} className={buttonCls}>Confirm</button>
+            </fetcher.Form>
+          </div>
+        )}
+
+        {isOn && (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <fetcher.Form method="post" className="space-y-2">
+              <input type="hidden" name="intent" value="mfa_codes" />
+              <label className={labelCls}>
+                New recovery codes
+                <input name="code" required inputMode="numeric" maxLength={6} placeholder="Code from the app" className={inputCls} />
+              </label>
+              <button type="submit" disabled={busy} className={buttonCls}>Create new codes</button>
+            </fetcher.Form>
+            <fetcher.Form method="post" className="space-y-2">
+              <input type="hidden" name="intent" value="mfa_disable" />
+              <label className={labelCls}>
+                Turn off
+                <input name="password" type="password" required placeholder="Your password" autoComplete="current-password" className={inputCls} />
+              </label>
+              <input name="code" required inputMode="numeric" maxLength={6} placeholder="Code from the app" aria-label="Code from the app" className={inputCls} />
+              <button type="submit" disabled={busy} className="inline-flex items-center gap-2 border border-red-300 text-red-700 hover:bg-red-50 text-sm font-semibold px-5 py-2.5 rounded-lg disabled:opacity-60">
+                Turn off two-step verification
+              </button>
+            </fetcher.Form>
+          </div>
+        )}
+      </div>
     </Card>
   );
 }

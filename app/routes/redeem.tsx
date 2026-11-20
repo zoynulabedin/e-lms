@@ -14,7 +14,15 @@ import {
   createSession,
   createSessionCookie,
 } from "../utils/auth.server";
-import { Key, CheckCircle2, AlertCircle, BookOpen, ShieldAlert, ArrowRight } from "lucide-react";
+import { trustThisDevice } from "../utils/mfa.server";
+import {
+  secondStepFor,
+  beginSecondStep,
+  deviceLimitPayload,
+  DeviceLimitError,
+  type SignInUser,
+} from "../utils/sign-in.server";
+import { Key, CheckCircle2, AlertCircle, BookOpen, ShieldAlert, Info } from "lucide-react";
 import { rateLimitResponse, recordFailure } from "../utils/rate-limit.server";
 import { isPlaceholderEmail, normalizeLicenseKey } from "../utils/license";
 import {
@@ -44,6 +52,12 @@ type RedeemPage = {
   user: { email: string; role: string } | null;
   error?: string;
 };
+
+/** "a***@school.org": enough for the invitee to recognise, without exposing the address to whoever holds the link. */
+function maskEmail(email: string): string {
+  const [local, domain] = email.split("@");
+  return `${local.slice(0, 1)}***@${domain ?? ""}`;
+}
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url);
@@ -77,6 +91,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
           status: true,
           customerEmail: true,
           isBulk: true,
+          assignedEmail: true,
           course: { select: { title: true } },
         },
       })
@@ -91,13 +106,16 @@ export async function loader({ request }: LoaderFunctionArgs) {
     key: license.key,
     status: license.status,
     courseTitle: license.course.title,
-    // A bulk key's email is whoever ordered the batch, not the person redeeming.
+    // An organization invitation names its learner; a bulk key's email is
+    // whoever ordered the batch, not the person redeeming.
     prefillEmail:
-      license.status === "PENDING" &&
-      !license.isBulk &&
-      !isPlaceholderEmail(license.customerEmail)
-        ? license.customerEmail
-        : "",
+      license.status !== "PENDING"
+        ? ""
+        : license.assignedEmail
+          ? license.assignedEmail
+          : !license.isBulk && !isPlaceholderEmail(license.customerEmail)
+            ? license.customerEmail
+            : "",
     user: sessionUser ? { email: sessionUser.email, role: sessionUser.role } : null,
   };
   return found;
@@ -129,6 +147,7 @@ export async function action({ request }: ActionFunctionArgs) {
           customerEmail: true,
           shopifyOrderId: true,
           courseId: true,
+          assignedEmail: true,
           course: { select: { title: true } },
         },
       })
@@ -146,10 +165,28 @@ export async function action({ request }: ActionFunctionArgs) {
       { status: 409 },
     );
 
+  // An organization invitation is bound to the invited email address: a
+  // forwarded link can't be used to take the seat with another account.
+  const invitedTo = license.assignedEmail?.toLowerCase() ?? null;
+  const notInvited = (who: string) =>
+    invitedTo && who.toLowerCase() !== invitedTo
+      ? data(
+          {
+            error:
+              `This invitation is for ${maskEmail(invitedTo)}. Sign in or create your account with that email address, ` +
+              "or ask your organization to invite the address you use.",
+          },
+          { status: 403 },
+        )
+      : null;
+
   // ─── Get or create user ───────────────────────────────────────────────────
   let userId: string;
   let userEmail: string = email;
-  const responseHeaders: Record<string, string> = {};
+  // Set when this form signed the visitor in with an email + password: the
+  // session is only started after the key is activated, and an existing
+  // account still goes through its second step (authenticator / new device).
+  let signIn: { user: SignInUser; isNew: boolean } | null = null;
 
   if (intent === "redeem_existing") {
     // User is already logged in
@@ -167,6 +204,8 @@ export async function action({ request }: ActionFunctionArgs) {
         { status: 400 },
       );
     }
+    const wrongInvitee = notInvited(sessionUser.email);
+    if (wrongInvitee) return wrongInvitee;
     userId = sessionUser.id;
     userEmail = sessionUser.email;
   } else {
@@ -180,6 +219,8 @@ export async function action({ request }: ActionFunctionArgs) {
         { status: 400 },
       );
     }
+    const wrongInvitee = notInvited(email);
+    if (wrongInvitee) return wrongInvitee;
     // Second subject: the account email - one PENDING key must not become an
     // unlimited password oracle for an existing account.
     const limitedByEmail = rateLimitResponse("redeem", request, email);
@@ -191,8 +232,10 @@ export async function action({ request }: ActionFunctionArgs) {
       passwordHash: true,
       isBanned: true,
       isSuspended: true,
+      mfaEnabledAt: true,
     } as const;
     let user = await prisma.user.findUnique({ where: { email }, select: accountFields });
+    const isNew = !user;
     if (!user) {
       const passwordHash = await hashPassword(password);
       try {
@@ -222,8 +265,7 @@ export async function action({ request }: ActionFunctionArgs) {
       }
     }
     userId = user.id;
-    const token = await createSession(userId, user.role, request);
-    responseHeaders["Set-Cookie"] = createSessionCookie(token);
+    signIn = { user: { id: user.id, email, role: user.role, mfaEnabledAt: user.mfaEnabledAt }, isNew };
   }
 
   // Activate license atomically: the conditional updateMany is the lock -
@@ -256,25 +298,47 @@ export async function action({ request }: ActionFunctionArgs) {
     return "activated" as const;
   });
 
-  if (outcome === "has_course") {
-    return data(
-      {
-        error: `You already have access to "${license.course.title}". This key is still unused - you can give it to someone else.`,
-        courseId: license.courseId,
-      },
-      { status: 409, headers: responseHeaders },
-    );
-  }
-  if (outcome === "taken") {
-    return data(
-      { error: "This license key has already been redeemed." },
-      { status: 409, headers: responseHeaders },
-    );
+  const target = `/student/course/${license.courseId}`;
+  const notActivated = () =>
+    outcome === "has_course"
+      ? {
+          error: `You're already enrolled in ${license.course.title}. Your course is available in your learning dashboard.`,
+          courseId: license.courseId,
+          alreadyHave: true,
+        }
+      : { error: "This license key has already been redeemed." };
+
+  const responseHeaders = new Headers();
+  if (signIn) {
+    // An existing account: its authenticator / new-device step comes first,
+    // then the learner lands in the course.
+    if (!signIn.isNew) {
+      const step = await secondStepFor(request, signIn.user);
+      if (step) {
+        if (outcome !== "activated") return data(notActivated(), { status: 409 });
+        return beginSecondStep(signIn.user, step, target);
+      }
+    }
+    try {
+      responseHeaders.append("Set-Cookie", createSessionCookie(await createSession(signIn.user.id, signIn.user.role, request)));
+      // A brand-new account was just made in this browser: it is a known device.
+      if (signIn.isNew) responseHeaders.append("Set-Cookie", await trustThisDevice(request, signIn.user.id));
+    } catch (e) {
+      if (e instanceof DeviceLimitError) {
+        const p = deviceLimitPayload(e, signIn.user.email);
+        return data(
+          { ...p, error: outcome === "activated" ? `The course was added to your account. ${p.error}` : p.error },
+          { status: 403 },
+        );
+      }
+      throw e;
+    }
   }
 
-  return redirect(`/student/course/${license.courseId}`, {
-    headers: responseHeaders,
-  });
+  if (outcome !== "activated") {
+    return data(notActivated(), { status: 409, headers: responseHeaders });
+  }
+  return redirect(target, { headers: responseHeaders });
 }
 
 export default function Redeem() {
@@ -289,6 +353,9 @@ export default function Redeem() {
       ? actionData.courseId
       : null;
   const isAdmin = user?.role === "ADMIN";
+  // Device limit reached while signing in here: offer the emailed release link.
+  const deviceLimitEmail =
+    actionData && "deviceLimit" in actionData ? ((actionData.deviceLimit as { email?: string } | undefined)?.email ?? null) : null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-brand-navy-dark via-brand-green-dark to-brand-navy-dark flex items-center justify-center p-4">
@@ -304,18 +371,36 @@ export default function Redeem() {
         </div>
 
         <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-8 shadow-2xl">
-          {actionData?.error && (
+          {/* Already enrolled: the "You Already Have Access!" notice from the
+              client's acceptance document, with the way into the dashboard. */}
+          {actionData?.error && ownedCourseId && (
+            <div role="status" className="rounded-xl border border-white/15 bg-black/60 px-5 py-4 mb-5">
+              <p className="flex items-center gap-2 font-semibold text-white">
+                <Info size={17} className="shrink-0 text-sky-400" /> You Already Have Access!
+              </p>
+              <p className="text-sm text-white/85 mt-2">{actionData.error}</p>
+              <Link
+                to="/student"
+                className="mt-4 flex w-full items-center justify-center rounded-full bg-white/90 hover:bg-white text-brand-navy-deeper text-sm font-semibold py-2.5"
+              >
+                Go to My Dashboard
+              </Link>
+              <p className="text-xs text-white/50 mt-3">This key was not used - you can give it to someone else.</p>
+            </div>
+          )}
+          {actionData?.error && !ownedCourseId && (
             <div className="flex items-start gap-3 bg-red-500/10 border border-red-500/20 text-red-400 rounded-lg px-4 py-3 text-sm mb-5">
               <AlertCircle size={16} className="shrink-0 mt-0.5" />
               <div>
                 {actionData.error}
-                {ownedCourseId && (
-                  <Link
-                    to={`/student/course/${ownedCourseId}`}
-                    className="mt-2 flex items-center gap-1 text-brand-mustard hover:text-brand-mustard font-medium"
-                  >
-                    Go to your course <ArrowRight size={14} />
-                  </Link>
+                {deviceLimitEmail && (
+                  <Form method="post" action="/auth/release-devices" reloadDocument className="mt-2">
+                    <input type="hidden" name="intent" value="request" />
+                    <input type="hidden" name="email" value={deviceLimitEmail} />
+                    <button type="submit" className="font-medium text-brand-mustard hover:underline">
+                      Email me a link to sign out my other devices
+                    </button>
+                  </Form>
                 )}
               </div>
             </div>

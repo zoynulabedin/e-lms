@@ -8,6 +8,7 @@ import { REVOKE_REASON, PLACEHOLDER_EMAIL } from "../utils/license";
 import {
   Search,
   ShieldCheck,
+  ShieldOff,
   User,
   Briefcase,
   Ban,
@@ -105,8 +106,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const users = await prisma.user.findMany({
     where,
     orderBy: { createdAt: "desc" },
-    // Loader data is serialized into the page - never ship hashes.
-    omit: { passwordHash: true },
+    // Loader data is serialized into the page - never ship hashes or secrets.
+    omit: { passwordHash: true, mfaSecret: true, mfaLastStep: true },
     include: {
       _count: { select: { licenses: true, progress: true } },
       sessions: {
@@ -246,6 +247,29 @@ export async function action({ request }: ActionFunctionArgs) {
       message:
         `${count} license${count > 1 ? "s" : ""} revoked for ${target.email}. ` +
         "Keys can be restored one by one on the License Keys page.",
+    });
+  }
+
+  // Lost authenticator AND recovery codes: after confirming who the person is
+  // (outside the app), an admin turns two-step verification off for them and
+  // ends their sessions. Their next sign-in asks to set it up again if it is
+  // required (admins) - never on your own account, which needs a recovery code.
+  if (intent === "reset_mfa") {
+    if (!target) return userNotFound();
+    if (targetsSelf) {
+      return data({ error: "You can't reset your own two-step verification here. Use a recovery code, or ask another admin." }, { status: 400 });
+    }
+    await prisma.$transaction([
+      prisma.user.update({ where: { id: userId }, data: { mfaSecret: null, mfaEnabledAt: null, mfaLastStep: null } }),
+      prisma.mfaRecoveryCode.deleteMany({ where: { userId } }),
+      prisma.userSession.updateMany({ where: { userId, isActive: true }, data: { isActive: false } }),
+    ]);
+    console.warn(`[users] ${admin.email} reset two-step verification for ${target.email}`);
+    return data({
+      success: true,
+      message:
+        `Two-step verification reset for ${target.email}; their sessions were ended.` +
+        (target.role === "ADMIN" ? " They must set it up again at their next sign-in." : ""),
     });
   }
 
@@ -936,6 +960,11 @@ export default function UsersPage() {
                           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${roleColor[user.role]}`}>
                             <RoleIcon size={11} /> {user.role}
                           </span>
+                          {user.mfaEnabledAt && (
+                            <span title="Two-step verification on" className="ml-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-green-100 text-green-800">
+                              <ShieldCheck size={10} /> 2-step
+                            </span>
+                          )}
                         </td>
 
                         {/* Status */}
@@ -1036,6 +1065,20 @@ export default function UsersPage() {
                                 <input type="hidden" name="userId" value={user.id} />
                                 <button type="submit" className="text-xs text-amber-600 border border-amber-200 hover:bg-amber-50 px-2 py-1 rounded transition-colors">
                                   Suspend
+                                </button>
+                              </fetcher.Form>
+                            )}
+
+                            {/* Reset two-step verification (lost phone + recovery codes) */}
+                            {user.mfaEnabledAt && (
+                              <fetcher.Form method="post" onSubmit={e => {
+                                if (!confirm(`Reset two-step verification for ${user.email}? Only do this after confirming who they are. They are signed out everywhere${user.role === "ADMIN" ? " and must set it up again" : ""}.`))
+                                  e.preventDefault();
+                              }}>
+                                <input type="hidden" name="intent" value="reset_mfa" />
+                                <input type="hidden" name="userId" value={user.id} />
+                                <button type="submit" title="Reset two-step verification" className="text-amber-500 hover:text-amber-700 p-1.5 rounded hover:bg-amber-50 transition-colors">
+                                  <ShieldOff size={13} />
                                 </button>
                               </fetcher.Form>
                             )}

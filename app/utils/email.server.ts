@@ -406,18 +406,22 @@ export async function sendAdminRefundNotification({
   orderId: string;
   /** Shopify order number ("#1001"), when known. */
   orderName?: string | null;
-  kind: "refund" | "cancel";
+  /** dispute = chargeback opened (keys suspended); dispute_won = keys restored. */
+  kind: "refund" | "cancel" | "dispute" | "dispute_won";
   /** Keys this event revoked. `holderEmail` is set when a learner had already redeemed it. */
   revoked: Array<{ key: string; courseTitle: string; wasActive: boolean; holderEmail?: string | null }>;
   /** Shown above the table, e.g. "money-only refund — no keys were revoked". */
   note?: string;
 }): Promise<EmailResult> {
   const adminEmail = process.env.ADMIN_EMAIL;
-  const what = kind === "refund" ? "Refund" : "Cancellation";
+  const what =
+    kind === "refund" ? "Refund" : kind === "cancel" ? "Cancellation" : kind === "dispute" ? "Chargeback" : "Chargeback won";
+  // A won dispute gives keys back; an open one suspends them.
+  const verb = kind === "dispute_won" ? "restored" : kind === "dispute" ? "suspended" : "revoked";
   if (!adminEmail) {
     console.warn(
       `[email] ADMIN_EMAIL not set — ${what.toLowerCase()} on order ${orderId}: ` +
-        `${revoked.length} key(s) revoked${note ? `; ${note}` : ""}`,
+        `${revoked.length} key(s) ${kind === "dispute_won" ? "restored" : kind === "dispute" ? "suspended" : "revoked"}${note ? `; ${note}` : ""}`,
     );
     return { ok: false, error: "ADMIN_EMAIL not set" };
   }
@@ -457,11 +461,11 @@ export async function sendAdminRefundNotification({
   return send("admin refund notification", {
     from: FROM,
     to: [adminEmail],
-    subject: `${what}: ${revoked.length} license(s) revoked — Order ${orderName || `#${orderId}`}`,
+    subject: `${what}: ${revoked.length} license(s) ${verb} — Order ${orderName || `#${orderId}`}`,
     html: `
       <div style="font-family:Inter,sans-serif;max-width:640px;margin:0 auto;padding:32px 24px;background:#fff;border-radius:12px;border:1px solid #e5e7eb;">
         <h1 style="font-size:20px;font-weight:700;color:#111827;margin-bottom:4px;">Shopify ${what}</h1>
-        <p style="color:#6b7280;margin-bottom:20px;">Order <strong>${esc(orderLabel(orderId, orderName))}</strong> — ${revoked.length} key(s) revoked automatically.</p>
+        <p style="color:#6b7280;margin-bottom:20px;">Order <strong>${esc(orderLabel(orderId, orderName))}</strong> — ${revoked.length} key(s) ${verb} automatically.</p>
         ${noteBlock}
         ${table}
         <p style="color:#6b7280;font-size:13px;margin-bottom:20px;">A revoked key can be restored from the License Keys page if this was a mistake.</p>
@@ -538,4 +542,240 @@ export async function sendPasswordResetEmail({
     `,
   });
 
+}
+
+// ─── Shared layout for the account / order emails below ──────────────────────
+
+/** A simple branded card. `body` is trusted HTML built with esc() by the caller. */
+function card(heading: string, body: string): string {
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:Inter,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:40px 16px;">
+    <tr><td align="center">
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;">
+        <tr><td style="background:#1D375F;border-radius:12px 12px 0 0;padding:28px 40px;text-align:center;">
+          <h1 style="margin:0;font-size:24px;font-weight:700;color:#ffffff;">${esc(heading)}</h1>
+        </td></tr>
+        <tr><td style="background:#ffffff;padding:32px 40px;font-size:15px;color:#374151;line-height:1.6;">
+          ${body}
+        </td></tr>
+        <tr><td style="background:#f9fafb;border-radius:0 0 12px 12px;padding:18px 40px;text-align:center;border-top:1px solid #e5e7eb;">
+          <p style="margin:0;font-size:12px;color:#9ca3af;">
+            Questions? Reply to this email or visit <a href="${esc(APP_URL)}" style="color:#1D375F;">${esc(APP_URL)}</a>
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
+function button(href: string, label: string): string {
+  return `<div style="margin:22px 0;"><a href="${esc(href)}" style="display:inline-block;background:#1D375F;color:#ffffff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:700;font-size:15px;">${esc(label)} &rarr;</a></div>`;
+}
+
+function keyRows(keys: Array<{ key: string; courseTitle: string }>): string {
+  return `<table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb;border-radius:8px;border-collapse:separate;margin:8px 0 4px;">${keys
+    .map(
+      (k) => `<tr>
+        <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;font-size:14px;color:#111827;">${esc(k.courseTitle)}</td>
+        <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;font-family:monospace;font-size:14px;font-weight:700;color:#1D375F;">${esc(k.key)}</td>
+        <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;"><a href="${esc(redeemUrlFor(k.key))}" style="color:#1D375F;font-weight:600;font-size:13px;">Activate &rarr;</a></td>
+      </tr>`,
+    )
+    .join("")}</table>`;
+}
+
+// ─── Order access (retail purchases) ─────────────────────────────────────────
+
+/**
+ * One email per paid order, in up to three parts:
+ *  - courses already unlocked on the buyer's existing account (no key needed),
+ *  - "You already have access": a course the account already held - the new
+ *    key was left unused (it can be given away, or refunded),
+ *  - keys to activate (new customers).
+ * With only keys to activate it is the classic licence email.
+ */
+export async function sendOrderAccessEmail({
+  to,
+  unlocked,
+  keys,
+  duplicates,
+}: {
+  to: string;
+  unlocked: string[];
+  keys: Array<{ key: string; courseTitle: string }>;
+  duplicates: Array<{ key: string; courseTitle: string }>;
+}): Promise<EmailResult> {
+  if (!unlocked.length && !duplicates.length) {
+    if (!keys.length) return { ok: false, error: "Nothing to send." };
+    return sendLicenseBundleEmail({ to, licenses: keys });
+  }
+  const parts: string[] = ["<p style=\"margin:0 0 16px;\">Thank you for your purchase!</p>"];
+  if (unlocked.length) {
+    parts.push(`
+      <p style="margin:0 0 6px;font-weight:700;color:#111827;">Ready in your account</p>
+      <p style="margin:0 0 4px;">You already have an account with this email address, so we added your course${unlocked.length > 1 ? "s" : ""} to it:</p>
+      <ul style="margin:6px 0 0;padding-left:20px;">${unlocked.map((t) => `<li><strong>${esc(t)}</strong></li>`).join("")}</ul>
+      ${button(`${APP_URL}/student`, "Go to My Dashboard")}`);
+  }
+  if (duplicates.length) {
+    const titles = Array.from(new Set(duplicates.map((d) => d.courseTitle)));
+    parts.push(`
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:16px 18px;margin:8px 0 18px;">
+        <p style="margin:0 0 6px;font-weight:700;color:#1e3a8a;">You Already Have Access!</p>
+        <p style="margin:0 0 8px;">You're already enrolled in <em>${titles.map(esc).join("</em>, <em>")}</em>. Your course is available in your learning dashboard.</p>
+        <p style="margin:0 0 4px;font-size:13px;color:#4b5563;">The extra key below was not used. You can give it to someone else, or reply to this email if you bought it by mistake.</p>
+        ${keyRows(duplicates)}
+        ${unlocked.length ? "" : button(`${APP_URL}/student`, "Go to My Dashboard")}
+      </div>`);
+  }
+  if (keys.length) {
+    parts.push(`
+      <p style="margin:8px 0 6px;font-weight:700;color:#111827;">Keys to activate</p>
+      <p style="margin:0 0 4px;font-size:14px;">Open a key's link, then create an account or sign in. Each key can be used once.</p>
+      ${keyRows(keys)}`);
+  }
+  return send("order access email", {
+    from: FROM,
+    to: [to],
+    replyTo: REPLY_TO,
+    subject: unlocked.length ? "Your course is ready in your account" : "You already have access to this course",
+    html: card("Your Course Access", parts.join("")),
+  });
+}
+
+// ─── Organization seats ──────────────────────────────────────────────────────
+
+/** To the buyer of an organization order: the seats, where to manage them, and (new accounts) a set-password link. */
+export async function sendOrgSeatsEmail({
+  to,
+  orgName,
+  seats,
+  keys,
+  setPasswordToken,
+}: {
+  to: string;
+  orgName: string;
+  seats: Array<{ courseTitle: string; count: number }>;
+  keys: Array<{ key: string; courseTitle: string }>;
+  /** Present when the manager account was just created: a 7-day set-password link. */
+  setPasswordToken: string | null;
+}): Promise<EmailResult> {
+  const setPassword = setPasswordToken
+    ? `<p style="margin:0 0 4px;"><strong>Step 1:</strong> set the password for your manager account (link valid for 7 days):</p>
+       ${button(`${APP_URL}/auth/reset-password?token=${encodeURIComponent(setPasswordToken)}`, "Set my password")}
+       <p style="margin:0 0 4px;"><strong>Step 2:</strong> invite your learners:</p>`
+    : `<p style="margin:0 0 4px;">Sign in with this email address to invite your learners and see how many seats are left:</p>`;
+  return send("organization seats email", {
+    from: FROM,
+    to: [to],
+    replyTo: REPLY_TO,
+    subject: `Your seats for ${orgName} are ready`,
+    html: card(
+      "Your Seats Are Ready",
+      `<p style="margin:0 0 12px;">Thank you for your order! These seats were added to <strong>${esc(orgName)}</strong>:</p>
+       <ul style="margin:0 0 16px;padding-left:20px;">${seats.map((s) => `<li>${s.count} &times; <strong>${esc(s.courseTitle)}</strong></li>`).join("")}</ul>
+       ${setPassword}
+       ${button(`${APP_URL}/org`, "Manage seats & invite learners")}
+       <p style="margin:18px 0 4px;font-size:13px;color:#6b7280;">You can also hand these keys out yourself; each key unlocks the course for one learner:</p>
+       ${keyRows(keys)}`,
+    ),
+  });
+}
+
+/** To a learner an organization assigned a seat to. */
+export async function sendSeatInvitationEmail({
+  to,
+  orgName,
+  courseTitle,
+  licenseKey,
+}: {
+  to: string;
+  orgName: string;
+  courseTitle: string;
+  licenseKey: string;
+}): Promise<EmailResult> {
+  return send("seat invitation email", {
+    from: FROM,
+    to: [to],
+    replyTo: REPLY_TO,
+    subject: `${orgName} invited you to ${courseTitle}`,
+    html: card(
+      "You're Invited",
+      `<p style="margin:0 0 12px;"><strong>${esc(orgName)}</strong> has given you a seat in <strong>${esc(courseTitle)}</strong>.</p>
+       <p style="margin:0 0 4px;">Accept the invitation to create your account (or sign in, if you already have one) with <strong>${esc(to)}</strong>:</p>
+       ${button(redeemUrlFor(licenseKey), "Accept invitation")}
+       <p style="margin:0;font-size:13px;color:#6b7280;">Your key: <span style="font-family:monospace;font-weight:700;color:#1D375F;">${esc(licenseKey)}</span>. It only works with the email address this invitation was sent to.</p>`,
+    ),
+  });
+}
+
+// ─── Sign-in security ────────────────────────────────────────────────────────
+
+/** The 6-digit code for signing in on a browser this account hasn't used before. */
+export async function sendNewDeviceCodeEmail({ to, code }: { to: string; code: string }): Promise<EmailResult> {
+  return send("new device code email", {
+    from: FROM,
+    to: [to],
+    replyTo: REPLY_TO,
+    subject: `Your sign-in code: ${code}`,
+    html: card(
+      "Confirm It's You",
+      `<p style="margin:0 0 12px;">Someone (hopefully you) is signing in to your learning account on a new device or browser. Enter this code to continue:</p>
+       <div style="background:#f9fafb;border:2px dashed #d1d5db;border-radius:8px;padding:18px;text-align:center;margin:0 0 16px;">
+         <span style="font-family:monospace;font-size:30px;font-weight:700;letter-spacing:.3em;color:#1D375F;">${esc(code)}</span>
+       </div>
+       <p style="margin:0;font-size:13px;color:#6b7280;">The code expires in 10 minutes and works once. If this wasn't you, don't share it - change your password instead.</p>`,
+    ),
+  });
+}
+
+/** A link that signs out every device on the account (when the device limit blocks a sign-in). */
+export async function sendReleaseDevicesEmail({ to, token }: { to: string; token: string }): Promise<EmailResult> {
+  const url = `${APP_URL}/auth/release-devices?token=${encodeURIComponent(token)}`;
+  return send("release devices email", {
+    from: FROM,
+    to: [to],
+    replyTo: REPLY_TO,
+    subject: "Sign out your other devices",
+    html: card(
+      "Sign Out Your Other Devices",
+      `<p style="margin:0 0 12px;">Your account is signed in on the maximum number of devices. Use the button below to sign out of all of them, then sign in on the device you want to use now.</p>
+       ${button(url, "Sign out my other devices")}
+       <p style="margin:0;font-size:13px;color:#6b7280;">The link expires in 30 minutes and works once. If you didn't ask for it, ignore this email - nothing changes.</p>`,
+    ),
+  });
+}
+
+/** An admin made this person a manager of an organization (new accounts get a 7-day set-password link). */
+export async function sendOrgManagerInviteEmail({
+  to,
+  orgName,
+  setPasswordToken,
+}: {
+  to: string;
+  orgName: string;
+  setPasswordToken: string | null;
+}): Promise<EmailResult> {
+  const first = setPasswordToken
+    ? `<p style="margin:0 0 4px;">First, set the password for your account (link valid for 7 days):</p>
+       ${button(`${APP_URL}/auth/reset-password?token=${encodeURIComponent(setPasswordToken)}`, "Set my password")}`
+    : `<p style="margin:0 0 4px;">Sign in with this email address to get started.</p>`;
+  return send("organization manager invite email", {
+    from: FROM,
+    to: [to],
+    replyTo: REPLY_TO,
+    subject: `You can now manage seats for ${orgName}`,
+    html: card(
+      "Manage Your Organization",
+      `<p style="margin:0 0 12px;">You've been made a manager of <strong>${esc(orgName)}</strong>. You can invite learners to its course seats and see how many are left.</p>
+       ${first}
+       ${button(`${APP_URL}/org`, "Open organization seats")}`,
+    ),
+  });
 }

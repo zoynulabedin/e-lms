@@ -13,6 +13,7 @@ import {
   REVOKE_REASON,
   revokeReasonLabel,
   isMoneyRevocation,
+  isPaymentRevocation,
 } from "../utils/license";
 import {
   revokedFields,
@@ -39,6 +40,7 @@ import {
   Trash2,
   ShoppingBag,
   Search,
+  AtSign,
   UserPlus,
   UserMinus,
   RotateCcw,
@@ -123,6 +125,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
           { customerEmail: { contains: q, mode: "insensitive" as const } },
           { user: { email: { contains: q, mode: "insensitive" as const } } },
           { user: { name: { contains: q, mode: "insensitive" as const } } },
+          { assignedEmail: { contains: q, mode: "insensitive" as const } },
+          { organization: { name: { contains: q, mode: "insensitive" as const } } },
         ],
       }
     : {};
@@ -137,12 +141,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const totalPages = Math.max(1, Math.ceil(totalCount / PER_PAGE));
   const page = Math.min(requestedPage, totalPages);
 
-  const [licenses, courses, unusedGroups, keptGroups, attentionOrders] = await Promise.all([
+  const [licenses, courses, unusedGroups, keptGroups, attentionOrders, organizations] = await Promise.all([
     prisma.license.findMany({
       where,
       include: {
         course: { select: { id: true, title: true } },
         user: { select: { id: true, name: true, email: true, role: true } },
+        organization: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: "desc" },
       take: PER_PAGE,
@@ -172,6 +177,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       take: 25,
       select: { orderId: true, orderName: true, customerEmail: true, unmappedItems: true, unmappedAt: true },
     }),
+    prisma.organization.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
   ]);
 
   const unusedByCourse: Record<string, number> = {};
@@ -181,7 +187,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   return {
     licenses, courses, statusFilter, q, page, totalPages, totalCount,
-    unusedByCourse, keptByCourse,
+    unusedByCourse, keptByCourse, organizations,
     attentionOrders: attentionOrders.map((o) => ({
       ...o,
       unmappedItems: Array.isArray(o.unmappedItems) ? o.unmappedItems.map(String) : [],
@@ -274,11 +280,11 @@ export async function action({ request }: ActionFunctionArgs) {
     }
     // The customer got their money back, so handing the course back has to be
     // a deliberate choice rather than a stray click.
-    if (isMoneyRevocation(license.revokedReason) && formData.get("confirmRefunded") !== "1") {
+    if (isPaymentRevocation(license.revokedReason) && formData.get("confirmRefunded") !== "1") {
       return data(
         {
           error:
-            "This key was revoked because the order was refunded or cancelled in Shopify. " +
+            "This key was revoked because the order was refunded, cancelled or charged back in Shopify. " +
             "Confirm to restore it anyway.",
         },
         { status: 400 },
@@ -663,6 +669,56 @@ export async function action({ request }: ActionFunctionArgs) {
     });
   }
 
+  // N8: a key emailed to the wrong address. Only an unused key can be
+  // re-addressed. It gets a NEW key string, so the copy that went to the wrong
+  // inbox stops working - correcting the email never adds a second seat.
+  if (intent === "change_email") {
+    const id = String(formData.get("id") || "");
+    const newEmail = String(formData.get("newEmail") || "").trim().toLowerCase();
+    if (!id) return data({ error: "Missing license ID" }, { status: 400 });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) {
+      return data({ error: "Enter a valid email address." }, { status: 400 });
+    }
+    const license = await prisma.license.findUnique({
+      where: { id },
+      select: { key: true, status: true, userId: true, customerEmail: true, assignedEmail: true, course: { select: { title: true } } },
+    });
+    if (!license) return data({ error: "License not found." }, { status: 404 });
+    if (license.status !== "PENDING" || license.userId) {
+      return data(
+        { error: "Only an unused key can be re-addressed. This one is already redeemed or revoked - use Release Seat to move a redeemed seat." },
+        { status: 400 },
+      );
+    }
+    let newKey = generateLicenseKey();
+    const readdress = (key: string) =>
+      prisma.license.updateMany({
+        where: { id, status: "PENDING", userId: null },
+        data: { key, customerEmail: newEmail, ...(license.assignedEmail ? { assignedEmail: newEmail } : {}) },
+      });
+    let r: { count: number };
+    try {
+      r = await readdress(newKey);
+    } catch (e: any) {
+      if (e?.code !== "P2002") throw e;
+      newKey = generateLicenseKey();
+      r = await readdress(newKey);
+    }
+    if (r.count === 0) {
+      return data({ error: "This key was redeemed while you were looking at it. Reload and try again." }, { status: 409 });
+    }
+    const sent = await sendLicenseEmail({ to: newEmail, licenseKey: newKey, courseTitle: license.course?.title ?? "Your Course" });
+    console.warn(
+      `[licenses] ${admin.email} re-addressed key ${logKey(license.key)} from ${license.customerEmail} to ${newEmail} (new key ${logKey(newKey)})`,
+    );
+    return data({
+      success: true,
+      message:
+        `Key re-addressed to ${newEmail}. The old key ${license.key} no longer works; the new key is ${newKey}` +
+        (sent.ok ? " and was emailed to them." : ` - the email could not be sent (${sent.error}), so give it to them yourself.`),
+    });
+  }
+
   // The admin has dealt with an order's unissued items by hand (issued the
   // missing keys, refunded, or confirmed nothing is owed): stop listing it.
   if (intent === "resolve_unmapped") {
@@ -685,6 +741,7 @@ export async function action({ request }: ActionFunctionArgs) {
     const customerEmail = ((formData.get("customerEmail") as string) || "")
       .trim()
       .toLowerCase();
+    const organizationId = String(formData.get("organizationId") || "") || null;
     const count = parseInt(rawCount, 10);
 
     if (!count || isNaN(count) || count < 1 || count > 200) {
@@ -705,6 +762,9 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
+    if (organizationId && !(await prisma.organization.findUnique({ where: { id: organizationId }, select: { id: true } }))) {
+      return data({ error: "Selected organization does not exist." }, { status: 400 });
+    }
     await prisma.$transaction(
       Array.from({ length: count }).map(() =>
         prisma.license.create({
@@ -714,6 +774,7 @@ export async function action({ request }: ActionFunctionArgs) {
             customerEmail: customerEmail || PLACEHOLDER_EMAIL,
             status: "PENDING",
             isBulk: true,
+            organizationId,
           },
         }),
       ),
@@ -1313,7 +1374,7 @@ function ResendEmailButton({ licenseId }: { licenseId: string }) {
 export default function LicenseManagement() {
   const {
     licenses, courses, statusFilter, q, page, totalPages, totalCount,
-    unusedByCourse, keptByCourse, attentionOrders,
+    unusedByCourse, keptByCourse, attentionOrders, organizations,
   } = useLoaderData<typeof loader>();
   const [isModalOpen, setIsModalOpen] = useState(false);
   /** The licence the admin is about to delete, or null when the dialog is shut. */
@@ -1611,6 +1672,12 @@ export default function LicenseManagement() {
                           ? license.user.email
                           : license.customerEmail}
                       </p>
+                      {license.organization && (
+                        <p className="text-[11px] text-brand-navy truncate max-w-[180px]">
+                          {license.organization.name}
+                          {license.assignedEmail && license.status === "PENDING" ? ` · invited ${license.assignedEmail}` : ""}
+                        </p>
+                      )}
                     </td>
                     {/* The Shopify order the key was bought with: its number as
                         staff see it in Shopify; a click lists every key from it. */}
@@ -1666,6 +1733,31 @@ export default function LicenseManagement() {
                           <div className="py-1">
                             <ResendEmailButton licenseId={license.id} />
                             <CopyKeyButton licenseKey={license.key} />
+                            {license.status === "PENDING" && !license.userId && (
+                              <fetcher.Form method="post">
+                                <input type="hidden" name="intent" value="change_email" />
+                                <input type="hidden" name="id" value={license.id} />
+                                <input type="hidden" name="newEmail" defaultValue="" />
+                                <button
+                                  type="submit"
+                                  className="flex w-full items-center gap-2 px-4 py-2 text-xs text-left text-gray-700 hover:bg-gray-50"
+                                  onClick={(e) => {
+                                    const next = prompt(
+                                      "Correct email for this key. It gets a new key string (the copy sent to the wrong address stops working) and is emailed to the new address.",
+                                      isPlaceholderEmail(license.customerEmail) ? "" : license.customerEmail,
+                                    );
+                                    if (!next) {
+                                      e.preventDefault();
+                                      return;
+                                    }
+                                    const field = e.currentTarget.form?.elements.namedItem("newEmail") as HTMLInputElement | null;
+                                    if (field) field.value = next;
+                                  }}
+                                >
+                                  <AtSign size={12} /> Change Email
+                                </button>
+                              </fetcher.Form>
+                            )}
                           </div>
                           {license.status !== "REVOKED" && (
                             <div className="py-1">
@@ -1721,15 +1813,15 @@ export default function LicenseManagement() {
                                 <input type="hidden" name="id" value={license.id} />
                                 {/* The server refuses a refunded / cancelled key
                                     without this, so the question is asked here. */}
-                                {isMoneyRevocation(license.revokedReason) && (
+                                {isPaymentRevocation(license.revokedReason) && (
                                   <input type="hidden" name="confirmRefunded" value="1" />
                                 )}
                                 <button
                                   type="submit"
                                   className="flex w-full items-center gap-2 px-4 py-2 text-xs text-left text-green-700 hover:bg-green-50"
                                   onClick={(e) => {
-                                    const ok = isMoneyRevocation(license.revokedReason)
-                                      ? confirm("This key was refunded or cancelled in Shopify - restore access anyway?")
+                                    const ok = isPaymentRevocation(license.revokedReason)
+                                      ? confirm("This key was refunded, cancelled or charged back in Shopify - restore access anyway?")
                                       : confirm(
                                           license.userId
                                             ? `Give ${license.user?.email ?? license.customerEmail} access to this course again?`
@@ -1901,6 +1993,27 @@ export default function LicenseManagement() {
                   Leave blank for unassigned bulk keys.
                 </p>
               </div>
+
+              {organizations.length > 0 && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    Organization <span className="text-gray-400 font-normal">(optional)</span>
+                  </label>
+                  <select
+                    name="organizationId"
+                    defaultValue=""
+                    className="w-full border border-gray-300 rounded-lg shadow-sm focus:border-brand-navy focus:ring-brand-navy py-2 pl-3 pr-8 text-sm"
+                  >
+                    <option value="">None</option>
+                    {organizations.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {o.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-400 mt-1">Adds the keys to that organization's seats, for its managers to assign.</p>
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">

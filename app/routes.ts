@@ -12,6 +12,15 @@ export default [
   route("auth/logout", "routes/auth.logout.tsx"),
   route("auth/forgot-password", "routes/auth.forgot-password.tsx"),
   route("auth/reset-password", "routes/auth.reset-password.tsx"),
+  // Second sign-in step: authenticator / recovery code, or emailed new-device code.
+  route("auth/verify", "routes/auth.verify.tsx"),
+  // Authenticator enrolment (required for admins).
+  route("auth/mfa-setup", "routes/auth.mfa-setup.tsx"),
+  // Device limit reached: emailed link that signs the other devices out.
+  route("auth/release-devices", "routes/auth.release-devices.tsx"),
+
+  // ─── Organization manager portal (seat pool, invitations) ──────────
+  route("org", "routes/org.tsx"),
 
   // ─── License redemption (public / semi-public) ─────────────────────
   route("redeem", "routes/redeem.tsx"),
@@ -53,6 +62,8 @@ export default [
     route("courses", "routes/courses.tsx"),
     route("courses/:courseId", "routes/courses.$courseId.tsx"),
     route("licenses", "routes/licenses.tsx"),
+    route("orders", "routes/orders.tsx"),
+    route("organizations", "routes/organizations.tsx"),
     route("users", "routes/users.tsx"),
     route("sessions", "routes/sessions.tsx"),
     route("reports", "routes/reports.tsx"),

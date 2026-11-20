@@ -5,6 +5,7 @@ import crypto, { randomUUID } from "crypto";
 import { prisma } from "./db.server";
 import { clientIp, isProxyTrusted } from "./rate-limit.server";
 import { redirect } from "react-router";
+import { describeUserAgent } from "./user-agent";
 
 const JWT_SECRET = (() => {
   const s = process.env.JWT_SECRET;
@@ -27,6 +28,8 @@ export type SessionUser = {
   role: string;
   isBanned: boolean;
   isSuspended: boolean;
+  /** Two-step verification is set up (required before an ADMIN gets into the admin pages). */
+  mfaEnabled: boolean;
 };
 
 // ─── Password helpers ─────────────────────────────────────────────────────────
@@ -158,8 +161,27 @@ export function getDeviceInfo(request: Request): {
 // ─── Session management ────────────────────────────────────────────────────────
 
 /**
- * Creates a new session in DB, ending the user's least recently used
- * sessions when they are over their device limit (User.maxDevices).
+ * Thrown by createSession when the account is already signed in on as many
+ * devices as it may use (User.maxDevices). The new sign-in is refused - the
+ * learner signs out on one of those devices, gets an emailed "sign out my
+ * other devices" link, or asks support to reset them.
+ */
+export class DeviceLimitError extends Error {
+  constructor(
+    public readonly limit: number,
+    public readonly devices: Array<{ label: string; lastActiveAt: string }>,
+  ) {
+    super(`Device limit of ${limit} reached`);
+  }
+}
+
+/**
+ * Creates a new session in DB. With a device limit (User.maxDevices, default
+ * 2) a sign-in beyond it is REFUSED (DeviceLimitError) instead of signing an
+ * earlier device out. A device is a live session (active, not expired); the
+ * same browser signing in again (same user agent and trusted IP, e.g. after
+ * clearing cookies) replaces its own earlier session rather than counting
+ * twice.
  */
 export async function createSession(
   userId: string,
@@ -182,9 +204,8 @@ export async function createSession(
   const token = signToken({ userId, role, sessionId });
   const tokenHash = hashToken(token);
 
-  // Read limit -> evict oldest -> insert, all inside one transaction with the
-  // user row locked, so two simultaneous logins can't both squeeze past the
-  // device limit, and a failed insert can't leave the user with no session.
+  // Read limit -> check -> insert, all inside one transaction with the user
+  // row locked, so two simultaneous sign-ins can't both squeeze past the limit.
   await prisma.$transaction(async (tx) => {
     const rows = await tx.$queryRaw<Array<{ maxDevices: number }>>`
       SELECT "maxDevices" FROM "User" WHERE id = ${userId} FOR UPDATE
@@ -192,29 +213,26 @@ export async function createSession(
     const limit = rows[0]?.maxDevices ?? 2; // schema default: two devices
 
     if (limit > 0) {
-      // Oldest sessions first; keep (limit - 1) so the new one fits. With a
-      // trusted IP, sessions from this same device (cookie lost, private
-      // window) go first, so signing in again here doesn't sign out the
-      // learner's other device. An untrusted IP makes deviceId meaningless.
-      // COALESCE: rows saved without a deviceId count as another device.
-      // Expired rows can never be used again, so they neither take a slot nor
-      // get evicted ahead of a live session. They stay isActive, so that
-      // browser is still told "expired" rather than "ended".
-      const activeSessions = ipTrusted
-        ? await tx.$queryRaw<Array<{ id: string }>>`
-            SELECT id FROM "UserSession"
-            WHERE "userId" = ${userId} AND "isActive" = true AND "expiresAt" > ${now}
-            ORDER BY COALESCE("deviceId" = ${deviceId}, false) DESC, "lastActiveAt" ASC
-          `
-        : await tx.$queryRaw<Array<{ id: string }>>`
-            SELECT id FROM "UserSession"
-            WHERE "userId" = ${userId} AND "isActive" = true AND "expiresAt" > ${now}
-            ORDER BY "lastActiveAt" ASC
-          `;
-      const excess = activeSessions.length - limit + 1;
-      if (excess > 0) {
-        const ids = activeSessions.slice(0, excess).map((s) => s.id);
-        await tx.userSession.updateMany({ where: { id: { in: ids } }, data: { isActive: false } });
+      // Expired rows can never be used again, so they don't take a slot.
+      const live = await tx.$queryRaw<Array<{ id: string; deviceId: string | null; userAgent: string | null; lastActiveAt: Date }>>`
+        SELECT id, "deviceId", "userAgent", "lastActiveAt" FROM "UserSession"
+        WHERE "userId" = ${userId} AND "isActive" = true AND "expiresAt" > ${now}
+        ORDER BY "lastActiveAt" DESC
+      `;
+      // Only with a trusted IP does deviceId mean anything (see getDeviceInfo).
+      const sameDevice = ipTrusted ? live.filter((s) => s.deviceId === deviceId) : [];
+      if (sameDevice.length) {
+        await tx.userSession.updateMany({ where: { id: { in: sameDevice.map((s) => s.id) } }, data: { isActive: false } });
+      }
+      const others = live.filter((s) => !sameDevice.includes(s));
+      if (others.length >= limit) {
+        throw new DeviceLimitError(
+          limit,
+          others.map((s) => ({
+            label: describeUserAgent(s.userAgent || ""),
+            lastActiveAt: new Date(s.lastActiveAt).toISOString(),
+          })),
+        );
       }
     }
 
@@ -266,7 +284,7 @@ export async function getSessionState(request: Request): Promise<SessionState> {
   // NOTE: never select "passwordHash" here — this object is returned from
   // loaders and serialized into the HTML sent to the browser.
   const users = await prisma.$queryRaw<SessionUser[]>`
-    SELECT id, email, name, role, "isBanned", "isSuspended"
+    SELECT id, email, name, role, "isBanned", "isSuspended", ("mfaEnabledAt" IS NOT NULL) AS "mfaEnabled"
     FROM "User" WHERE id = ${payload.userId} LIMIT 1
   `;
   const user = users[0];
@@ -355,11 +373,18 @@ export async function requireUser(request: Request, opts?: RequireUserOptions): 
   throw redirect(location, { headers: { "Set-Cookie": clearSessionCookie() } });
 }
 
-/** requireUser for admin pages; anyone else goes to /student. opts as for requireUser. */
+/**
+ * requireUser for admin pages; anyone else goes to /student. An admin without
+ * two-step verification is sent to set it up first: admin access is never
+ * granted on a password alone. opts as for requireUser.
+ */
 export async function requireAdmin(request: Request, opts?: RequireUserOptions) {
   const user = await requireUser(request, opts);
   if (user.role !== "ADMIN") {
     throw redirect("/student");
+  }
+  if (!user.mfaEnabled) {
+    throw redirect("/auth/mfa-setup");
   }
   return user;
 }

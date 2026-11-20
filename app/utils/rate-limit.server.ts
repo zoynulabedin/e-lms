@@ -37,6 +37,13 @@ export const LIMITS = {
   // Current-password checks on /student/settings, keyed by user id: a
   // signed-in session must not become an unlimited password-guessing oracle.
   account_password: { ip: 30, subject: 5, windowMs: 15 * 60_000 },
+  // Second sign-in step (authenticator, recovery or emailed code), keyed by
+  // user id: 5 wrong codes lock that account's verification for 15 minutes.
+  mfa_verify: { ip: 40, subject: 5, windowMs: 15 * 60_000 },
+  // Emailed new-device codes and "sign out my other devices" links, by email.
+  device_email: { ip: 15, subject: 4, windowMs: 60 * 60_000 },
+  // Seat invitations sent by an organization manager, by manager id.
+  org_invite: { ip: 200, subject: 150, windowMs: 60 * 60_000 },
 } as const;
 
 export type LimitName = keyof typeof LIMITS;

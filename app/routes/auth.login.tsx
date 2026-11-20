@@ -2,17 +2,19 @@ import { redirect, data } from "react-router";
 import { Form, Link, useActionData, useLoaderData } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { prisma } from "../utils/db.server";
+import { verifyPassword, getSessionUser, DUMMY_HASH } from "../utils/auth.server";
 import {
-  verifyPassword,
-  createSession,
-  createSessionCookie,
-  getSessionUser,
-  DUMMY_HASH,
-} from "../utils/auth.server";
+  landingFor,
+  secondStepFor,
+  beginSecondStep,
+  finishSignIn,
+  deviceLimitPayload,
+  DeviceLimitError,
+} from "../utils/sign-in.server";
 import { rateLimitResponse, recordFailure } from "../utils/rate-limit.server";
 import { safeRedirect } from "../utils/safe-redirect";
 
-import { Eye, EyeOff, CheckCircle2, Mail, Lock, ArrowLeft, LogOut, Clock } from "lucide-react";
+import { Eye, EyeOff, CheckCircle2, Mail, Lock, ArrowLeft, LogOut, Clock, MonitorSmartphone } from "lucide-react";
 import { useState } from "react";
 
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -21,14 +23,16 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const user = await getSessionUser(request);
   if (user) {
     // Already signed in (e.g. a second tab): go where the link was heading.
-    return redirect(redirectTo || (user.role === "ADMIN" ? "/" : "/student"));
+    return redirect(redirectTo || landingFor(user.role));
   }
   const passwordReset = url.searchParams.get("reset") === "1";
+  // Back from the emailed "sign out my other devices" link.
+  const released = url.searchParams.get("released") === "1";
   // Set by requireUser when it finds a session that was ended or timed out.
   const signedOutParam = url.searchParams.get("signedOut");
   const signedOut =
     signedOutParam === "ended" || signedOutParam === "expired" ? signedOutParam : null;
-  return data({ passwordReset, redirectTo, signedOut });
+  return data({ passwordReset, redirectTo, signedOut, released });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -51,7 +55,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
   try {
     const users = await prisma.$queryRaw<any[]>`
-      SELECT id, email, "passwordHash", name, role, "isBanned", "banReason", "isSuspended"
+      SELECT id, email, "passwordHash", name, role, "isBanned", "banReason", "isSuspended", "mfaEnabledAt"
       FROM "User" WHERE email = ${email} LIMIT 1
     `;
     const user = users[0] ?? null;
@@ -80,14 +84,19 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
-    const token = await createSession(user.id, user.role, request);
-    const cookie = createSessionCookie(token);
+    const destination = redirectTo || `${landingFor(user.role)}?toast=welcome`;
 
-    const destination =
-      redirectTo || (user.role === "ADMIN" ? "/?toast=welcome" : "/student?toast=welcome");
-    return redirect(destination, {
-      headers: { "Set-Cookie": cookie },
-    });
+    // Authenticator code, authenticator set-up (admins) or an emailed code for
+    // a browser this account hasn't used: no session until that step passes.
+    const step = await secondStepFor(request, user);
+    if (step) return await beginSecondStep(user, step, destination);
+
+    try {
+      return await finishSignIn(request, user, destination);
+    } catch (e) {
+      if (e instanceof DeviceLimitError) return data(deviceLimitPayload(e, user.email), { status: 403 });
+      throw e;
+    }
   } catch (err) {
     console.error("[login] action error:", err);
     return data(
@@ -128,6 +137,11 @@ export default function Login() {
     loaderData && "redirectTo" in loaderData ? (loaderData.redirectTo as string) : "";
   const signedOut =
     loaderData && "signedOut" in loaderData ? loaderData.signedOut : null;
+  const released = loaderData && "released" in loaderData ? loaderData.released : false;
+  const deviceLimit =
+    actionData && "deviceLimit" in actionData
+      ? (actionData.deviceLimit as { email: string; devices: Array<{ label: string; lastActiveAt: string }> })
+      : null;
 
   return (
     <div
@@ -189,6 +203,35 @@ export default function Login() {
             className="rounded-[26px] px-6 py-8 shadow-[0_18px_50px_-12px_rgba(29,55,95,0.18)] sm:px-[45px] sm:pt-[39px] sm:pb-[35px]"
             style={{ backgroundColor: CARD_BG }}
           >
+            {/* Device limit reached: say so plainly, list the devices, and
+                offer the emailed release link (a form of its own). */}
+            {deviceLimit && (
+              <div role="alert" className="mb-6 rounded-xl border border-amber-600/30 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+                <p className="flex items-center gap-2 font-bold">
+                  <MonitorSmartphone size={17} className="shrink-0" /> Device limit reached
+                </p>
+                <p className="mt-2">{actionData?.error}</p>
+                {deviceLimit.devices.length > 0 && (
+                  <ul className="mt-2 list-disc pl-5 text-amber-900/90">
+                    {deviceLimit.devices.map((d, i) => (
+                      <li key={i}>
+                        {d.label} <span className="text-amber-800/70">(last active {new Date(d.lastActiveAt).toLocaleString()})</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <Form method="post" action="/auth/release-devices" reloadDocument className="mt-3">
+                  <input type="hidden" name="intent" value="request" />
+                  <input type="hidden" name="email" value={deviceLimit.email} />
+                  <button
+                    type="submit"
+                    className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-800"
+                  >
+                    Email me a link to sign out my other devices
+                  </button>
+                </Form>
+              </div>
+            )}
             <Form
               method="post"
               reloadDocument
@@ -207,6 +250,12 @@ export default function Login() {
                     : "You were signed out on this device. Your account may have signed in somewhere else, its password or email may have been changed, or an administrator ended the session. Sign in again to continue."}
                 </div>
               )}
+              {released && (
+                <div className="mb-5 flex items-center gap-2 rounded-lg border border-green-600/20 bg-green-600/10 px-4 py-3 text-sm text-green-800">
+                  <CheckCircle2 size={15} className="shrink-0" />
+                  Your other devices were signed out. Sign in now to continue on this one.
+                </div>
+              )}
               {passwordReset && (
                 <div className="mb-5 flex items-center gap-2 rounded-lg border border-green-600/20 bg-green-600/10 px-4 py-3 text-sm text-green-800">
                   <CheckCircle2 size={15} className="shrink-0" />
@@ -214,7 +263,7 @@ export default function Login() {
                 </div>
               )}
 
-              {actionData?.error && (
+              {actionData?.error && !deviceLimit && (
                 <div className="mb-5 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-700">
                   {actionData.error}
                 </div>

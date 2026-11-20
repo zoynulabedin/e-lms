@@ -10,6 +10,7 @@ import {
 import { Store, Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
 import { rateLimitResponse, recordAttempt } from "../utils/rate-limit.server";
+import { trustThisDevice } from "../utils/mfa.server";
 
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
@@ -56,11 +57,13 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   const token = await createSession(user.id, user.role, request);
-  const cookie = createSessionCookie(token);
+  // The account was just made in this browser, so it counts as a known device
+  // (no emailed new-device code the next time it signs in here).
+  const headers = new Headers();
+  headers.append("Set-Cookie", createSessionCookie(token));
+  headers.append("Set-Cookie", await trustThisDevice(request, user.id));
 
-  return redirect("/student?toast=registered", {
-    headers: { "Set-Cookie": cookie },
-  });
+  return redirect("/student?toast=registered", { headers });
 }
 
 export default function Register() {

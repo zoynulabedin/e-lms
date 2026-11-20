@@ -179,8 +179,15 @@ export async function loader({ request }: LoaderFunctionArgs) {
       ? curated.map((v) => toVideo({ id: v.videoId, title: v.title }))
       : await getLatestVideos(3);
 
+  // An organization manager also gets a way to their seats from here.
+  const managed = await prisma.user.findUnique({
+    where: { id: user.id },
+    select: { organization: { select: { name: true } } },
+  });
+
   return {
     user,
+    managedOrg: managed?.organization?.name ?? null,
     myCourses,
     tiles,
     hasCertificates,
@@ -193,7 +200,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function StudentDashboard() {
-  const { user, myCourses, tiles, hasCertificates, resumeCourseId, resumeNext, latestVideos } =
+  const { user, managedOrg, myCourses, tiles, hasCertificates, resumeCourseId, resumeNext, latestVideos } =
     useLoaderData<typeof loader>();
 
   const resume = resumeCourseId
@@ -251,6 +258,19 @@ export default function StudentDashboard() {
                 className="hidden md:block w-52 lg:w-72 xl:w-[22rem] 2xl:w-96 shrink-0 -mt-4 lg:-mt-8 -mb-16 lg:-mb-24 pointer-events-none select-none"
               />
             </div>
+
+            {managedOrg && (
+              <Link
+                to="/org"
+                className="mb-6 flex items-center justify-between gap-3 rounded-2xl border border-brand-beige-dark bg-white px-5 py-4 hover:border-brand-navy/30 transition-colors relative z-10"
+              >
+                <span className="text-brand-navy">
+                  <span className="block text-[11px] font-bold tracking-[0.18em] text-brand-mustard uppercase">Organization</span>
+                  You manage the course seats for <strong>{managedOrg}</strong>.
+                </span>
+                <span className="shrink-0 text-sm font-semibold text-brand-navy">Manage seats &rarr;</span>
+              </Link>
+            )}
 
             {/* ── Your Learning ────────────────────────────────────────────── */}
             <section id="my-courses" className="mb-10 scroll-mt-6 relative z-10">
