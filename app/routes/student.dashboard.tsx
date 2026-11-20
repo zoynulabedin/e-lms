@@ -446,41 +446,64 @@ function StartCard({ hasCourses }: { hasCourses: boolean }) {
 // ── Course card ───────────────────────────────────────────────────────────────
 
 function CourseCard({ c }: { c: any }) {
+  // Where an enrolled tile opens the course. The image and the Continue button
+  // share this one target, so clicking either is the same navigation and the
+  // course page's access check is the only gate. Not-enrolled tiles have no
+  // course link (their button goes to the store), so their image stays inert.
+  const courseHref = c.isEnrolled ? `/student/course/${c.courseId}` : null;
+  const mediaClass = "aspect-video rounded-xl bg-brand-beige-dark relative overflow-hidden";
+
+  const media = (
+    <>
+      {c.course?.thumbnailUrl ? (
+        <img
+          src={c.course.thumbnailUrl}
+          alt={c.course?.title}
+          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+          onError={(e) => {
+            (e.target as HTMLImageElement).style.display = "none";
+          }}
+        />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center">
+          <BookOpen className="text-brand-navy/30 w-10 h-10" />
+        </div>
+      )}
+      {c.isCompleted && (
+        <div className="absolute top-2.5 right-2.5 bg-brand-green text-white rounded-full px-2.5 py-1 flex items-center gap-1 shadow-sm">
+          <CheckCircle2 size={11} />
+          <span className="text-[10px] font-semibold uppercase tracking-wider">Done</span>
+        </div>
+      )}
+      {c.course?.courseType === "FREE" && (
+        <div className="absolute top-2.5 left-2.5 bg-brand-green-dark text-white rounded-full px-2.5 py-1 flex items-center gap-1 shadow-sm">
+          <Gift size={10} />
+          <span className="text-[10px] font-semibold uppercase tracking-wider">Free</span>
+        </div>
+      )}
+      {!c.isEnrolled && (
+        <div className="absolute top-2.5 right-2.5 w-8 h-8 rounded-full bg-brand-navy-deeper/85 text-white flex items-center justify-center shadow-sm">
+          <Lock size={14} />
+        </div>
+      )}
+    </>
+  );
+
   return (
     <div className="bg-white rounded-2xl border border-brand-beige-dark p-3 hover:border-brand-navy/30 hover:shadow-sm transition-all group flex flex-col">
-      <div className="aspect-video rounded-xl bg-brand-beige-dark relative overflow-hidden">
-        {c.course?.thumbnailUrl ? (
-          <img
-            src={c.course.thumbnailUrl}
-            alt={c.course?.title}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = "none";
-            }}
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center">
-            <BookOpen className="text-brand-navy/30 w-10 h-10" />
-          </div>
-        )}
-        {c.isCompleted && (
-          <div className="absolute top-2.5 right-2.5 bg-brand-green text-white rounded-full px-2.5 py-1 flex items-center gap-1 shadow-sm">
-            <CheckCircle2 size={11} />
-            <span className="text-[10px] font-semibold uppercase tracking-wider">Done</span>
-          </div>
-        )}
-        {c.course?.courseType === "FREE" && (
-          <div className="absolute top-2.5 left-2.5 bg-brand-green-dark text-white rounded-full px-2.5 py-1 flex items-center gap-1 shadow-sm">
-            <Gift size={10} />
-            <span className="text-[10px] font-semibold uppercase tracking-wider">Free</span>
-          </div>
-        )}
-        {!c.isEnrolled && (
-          <div className="absolute top-2.5 right-2.5 w-8 h-8 rounded-full bg-brand-navy-deeper/85 text-white flex items-center justify-center shadow-sm">
-            <Lock size={14} />
-          </div>
-        )}
-      </div>
+      {/* The image is the first thing learners click: on an enrolled tile it
+          opens the course, the same as Continue further down the card. */}
+      {courseHref ? (
+        <Link
+          to={courseHref}
+          aria-label={`Continue ${c.course?.title ?? "this course"}`}
+          className={`${mediaClass} block cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-navy`}
+        >
+          {media}
+        </Link>
+      ) : (
+        <div className={mediaClass}>{media}</div>
+      )}
 
       <div className="px-2 pt-4 pb-2 flex flex-col flex-1">
         <h3 className="font-bold text-brand-navy leading-snug line-clamp-2 mb-3">
@@ -514,9 +537,9 @@ function CourseCard({ c }: { c: any }) {
         )}
 
         <div className="mt-auto flex items-center justify-between">
-          {c.isEnrolled ? (
+          {courseHref ? (
             <Link
-              to={`/student/course/${c.courseId}`}
+              to={courseHref}
               className="inline-flex items-center gap-1.5 bg-brand-navy-deeper hover:bg-brand-navy text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
             >
               <Video size={13} /> Continue

@@ -1,6 +1,6 @@
 import { data, isRouteErrorResponse } from "react-router";
 import { useLoaderData, useFetcher, Link } from "react-router";
-import type { LoaderFunctionArgs, ActionFunctionArgs, ClientActionFunctionArgs } from "react-router";
+import type { LoaderFunctionArgs, ActionFunctionArgs, ClientActionFunctionArgs, MetaFunction } from "react-router";
 import { prisma } from "../utils/db.server";
 import { requireUser } from "../utils/auth.server";
 import { computeCourseAccess, requireCourseAccess } from "../utils/access.server";
@@ -511,6 +511,12 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     currentItemNumber: currentIdx + 1,
   };
 }
+
+// The sidebar shows the logo instead of the course title, so the title lives
+// in the browser tab (and the sidebar's screen-reader-only heading).
+export const meta: MetaFunction<typeof loader> = ({ data }) => [
+  { title: data?.course?.title ?? "Teach Me Like a Tot" },
+];
 
 // ── Action ────────────────────────────────────────────────────────────────────
 
@@ -1676,6 +1682,21 @@ export default function CourseViewer() {
   // The menu closes from its own header and reopens from the breadcrumb bar,
   // as in the design. Open by default on a course that has modules.
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Below lg the menu is a drawer over the lesson instead of a column beside
+  // it, and starts closed: the 360px column left a phone ~30px of lesson. It
+  // has its own state, so the desktop open/closed behaviour is untouched.
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  // Which of the two the menu controls act on. Desktop until the browser says
+  // otherwise; what is VISIBLE is decided by CSS (lg:), so a phone never
+  // flashes the column before this runs.
+  const [isWide, setIsWide] = useState(true);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)"); // Tailwind's lg
+    const update = () => setIsWide(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
 
   // lessonId -> "Module > Lesson", so a resource attached to a lesson can say
   // where it belongs without another round-trip.
@@ -1930,29 +1951,68 @@ export default function CourseViewer() {
     if (activeItem?.module?.id) setOpenModuleId(activeItem.module.id);
   }, [activeItem?.module?.id]);
 
+  // A lesson picked in the drawer should be on screen, not still covered.
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [activeItem?.item?.id]);
+
+  // Escape closes the drawer (as in the dashboard's mobile menu).
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setDrawerOpen(false);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [drawerOpen]);
+
+  // The menu controls act on the column (lg+) or the drawer (below lg). On
+  // lg+ this is exactly the previous behaviour.
+  const menuOpen = isWide ? sidebarOpen : drawerOpen;
+  const closeMenu = () => (isWide ? setSidebarOpen(false) : setDrawerOpen(false));
+  const toggleMenu = () => (isWide ? setSidebarOpen((v) => !v) : setDrawerOpen((v) => !v));
+
   return (
     <div className="h-screen flex overflow-hidden bg-brand-navy-deeper">
 
       {/* ── Sidebar ────────────────────────────────────────────────────────────── */}
-      {hasModules && sidebarOpen && (
+      {/* Drawer backdrop (below lg only): tap outside to close. */}
+      {hasModules && drawerOpen && (
+        <div
+          aria-hidden="true"
+          onClick={() => setDrawerOpen(false)}
+          className="lg:hidden fixed inset-0 z-40 bg-black/50"
+        />
+      )}
+      {/* lg+: the column beside the lesson, shown while sidebarOpen.
+          Below lg: a drawer over the lesson, shown while drawerOpen. */}
+      {hasModules && (sidebarOpen || drawerOpen) && (
         <aside
-          className="w-[360px] shrink-0 flex flex-col overflow-hidden"
+          id="course-menu"
+          className={`w-[360px] max-w-[85vw] shrink-0 flex-col overflow-hidden fixed inset-y-0 left-0 z-50 shadow-2xl lg:static lg:z-auto lg:max-w-none lg:shadow-none ${
+            drawerOpen ? "flex" : "hidden"
+          } ${sidebarOpen ? "lg:flex" : "lg:hidden"}`}
           style={{ background: "var(--color-brand-navy-deeper)" }}
         >
-          {/* Course title, with the close control from the design */}
+          {/* Logo (same asset and treatment as the dashboard sidebar), with the
+              close control from the design. The course title is no longer
+              shown here, so it stays available to screen readers. */}
           <div
-            className="shrink-0 flex items-start gap-2 px-4 py-3 border-b"
+            className="relative shrink-0 flex justify-center border-b"
             style={{ borderColor: "rgba(255,255,255,0.08)" }}
           >
-            <h2 className="flex-1 min-w-0 text-[16px] font-bold text-white leading-snug">
-              {course.title}
-            </h2>
+            <h2 className="sr-only">{course.title}</h2>
+            <Link to="/student" className="flex items-center" title="Back to dashboard">
+              <img
+                src="/std-dashboard-img/Logo.png"
+                alt="Teach Me Like a Tot"
+                className="h-28 w-auto object-contain"
+              />
+            </Link>
             <button
               type="button"
-              onClick={() => setSidebarOpen(false)}
+              onClick={closeMenu}
               title="Hide the menu"
               aria-label="Hide the menu"
-              className="shrink-0 p-1 rounded hover:bg-white/10 transition-colors"
+              className="absolute top-3 right-4 p-1 rounded hover:bg-white/10 transition-colors"
               style={{ color: "rgba(255,255,255,0.7)" }}
             >
               <X size={18} />
@@ -2160,40 +2220,54 @@ export default function CourseViewer() {
       <div className="flex-1 flex flex-col overflow-hidden bg-brand-navy-deeper">
 
         {/* ── Top bar ──────────────────────────────────────────────────────────── */}
+        {/* A container (topbar), so the right cluster compacts by the width
+            the bar actually has, which depends on the sidebar, not on the
+            viewport. Below 1000px the utility links become icons, below 880px
+            the progress shows just its percentage, below 720px the buttons
+            lose their labels, below 520px (phones) the progress is hidden.
+            Measured: the full cluster is ~710-890px, so with viewport
+            breakpoints it ran off-screen at 768 and at 1024 with the sidebar
+            open. */}
         <header
-          className="relative shrink-0 flex items-center gap-3 px-4 h-16 z-20 border-b"
+          className="@container/topbar relative shrink-0 flex items-center gap-3 px-4 h-16 z-20 border-b"
           style={{ background: HEADER_BG, borderColor: "rgba(0,26,56,0.10)" }}
         >
-          {/* Logo → dashboard */}
-          <Link to="/student" className="shrink-0" title="Back to dashboard">
-            <img
-              src="/std-dashboard-img/Logo.png"
-              alt="Teach Me Like a Tot"
-              className="h-12 w-auto object-contain"
-            />
-          </Link>
+          {/* No logo here: it lives in the sidebar header only (client
+              request). DASHBOARD and the close (X) still lead home. */}
 
-          {/* Learn. Grow. Do More. */}
-          {/* Taken out of the flow so it is centred on the HEADER, not on
-              whatever space the logo and the right-hand cluster leave over. */}
-          <img
-            src="/std-dashboard-img/Learn Grow Text.png"
-            alt="Learn. Grow. Do More."
-            aria-hidden="true"
-            className="hidden lg:block h-9 w-auto object-contain absolute left-1/2 -translate-x-1/2 pointer-events-none"
-          />
-
-          <div className="flex-1 min-w-0 lg:hidden">
-            <p className="font-semibold text-[15px] truncate" style={{ color: ACTIVE_FG }}>
+          {/* Item title below lg; on lg+ an empty flex-1 side that, with the
+              right cluster, keeps the banner centred. */}
+          <div className="flex-1 basis-0 min-w-0">
+            <p className="lg:hidden font-semibold text-[15px] truncate" style={{ color: ACTIVE_FG }}>
               {activeItem ? activeItem.item.title : course.title}
             </p>
           </div>
 
-          {/* Right cluster */}
-          <div className="flex items-center gap-3 shrink-0 ml-auto">
+          {/* Learn. Grow. Do More. — in the flow between the two flex-1 sides,
+              so it is centred on the header whenever the right cluster leaves
+              room, and slides left (never under the controls) when it doesn't.
+              The PNG is 3:1 with ~20% empty margin above and below the
+              lettering, so the 84px image is clipped to the bar: the lettering
+              fills the bar's height without the bar growing. With less room
+              it shrinks, and below 128px wide (back to the old, unreadable
+              108px size) it is hidden rather than squeezed. */}
+          <div
+            aria-hidden="true"
+            className="hidden lg:flex @container basis-[252px] min-w-0 self-stretch items-center justify-center overflow-hidden pointer-events-none"
+          >
+            <img
+              src="/std-dashboard-img/Learn Grow Text.png"
+              alt=""
+              className="hidden @min-[128px]:block h-[84px] w-auto max-w-full min-w-0 object-contain"
+            />
+          </div>
+
+          {/* Right cluster: one line (nowrap), and on lg+ the second flex-1
+              side that keeps the banner centred. */}
+          <div className="flex items-center justify-end gap-2 @min-[520px]/topbar:gap-3 shrink-0 ml-auto lg:flex-1 lg:basis-0 whitespace-nowrap">
             {/* Progress */}
-            <div className="hidden sm:block text-right">
-              <p className="text-[13px]" style={{ color: "rgba(0,26,56,0.75)" }}>
+            <div className="hidden @min-[520px]/topbar:block text-right">
+              <p className="hidden @min-[880px]/topbar:block text-[13px]" style={{ color: "rgba(0,26,56,0.75)" }}>
                 {/* Counted over the same set as the percentage beside it and
                     the footer's "n / m": lessons AND quizzes. Using
                     totalLessons here while the percent covered every item made
@@ -2201,7 +2275,12 @@ export default function CourseViewer() {
                 Your Progress: <strong style={{ color: ACTIVE_FG }}>{completedCount}</strong> of{" "}
                 <strong style={{ color: ACTIVE_FG }}>{totalItems}</strong> ({completionPercent}%)
               </p>
-              <div className="mt-1 h-1.5 w-36 ml-auto rounded-full overflow-hidden" style={{ background: "rgba(0,26,56,0.12)" }}>
+              {/* Narrower bar: the percentage only (the full line for screen readers). */}
+              <p className="@min-[880px]/topbar:hidden text-[13px]" style={{ color: "rgba(0,26,56,0.75)" }}>
+                <span className="sr-only">Your Progress: {completedCount} of {totalItems}, </span>
+                <strong style={{ color: ACTIVE_FG }}>{completionPercent}%</strong>
+              </p>
+              <div className="mt-1 h-1.5 w-20 @min-[880px]/topbar:w-36 ml-auto rounded-full overflow-hidden" style={{ background: "rgba(0,26,56,0.12)" }}>
                 <div className="h-full rounded-full" style={{ width: `${completionPercent}%`, background: "#2c795a" }} />
               </div>
             </div>
@@ -2210,11 +2289,13 @@ export default function CourseViewer() {
             {currentLesson && !isLessonDone && (
               <button
                 onClick={() => markLessonComplete(currentLesson.id)}
+                aria-label="Mark as complete"
+                title="Mark as complete"
                 className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-semibold transition-colors shrink-0"
                 style={{ border: "1px solid rgba(0,26,56,0.25)", color: ACTIVE_FG }}
               >
                 <CheckCircle2 size={14} />
-                <span className="hidden sm:inline">MARK AS COMPLETE</span>
+                <span className="hidden @min-[720px]/topbar:inline">MARK AS COMPLETE</span>
               </button>
             )}
             {currentLesson && isLessonDone && (
@@ -2226,15 +2307,15 @@ export default function CourseViewer() {
               >
                 <Check size={14} className="group-hover:hidden" />
                 <RotateCcw size={14} className="hidden group-hover:block" />
-                <span className="hidden sm:inline group-hover:hidden">COMPLETED</span>
-                <span className="hidden sm:group-hover:inline">MARK AS INCOMPLETE</span>
+                <span className="hidden @min-[720px]/topbar:inline group-hover:hidden">COMPLETED</span>
+                <span className="hidden @min-[720px]/topbar:group-hover:inline">MARK AS INCOMPLETE</span>
               </button>
             )}
 
             {/* Utility links. GLOSSARY and RESOURCES only appear when this
                 course actually has entries — an empty drawer is worse than no
                 link at all. */}
-            <div className="hidden md:flex items-center gap-3 text-[13px] font-semibold tracking-wide" style={{ color: "rgba(0,26,56,0.7)" }}>
+            <div className="hidden @min-[1000px]/topbar:flex items-center gap-3 text-[13px] font-semibold tracking-wide" style={{ color: "rgba(0,26,56,0.7)" }}>
               {glossary.length > 0 && (
                 <button type="button" onClick={() => setDrawer("glossary")} className="hover:underline">
                   GLOSSARY
@@ -2248,8 +2329,9 @@ export default function CourseViewer() {
               <Link to="/student" className="hover:underline">DASHBOARD</Link>
             </div>
 
-            {/* Same two, icon-only, for the narrow header on phones. */}
-            <div className="flex md:hidden items-center gap-1">
+            {/* Same two, icon-only, when the bar is narrow (the close X below
+                still leads to the dashboard). */}
+            <div className="flex @min-[1000px]/topbar:hidden items-center gap-1">
               {glossary.length > 0 && (
                 <button
                   type="button"
@@ -2306,7 +2388,7 @@ export default function CourseViewer() {
                 style={{ background: "rgba(198,148,69,0.15)", color: "#8a6320" }}
               >
                 <Award size={13} />
-                <span className="hidden sm:inline">Certificate</span>
+                <span className="hidden @min-[720px]/topbar:inline">Certificate</span>
               </Link>
             )}
 
@@ -2336,10 +2418,11 @@ export default function CourseViewer() {
           >
             <button
               type="button"
-              onClick={() => setSidebarOpen((v) => !v)}
-              title={sidebarOpen ? "Hide the menu" : "Show the menu"}
-              aria-label={sidebarOpen ? "Hide the menu" : "Show the menu"}
-              aria-expanded={sidebarOpen}
+              onClick={toggleMenu}
+              title={menuOpen ? "Hide the menu" : "Show the menu"}
+              aria-label={menuOpen ? "Hide the menu" : "Show the menu"}
+              aria-expanded={menuOpen}
+              aria-controls="course-menu"
               className="shrink-0 p-1 rounded hover:bg-black/5 transition-colors"
               style={{ color: ACTIVE_FG }}
             >
