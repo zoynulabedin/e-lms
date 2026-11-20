@@ -8,6 +8,7 @@
 | Type | Read-only code audit. No code changed, no migrations, no orders, no live services touched. |
 | Tests run | **None.** The repository has no automated test suite (`package.json` has no `test` script, and there are no test files). `npm run typecheck` was not run because it writes generated files. Every status below comes from reading code. |
 | Update | **2026-11-20:** the seven bugs in section 3 (B1–B7) are **fixed** in commit `7ab3e84` and verified against a local copy of the app. See [Fix status](#fix-status-2026-11-20). The statuses below are as audited at `fcaa669`; rows the fixes change carry an **Update** note. |
+| Update 2 | **2026-11-21:** the new features N1–N10 and N12 from section 3 are **built** and verified (see [Feature status](#feature-status-2026-11-21)). Only N11 (Storyline quiz scores) remains. |
 
 ## Fix status (2026-11-20)
 
@@ -33,6 +34,34 @@ All seven bugs are fixed in commit `7ab3e84`. The new features in section 3 (MFA
 - The two migrations run automatically on "Restart App".
 - Nothing new needs registering in Shopify.
 - For manual end-to-end tests on staging, set `SHOPIFY_ALLOW_TEST_ORDERS=true` there, and never on the live server.
+
+## Feature status (2026-11-21)
+
+Built on top of the bug fixes, following the client's decisions: the third device is **blocked**, and two-step verification is **required for admins, optional for learners**. N11 (Storyline quiz scores) was not requested and is **not built**.
+
+| Ref | What was built | How it was verified (local test copy) |
+|---|---|---|
+| N1 | **Two-step verification** with an authenticator app (TOTP). Admins must set it up at their first sign-in and can't open any admin page without it. Learners can turn it on in Settings. You get 10 one-time recovery codes. Wrong, expired and reused codes are refused, and 5 wrong codes lock that account's sign-in step for 15 minutes. An admin can reset a learner's two-step verification on Users (not their own). `scripts/reset-mfa.ts` is the emergency server-side reset. | Admin set-up with QR and code; admin pages refused before set-up; wrong, expired and reused codes refused; recovery code works once; lockout after 5 wrong codes; password reset still asks for the code; learner turn-on; admin reset; secret never sent to the browser. |
+| N2 | **New-device check:** a learner signing in on a browser the account hasn't used enters a 6-digit code emailed to them (10 minutes, single use, 5 tries). That browser is then remembered. | Unknown browser asked for a code; wrong code refused; right code accepted; the same browser later needs no code. |
+| N3 | **Third device blocked** with a clear message listing the signed-in devices. An "email me a link to sign out my other devices" button sends a 30-minute single-use link. The link ends every session but never signs anyone in, so the password, two-step and new-device checks still apply. Admin reset on Sessions and Users still works. | Devices A and B in, C blocked with message; A and B kept; release link signs everything out once; C then signs in; A sees "signed out". |
+| N4 | **Bundles:** a bundle product ID entered under *Bundle product IDs* on each course in the bundle. One bundle seat issues a key for each course, the price is split between them, and a refund revokes all of them. | Bundle order issued 2 keys at 147.90 each; refund revoked both; builder saves IDs and rejects a single-course product used as a bundle. |
+| N5 | **Organizations:** company or multi-seat orders become an organization seat pool. The buyer becomes its manager (a new account gets a 7-day set-password link). The manager portal `/org` shows the seat balance per course and lets the manager invite by email, resend or withdraw an invitation, and remove a learner. Invitations work only for the invited email. Admins have an **Organizations** page (create, add or remove managers) and can add generated keys to an organization. | Company order made 5 seats plus a manager; a second order joined the same organization; invite, withdraw and remove; forwarded invitation refused; non-manager refused. |
+| N6 | **Orders page:** each order's number, Shopify ID, payment state and total, line items mapped to courses, seats (in use, invited, available, revoked), cancelled / needs-attention / chargeback flags, and links to its keys and to Shopify. | The page listed orders with organization and seat balance; filters work. |
+| N7 | **Re-sync from Shopify** (Admin API, `read_orders`): fetch an order the LMS never received by its number, or re-sync a known one. Missing keys are issued, and missed cancellations and refunds are applied. | Against a local mock Shopify: a lost order's key was issued; a missed refund revoked 1 of 2 seats. |
+| N8 | **Change email** on an unused key: it gets a new key string, so the wrongly sent copy dies, and it is emailed to the corrected address. Redeemed keys can't be re-addressed. | Old key no longer found; the new address is stored; a redeemed key is unchanged. |
+| N9 | **"You Already Have Access!"** when the buyer's account already holds the course. The key is left unused, the buyer gets the notice by email, and the admin email flags it. The redeem page shows the client's notice with "Go to My Dashboard". | Duplicate purchase flagged and the key left unused. |
+| N10 | **Chargebacks** (`disputes/create`, `disputes/update`): a chargeback suspends the order's keys and a won dispute restores exactly those. Inquiries change nothing. A suspended seat is never re-issued by a re-delivery. | Inquiry: no change; chargeback suspended 5 keys; a repeat update did nothing; re-delivery minted nothing; won restored all 5. |
+| N12 | **Automatic access:** a single purchase with the email of an existing account is unlocked on that account immediately, with no key to type. | Existing account got the course on purchase. |
+
+**Test totals** (a fresh database with every migration applied from scratch): webhook and order features 20/20, sign-in security 34/34, admin tools and organizations 24/24, earlier layout and drawer checks 38/38. Typecheck and production build pass.
+
+**Before deploying these features:**
+- Register the two new webhooks **`disputes/create`** and **`disputes/update`** (same URL) in Shopify.
+- For re-sync, set `SHOPIFY_ACCESS_TOKEN` (a custom app with `read_orders`).
+- **Every admin will be asked to set up an authenticator app at their next sign-in.** Keep the recovery codes.
+- New-device codes are emailed, so email (`RESEND_API_KEY`) must work in production. `NEW_DEVICE_VERIFICATION=false` switches the check off.
+- Migration `20261121100000_prelaunch_features` runs on "Restart App".
+- Bundles need the bundle's product ID entered on each course in it.
 
 ## How to read the statuses
 
@@ -78,13 +107,13 @@ I have not seen the development agreement. Items that could go either way are ma
    - Every login succeeds. The least recently used session is signed out instead.
    - The default limit was **1** per user, not 2. It's set per user in the database (`schema.prisma:62`), and there is no global setting. **Update (B1, fixed):** the default is now 2, for new and existing accounts.
    - Enforcement is server-side and works on *concurrent sessions*, not registered devices.
-   - The project docs describe this eviction behaviour as intended (`projectv2.md:581`), so changing it is a change request, not a defect.
-3. **There is no MFA of any kind**, for admins or learners. There's no new-device verification either. Admin accounts are protected only by an 8-character-minimum password and the email reset flow.
+   - The project docs describe this eviction behaviour as intended (`projectv2.md:581`), so changing it is a change request, not a defect. **Update (N3, built):** a third device is now blocked with a clear message and an emailed release link.
+3. **There is no MFA of any kind**, for admins or learners. There's no new-device verification either. Admin accounts are protected only by an 8-character-minimum password and the email reset flow. **Update (N1, N2, built):** two-step verification is required for admins and optional for learners, and unknown browsers need an emailed code.
 4. **There are no organizations.**
    - Bulk orders produce the right number of keys for the right course, tied to the Shopify order ID and buyer email.
    - There's no organization record, invitation email, seat-balance view or manager portal.
-   - The `CORPORATE` role exists only as a dropdown label.
-5. **A bundle sold as its own Shopify product cannot unlock both courses.** Each line item maps to exactly one course. The bundle works only if Shopify puts the two courses on the order as separate line items.
+   - The `CORPORATE` role exists only as a dropdown label. **Update (N5, built):** organizations, managers, invitations and seat balances now exist (`/org`, admin Organizations page).
+5. **A bundle sold as its own Shopify product cannot unlock both courses.** Each line item maps to exactly one course. The bundle works only if Shopify puts the two courses on the order as separate line items. **Update (N4, built):** a bundle product now unlocks every course it is listed on.
 6. **Payment-state handling is solid.**
    - Signatures are verified with a timing-safe compare.
    - Retries and concurrent deliveries are idempotent.
@@ -249,21 +278,21 @@ Estimates cover development plus developer testing. They exclude Shopify-side co
 
 ### Features that were never built (new work, quoted separately)
 
-| Ref | Item | Req. | Estimate |
-|---|---|---|---|
-| N1 | MFA with an authenticator app (TOTP) and recovery codes: enrollment, verification at login, lockout after repeated failures, admin reset of a learner's MFA, enforced for admins and optional or required for learners | 6.1–6.3 | 28–40 h (admin-only: 16–24 h) |
-| N2 | New-device verification by an email code | 6.3 | 10–16 h |
-| N3 | Block the device over the limit instead of evicting: clear message plus a self-service "sign out a device" on the login screen. *This changes a documented design.* | 4.1 | 6–10 h |
-| N4 | Bundle product that unlocks several courses, including refund and cancellation handling. Only needed if the bundle is its own Shopify product. | 1.1 | 8–12 h |
-| N5 | Organizations: model, linking orders to an organization, org-manager portal (seat balance, invite by email, reassign seats), invitation email, admin organization view | 2.1, 2.3, 2.4, 5.1 | 40–60 h (lighter version, admin-side "assign and invite" plus a per-order seat summary: 8–12 h) |
-| N6 | Orders and reconciliation view: per order, show number, payment status, line items, SKU, quantity, keys, learners, remaining seats and a link to Shopify. Builds on B4. | 2.6, 7.3, 7.4 | 10–16 h |
-| N7 | "Re-sync order from Shopify" using the Admin API, to recover without relying on webhook re-delivery | 3.3, 7.4 | 6–10 h |
-| N8 | Correct the email on an order's keys and resend, keeping the order link, with an audit log entry | 7.2 | 3–5 h |
-| N9 | Duplicate-purchase notice when the order arrives: the webhook detects the buyer already holds the course and sends a "you already have access" email | 1.5 | 3–5 h (blocking at checkout: 12–20 h plus Shopify theme/app work) |
-| N10 | Chargeback and dispute handling (Shopify `disputes/create`) | 7.1 | 3–5 h |
-| N11 | Capture Storyline quiz scores (score message from the package) | 5.3 | 6–10 h (full SCORM/xAPI tracking: 20–30 h) |
-| N12 | *Optional:* attach a purchase automatically to an existing account with the buyer's email, skipping the redeem step | 1.2, 3.1 | 4–6 h |
-| | **Subtotal if everything is built** | | **≈ 127–195 h** |
+| Ref | Item | Req. | Estimate | Status |
+|---|---|---|---|---|
+| N1 | MFA with an authenticator app (TOTP) and recovery codes: enrollment, verification at login, lockout after repeated failures, admin reset of a learner's MFA, enforced for admins and optional or required for learners | 6.1–6.3 | 28–40 h (admin-only: 16–24 h) | **Built** (2026-11-21) |
+| N2 | New-device verification by an email code | 6.3 | 10–16 h | **Built** (2026-11-21) |
+| N3 | Block the device over the limit instead of evicting: clear message plus a self-service "sign out a device" on the login screen. *This changes a documented design.* | 4.1 | 6–10 h | **Built** (2026-11-21) |
+| N4 | Bundle product that unlocks several courses, including refund and cancellation handling. Only needed if the bundle is its own Shopify product. | 1.1 | 8–12 h | **Built** (2026-11-21) |
+| N5 | Organizations: model, linking orders to an organization, org-manager portal (seat balance, invite by email, reassign seats), invitation email, admin organization view | 2.1, 2.3, 2.4, 5.1 | 40–60 h (lighter version, admin-side "assign and invite" plus a per-order seat summary: 8–12 h) | **Built** (2026-11-21) |
+| N6 | Orders and reconciliation view: per order, show number, payment status, line items, SKU, quantity, keys, learners, remaining seats and a link to Shopify. Builds on B4. | 2.6, 7.3, 7.4 | 10–16 h | **Built** (2026-11-21) |
+| N7 | "Re-sync order from Shopify" using the Admin API, to recover without relying on webhook re-delivery | 3.3, 7.4 | 6–10 h | **Built** (2026-11-21) |
+| N8 | Correct the email on an order's keys and resend, keeping the order link, with an audit log entry | 7.2 | 3–5 h | **Built** (2026-11-21) |
+| N9 | Duplicate-purchase notice when the order arrives: the webhook detects the buyer already holds the course and sends a "you already have access" email | 1.5 | 3–5 h (blocking at checkout: 12–20 h plus Shopify theme/app work) | **Built** (2026-11-21) |
+| N10 | Chargeback and dispute handling (Shopify `disputes/create`) | 7.1 | 3–5 h | **Built** (2026-11-21) |
+| N11 | Capture Storyline quiz scores (score message from the package) | 5.3 | 6–10 h (full SCORM/xAPI tracking: 20–30 h) | **Not built** (not requested) |
+| N12 | *Optional:* attach a purchase automatically to an existing account with the buyer's email, skipping the redeem step | 1.2, 3.1 | 4–6 h | **Built** (2026-11-21) |
+| | **Subtotal if everything is built** | | **≈ 127–195 h** | All but N11 built |
 
 ### Config and decisions (no code, but they block testing)
 
@@ -292,21 +321,20 @@ Estimates cover development plus developer testing. They exclude Shopify-side co
   - Admins edit it per user on `/users`: 0 = unlimited, maximum 50 (`users.tsx:199-221`).
   - There's no global or environment setting. Admin accounts are limited too.
 - **Enforcement is server-side.**
-  - At login, inside a transaction that locks the user row, the code ends the least recently used sessions over the limit, then inserts the new session (`auth.server.ts:188-225`).
-  - On every request, `getSessionState` rejects an ended session (`:263`), so an evicted device is signed out on its next click.
-- **On exceeding the limit, the new login always wins.** No login is ever refused because of the limit.
+  - At login, inside a transaction that locks the user row, the code counts the live sessions and inserts the new one only if there is room.
+  - On every request, `getSessionState` rejects an ended session, so a released device is signed out on its next click.
+- **Update (N3, built): over the limit, the new sign-in is REFUSED**, with no eviction. The one exception is the same browser signing in again (same user agent and trusted IP, e.g. after clearing cookies): it replaces its own earlier session instead of counting twice.
 
-| Scenario | What the code does (limit = 2) |
+| Scenario | What the code does now (limit = 2) |
 |---|---|
 | A, then B sign in | Both active. |
-| C signs in | C succeeds. A (the least recently used) is ended and sees "You were signed out on this device…" (`auth.login.tsx:198-209`). |
-| Logout on A | A's session ends and the slot is freed (`auth.server.ts:304-314`). |
+| C signs in | **Refused.** C sees "Device limit reached", the list of signed-in devices with their last activity, and an "Email me a link to sign out my other devices" button. A and B are unaffected. |
+| Release | The emailed link (30 minutes, single use) ends every session. The learner then signs in normally on the device they want. An admin can also end sessions on Sessions or Users. |
+| Logout on A | A's session ends and the slot is freed. |
 | Browser restart | The cookie persists (`Max-Age` 30 days), so the learner stays signed in on the same session. |
-| Private window | It's a new session that takes a slot. Closing the window doesn't free the slot until 7 days of inactivity or eviction. With `TRUST_PROXY=true`, a session with the same user agent and IP is evicted first. |
-| Different browser, same machine | A different user agent means a different `deviceId`, so it's treated as another device and can evict the learner's other real device. |
-| Network change | The existing session keeps working because the IP is not checked. A new login from the new IP gets a different `deviceId`. |
-
-Note for N3: under a *blocking* policy, sessions abandoned in private windows would cause real lockouts. That design needs a self-service release on the login screen or a short idle timeout.
+| Private window | A new session that takes a slot. Closing the window doesn't free it until 7 days of inactivity, so a learner can hit the limit this way. The emailed release link (or an admin) frees it. |
+| Different browser, same machine | Counts as another device. |
+| Network change | The existing session keeps working because the IP is not checked. |
 
 ---
 
@@ -316,12 +344,12 @@ Ordered by severity.
 
 | # | Severity | Finding | Evidence | Impact |
 |---|---|---|---|---|
-| S1 | **High** | **No MFA for anyone, including admins.** Admin access depends on a password (8 characters minimum) or control of the admin's email inbox, through the reset flow. Login throttling is in memory only. | `auth.login.tsx:34-98`; `auth.reset-password.tsx:29-69`; `rate-limit.server.ts:24` | A compromised admin can generate up to 200 keys per action (`licenses.tsx:658`), grant any course, and restore refunded keys. That's direct revenue loss. |
+| S1 | **High** | **No MFA for anyone, including admins.** Admin access depends on a password (8 characters minimum) or control of the admin's email inbox, through the reset flow. Login throttling is in memory only. | `auth.login.tsx:34-98`; `auth.reset-password.tsx:29-69`; `rate-limit.server.ts:24` | A compromised admin can generate up to 200 keys per action (`licenses.tsx:658`), grant any course, and restore refunded keys. That's direct revenue loss. **Update: fixed (N1).** Two-step verification is now required for every admin, and admin pages refuse a session without it. |
 | S2 | **Medium** | **Shopify test orders are treated as paid.** Nothing checks `order.test`. | `shopify.webhook.tsx:108-121` | If test payments (the Bogus Gateway or Shopify Payments test mode) are left on after acceptance testing, anyone can get real course access for free. Testing against the production LMS also issues real keys. **Update: fixed (B2).** |
-| S3 | **Medium** | **Refund revocation depends on Shopify configuration and has deliberate gaps.** It only works if `refunds/create` and `orders/cancelled` are registered; they were added in 2026-11, after `orders/paid` (`PLESK_DEPLOYMENT.md:209`). Chargebacks never revoke. Partial-amount and money-only refunds keep access by design. A refunded key can be restored with one confirmation. | `shopify.webhook.tsx:22`, `:314-366`; `licenses.tsx:261-270` | Refunded customers keep access if the webhooks are missing, or after a chargeback. |
-| S4 | **Medium** | **The device limit doesn't stop account sharing.** Every login succeeds by evicting another session, so two people can share an account indefinitely, each login signing the other out. | `auth.server.ts:203-218` | Lost revenue from shared accounts, rather than a break-in. |
+| S3 | **Medium** | **Refund revocation depends on Shopify configuration and has deliberate gaps.** It only works if `refunds/create` and `orders/cancelled` are registered; they were added in 2026-11, after `orders/paid` (`PLESK_DEPLOYMENT.md:209`). Chargebacks never revoke. Partial-amount and money-only refunds keep access by design. A refunded key can be restored with one confirmation. | `shopify.webhook.tsx:22`, `:314-366`; `licenses.tsx:261-270` | Refunded customers keep access if the webhooks are missing, or after a chargeback. **Update: chargebacks now suspend keys (N10).** The webhooks still have to be registered in Shopify. |
+| S4 | **Medium** | **The device limit doesn't stop account sharing.** Every login succeeds by evicting another session, so two people can share an account indefinitely, each login signing the other out. | `auth.server.ts:203-218` | Lost revenue from shared accounts, rather than a break-in. **Update: fixed (N3).** A third device is now refused, so an account can't be shared by signing each other out. |
 | S5 | Low | **The webhook topic header is not covered by the HMAC.** A legitimately signed `orders/paid` body, replayed with `X-Shopify-Topic: orders/cancelled`, would revoke that order's keys: the cancel handler doesn't check `cancelled_at` in the payload. There's no webhook-ID or timestamp replay check. | `shopify.webhook.tsx:59`, `:463-487` | Requires capturing a signed payload. The result is lost access for a paying customer, not free access. **Update: fixed (B3)** for the cancel topic, the case that could revoke keys. |
-| S6 | Low | **Licence keys are bearer codes,** not bound to the buyer's email. This is by design, for gifting and bulk orders. | `redeem.tsx:106-257` | A mis-addressed or forwarded email lets the wrong person redeem. That's misallocation, not extra seats. |
+| S6 | Low | **Licence keys are bearer codes,** not bound to the buyer's email. This is by design, for gifting and bulk orders. | `redeem.tsx:106-257` | A mis-addressed or forwarded email lets the wrong person redeem. That's misallocation, not extra seats. **Update:** organization invitations are now bound to the invited email (N5). Retail keys are still bearer codes by design. |
 | S7 | Low | **Rate limiting is weak.** It lives in memory and is per process. Per-IP limits are off unless `TRUST_PROXY=true`, which leaves the password-reset and key-lookup endpoints with no limit; their tokens are strong, so the impact is low. The check and the record are separate steps, so concurrent requests can exceed the limit in a burst. | `rate-limit.server.ts:24-40`, `:133-140`, `:169-179` | Faster password guessing than the configured limit suggests. |
 | S8 | Low | **Lesson completion is reported by the browser** (`complete_lesson` and "Mark as complete"). A certificate can be earned without doing the lessons. | `student.course.$courseId.tsx:571-597`; `certificate.$courseId.tsx:27-44` | Certificate integrity only, no financial exposure. |
 | S9 | Info | `APP_URL` falls back to `http://localhost:5173` without warning. The 8 MB design mockup `public/Student Dashboard.html` is publicly served. | `email.server.ts:39`; `settings.tsx:25` | Broken activation and reset links if `APP_URL` is unset. Minor information exposure from the mockup. **Update:** the `APP_URL` part is fixed (B7). The mockup file is still public. |
