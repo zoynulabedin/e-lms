@@ -911,7 +911,7 @@ export default function UsersPage() {
                   const RoleIcon = roleIcon[user.role] || User;
                   const activeSessions: any[] = user.sessions ?? [];
                   const activeCount = activeSessions.length;
-                  const maxDevices = user.maxDevices ?? 1;
+                  const maxDevices = user.maxDevices ?? 2;
                   const isExpanded = expandedSessions.has(user.id);
                   const atLimit = maxDevices > 0 && activeCount >= maxDevices;
 

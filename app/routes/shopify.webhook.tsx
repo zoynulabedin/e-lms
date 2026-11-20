@@ -1,6 +1,6 @@
 import { data } from "react-router";
 import type { ActionFunctionArgs } from "react-router";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../utils/db.server";
 import { verifyShopifyWebhook } from "../utils/shopify.server";
 import { generateLicenseKey } from "../utils/auth.server";
@@ -33,6 +33,9 @@ const HANDLED_TOPICS = new Set(["orders/paid", "refunds/create", "orders/cancell
  *
  * A line item maps to a course by its variant SKU (= course id) or, failing
  * that, by the "Shopify Product ID" entered in the course builder.
+ *
+ * Shopify test orders (test payments) issue no keys unless
+ * SHOPIFY_ALLOW_TEST_ORDERS=true, which is for a staging server only.
  *
  * Shopify retries anything that doesn't get a 2xx within ~5s and may deliver
  * an event twice, even concurrently, so every handler is idempotent and only
@@ -85,6 +88,9 @@ const NO_EMAIL_NOTE =
 const LEGACY_NOTE =
   "This order was processed before keys were tracked per line item, so re-sending it creates no keys. " +
   "If an item is missing its key, issue one with Generate Bulk Keys on the License Keys page.";
+const TEST_ORDER_NOTE =
+  "This is a Shopify test order (test payment, no money taken), so no keys were issued. " +
+  "To issue keys for test orders on a staging server, set SHOPIFY_ALLOW_TEST_ORDERS=true there - never in production.";
 
 type MappedItem = {
   lineItemId: string;
@@ -126,6 +132,27 @@ async function handleOrderPaid(order: any) {
     .trim()
     .toLowerCase();
   const customerEmail = buyerEmail || PLACEHOLDER_EMAIL;
+  // "#1001": the number staff and customers see (order.id is Shopify's internal id).
+  const orderName = typeof order?.name === "string" && order.name.trim() ? order.name.trim().slice(0, 64) : null;
+
+  // Shopify test orders (Bogus Gateway / Shopify Payments test mode) take no
+  // money. Issuing real keys for them would hand out courses free whenever
+  // test payments are switched on, so they are ignored unless this server is a
+  // staging copy that opts in with SHOPIFY_ALLOW_TEST_ORDERS=true.
+  if (order?.test === true && process.env.SHOPIFY_ALLOW_TEST_ORDERS !== "true") {
+    console.warn(`[shopify webhook] Order ${orderId} is a Shopify test order - no keys issued`);
+    sendInBackground(orderId, [
+      sendAdminOrderNotification({
+        orderId,
+        orderName,
+        customerEmail: buyerEmail,
+        licenses: [],
+        note: TEST_ORDER_NOTE,
+      }),
+    ]);
+    return data({ ok: true, ignored: "test order" });
+  }
+
   const notes: string[] = [];
   if (!buyerEmail) {
     console.warn(`[shopify webhook] Order ${orderId} has no customer email - keys go to the admin to deliver`);
@@ -168,14 +195,23 @@ async function handleOrderPaid(order: any) {
       console.warn(`[shopify webhook] Order ${orderId}: unmapped line item(s): ${unmapped.join("; ")}`);
     }
 
-    // Nothing mapped: acknowledge (so Shopify stops retrying) without touching
-    // the database. Once the admin fixes the SKU / product id, re-sending the
-    // webhook mints normally.
+    // Nothing mapped: no keys to issue. The paid-but-unissued items are kept on
+    // the order (not only in an email), so the License Keys page lists the
+    // order until it is resolved. Once the admin fixes the SKU / product id, a
+    // re-delivery of the webhook mints normally and clears the flag.
     if (mapped.length === 0) {
       if (unmapped.length) {
+        await prisma.$transaction(
+          async (tx) => {
+            const { cancelledAt } = await lockOrder(tx, orderId);
+            await recordOrderDetails(tx, orderId, !!cancelledAt, { orderName, buyerEmail, unmapped });
+          },
+          { timeout: 15000 },
+        );
         sendInBackground(orderId, [
           sendAdminOrderNotification({
             orderId,
+            orderName,
             customerEmail: buyerEmail,
             licenses: [],
             unmapped,
@@ -196,6 +232,7 @@ async function handleOrderPaid(order: any) {
         // retry whose payload predates it) must mint nothing, even when no key
         // existed yet for the cancel to revoke.
         const { cancelledAt } = await lockOrder(tx, orderId);
+        await recordOrderDetails(tx, orderId, !!cancelledAt, { orderName, buyerEmail, unmapped });
         if (cancelledAt) {
           return { outcome: "cancelled" as const, created: [] as NewKey[] };
         }
@@ -250,6 +287,7 @@ async function handleOrderPaid(order: any) {
               customerEmail,
               status: "PENDING" as const,
               shopifyOrderId: orderId,
+              shopifyOrderName: orderName,
               shopifyLineItemId: k.lineItemId,
               amountPaid: k.amountPaid,
               isBulk: k.isBulk,
@@ -286,6 +324,7 @@ async function handleOrderPaid(order: any) {
       emails.push(
         sendAdminOrderNotification({
           orderId,
+          orderName,
           customerEmail: buyerEmail,
           licenses,
           unmapped,
@@ -444,8 +483,14 @@ async function handleRefund(refund: any) {
     }
 
     console.log(`[shopify webhook] Refund ${refundId} on order ${orderId}: revoked ${result.revoked.length} key(s)`);
+    // A refund payload has no order number; use the one recorded when the
+    // order was paid. Best effort: the refund itself is already committed.
+    const orderName = await prisma.shopifyOrder
+      .findUnique({ where: { orderId }, select: { orderName: true } })
+      .then((o) => o?.orderName ?? null)
+      .catch(() => null);
     sendInBackground(orderId, [
-      sendAdminRefundNotification({ orderId, kind: "refund", revoked: result.revoked, note: joinNotes(notes) }),
+      sendAdminRefundNotification({ orderId, orderName, kind: "refund", revoked: result.revoked, note: joinNotes(notes) }),
     ]);
 
     return data({ ok: true, revoked: result.revoked.length });
@@ -465,6 +510,15 @@ async function handleOrderCancelled(order: any) {
   if (!orderId) {
     return data({ error: "Order id missing" }, { status: 400 });
   }
+  // A genuine orders/cancelled payload carries cancelled_at. Shopify signs the
+  // body but not the X-Shopify-Topic header, so without this check a captured,
+  // validly signed orders/paid body re-sent with the "orders/cancelled" topic
+  // would revoke a paying customer's keys.
+  if (!order?.cancelled_at) {
+    console.warn(`[shopify webhook] orders/cancelled for order ${orderId} has no cancelled_at - ignored`);
+    return data({ ok: true, ignored: "order is not cancelled" });
+  }
+  const orderName = typeof order?.name === "string" && order.name.trim() ? order.name.trim().slice(0, 64) : null;
 
   try {
     const result = await prisma.$transaction(
@@ -475,7 +529,16 @@ async function handleOrderCancelled(order: any) {
         if (cancelledAt) return null;
         // Recorded on the order, so orders/paid mints nothing for it later -
         // also when no key exists yet (Shopify doesn't guarantee delivery order).
-        await tx.shopifyOrder.update({ where: { orderId }, data: { cancelledAt: new Date() } });
+        // A cancelled order no longer needs attention for unissued items.
+        await tx.shopifyOrder.update({
+          where: { orderId },
+          data: {
+            cancelledAt: new Date(),
+            ...(orderName ? { orderName } : {}),
+            unmappedItems: Prisma.DbNull,
+            unmappedAt: null,
+          },
+        });
         const keys = await lockOrderKeys(tx, orderId);
         const live = await tx.license.findMany({
           where: { shopifyOrderId: orderId, status: { not: "REVOKED" } },
@@ -500,6 +563,7 @@ async function handleOrderCancelled(order: any) {
       sendInBackground(orderId, [
         sendAdminRefundNotification({
           orderId,
+          orderName,
           kind: "cancel",
           revoked,
           note: hadKeys ? undefined : CANCELLED_BEFORE_KEYS_NOTE,
@@ -545,6 +609,30 @@ async function lockOrder(tx: Tx, orderId: string): Promise<{ cancelledAt: Date |
     SELECT "cancelledAt" FROM "ShopifyOrder" WHERE "orderId" = ${orderId} FOR UPDATE
   `;
   return { cancelledAt: rows[0]?.cancelledAt ?? null };
+}
+
+/**
+ * Keeps the order number, the buyer and any paid-but-unissued line items on
+ * the (locked) order row, so an admin can find the order by its number and
+ * see orders that still need a key. Unmapped items on a cancelled order are
+ * not flagged. A delivery that maps everything clears the flag.
+ */
+async function recordOrderDetails(
+  tx: Tx,
+  orderId: string,
+  cancelled: boolean,
+  d: { orderName: string | null; buyerEmail: string; unmapped: string[] },
+): Promise<void> {
+  const flag = d.unmapped.length > 0 && !cancelled;
+  await tx.shopifyOrder.update({
+    where: { orderId },
+    data: {
+      ...(d.orderName ? { orderName: d.orderName } : {}),
+      ...(d.buyerEmail ? { customerEmail: d.buyerEmail } : {}),
+      unmappedItems: flag ? d.unmapped : Prisma.DbNull,
+      unmappedAt: flag ? new Date() : null,
+    },
+  });
 }
 
 /** Holds the order's keys still while we choose which to revoke, so one redeemed this second is reported with its real holder. */

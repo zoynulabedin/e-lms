@@ -36,7 +36,30 @@ async function send(label: string, payload: Parameters<Resend["emails"]["send"]>
 }
 
 const FROM = process.env.EMAIL_FROM || "noreply@instructionalgraphics.org";
-const APP_URL = process.env.APP_URL || "http://localhost:5173";
+
+/**
+ * Base URL of every link in a customer email (activation, password reset).
+ * In production it must be set: the old silent fallback sent buyers
+ * http://localhost links that open nothing. Like JWT_SECRET, a missing or
+ * malformed value stops the server from starting instead.
+ */
+const APP_URL = (() => {
+  const raw = (process.env.APP_URL ?? "").trim().replace(/\/+$/, "");
+  if (/^https?:\/\/[^\s/]+/i.test(raw)) return raw;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      `APP_URL must be set in production to the site's public address, e.g. https://lms.instructionalgraphics.org ` +
+        `(got ${raw ? JSON.stringify(raw) : "nothing"}). Activation and password-reset emails link to it.`,
+    );
+  }
+  if (raw) console.warn(`[email] APP_URL ${JSON.stringify(raw)} is not an http(s) URL - using http://localhost:5173`);
+  return "http://localhost:5173";
+})();
+
+/** "#1001 (Shopify id 5551234567890)" when the order number is known, else "#5551234567890". */
+function orderLabel(orderId: string, orderName?: string | null): string {
+  return orderName ? `${orderName} (Shopify id ${orderId})` : `#${orderId}`;
+}
 
 // FROM is a no-reply address, so mail that invites a reply sets Reply-To to a
 // mailbox someone reads: the support address /student/help shows. A bare
@@ -102,7 +125,7 @@ export async function sendLicenseEmail({
 
         <!-- Header -->
         <tr><td style="background:#1D375F;border-radius:12px 12px 0 0;padding:32px 40px;text-align:center;">
-          <p style="margin:0 0 8px;font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#a7f3d0;">Order Confirmed</p>
+          <p style="margin:0 0 8px;font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#a7f3d0;">Course Access</p>
           <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;">Your Course Access is Ready</h1>
         </td></tr>
 
@@ -110,7 +133,7 @@ export async function sendLicenseEmail({
         <tr><td style="background:#ffffff;padding:36px 40px;">
 
           <p style="margin:0 0 20px;font-size:15px;color:#374151;line-height:1.6;">
-            Thank you for your purchase! You now have access to:
+            Thank you for your purchase! Your license key below unlocks:
           </p>
 
           <!-- Course name -->
@@ -142,7 +165,8 @@ export async function sendLicenseEmail({
                 <div style="width:22px;height:22px;background:#1D375F;border-radius:50%;text-align:center;line-height:22px;font-size:12px;font-weight:700;color:#fff;">2</div>
               </td>
               <td style="padding-left:10px;font-size:14px;color:#374151;line-height:1.5;">
-                Enter your license key and create your account
+                Your key is filled in for you. Create your account &mdash; or, if you already
+                have one, sign in with it so all your courses stay in one place
               </td>
             </tr>
             <tr><td colspan="2" style="height:10px;"></td></tr>
@@ -263,7 +287,7 @@ export async function sendLicenseBundleEmail({
     <tr><td align="center">
       <table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;">
         <tr><td style="background:#1D375F;border-radius:12px 12px 0 0;padding:32px 40px;text-align:center;">
-          <p style="margin:0 0 8px;font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#a7f3d0;">Order Confirmed</p>
+          <p style="margin:0 0 8px;font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#a7f3d0;">Course Access</p>
           <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;">Your ${licenses.length} License Keys</h1>
         </td></tr>
         <tr><td style="background:#ffffff;padding:36px 40px;">
@@ -274,7 +298,7 @@ export async function sendLicenseBundleEmail({
           ${sections}
           <p style="margin:8px 0 0;font-size:13px;color:#6b7280;line-height:1.6;">
             To activate a key: open its link (or go to <a href="${esc(`${APP_URL}/redeem`)}" style="color:#1D375F;">${esc(`${APP_URL}/redeem`)}</a> and type it in),
-            then create an account or sign in. Each key can be used once.
+            then create an account, or sign in if you already have one. Each key can be used once.
           </p>
         </td></tr>
         <tr><td style="background:#f9fafb;border-radius:0 0 12px 12px;padding:20px 40px;text-align:center;border-top:1px solid #e5e7eb;">
@@ -298,12 +322,15 @@ export async function sendLicenseBundleEmail({
 
 export async function sendAdminOrderNotification({
   orderId,
+  orderName,
   customerEmail,
   licenses,
   unmapped = [],
   note,
 }: {
   orderId: string;
+  /** Shopify order number ("#1001"), when the payload had one. */
+  orderName?: string | null;
   customerEmail: string;
   licenses: Array<{ key: string; courseTitle: string }>;
   /** Line items whose SKU did not match a course — the buyer paid but got nothing. */
@@ -344,11 +371,11 @@ export async function sendAdminOrderNotification({
   return send("admin order notification", {
     from: FROM,
     to: [adminEmail],
-    subject: `New order: ${licenses.length} license(s) generated — Order #${orderId}`,
+    subject: `New order: ${licenses.length} license(s) generated — Order ${orderName || `#${orderId}`}`,
     html: `
       <div style="font-family:Inter,sans-serif;max-width:600px;margin:0 auto;padding:32px 24px;background:#fff;border-radius:12px;border:1px solid #e5e7eb;">
         <h1 style="font-size:20px;font-weight:700;color:#111827;margin-bottom:4px;">New Shopify Order</h1>
-        <p style="color:#6b7280;margin-bottom:20px;">Order <strong>#${esc(orderId)}</strong> from <strong>${esc(customerEmail || "(no email on the order)")}</strong></p>
+        <p style="color:#6b7280;margin-bottom:20px;">Order <strong>${esc(orderLabel(orderId, orderName))}</strong> from <strong>${esc(customerEmail || "(no email on the order)")}</strong></p>
         ${noteBlock}
         ${unmappedBlock}
         <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
@@ -371,11 +398,14 @@ export async function sendAdminOrderNotification({
 
 export async function sendAdminRefundNotification({
   orderId,
+  orderName,
   kind,
   revoked,
   note,
 }: {
   orderId: string;
+  /** Shopify order number ("#1001"), when known. */
+  orderName?: string | null;
   kind: "refund" | "cancel";
   /** Keys this event revoked. `holderEmail` is set when a learner had already redeemed it. */
   revoked: Array<{ key: string; courseTitle: string; wasActive: boolean; holderEmail?: string | null }>;
@@ -427,11 +457,11 @@ export async function sendAdminRefundNotification({
   return send("admin refund notification", {
     from: FROM,
     to: [adminEmail],
-    subject: `${what}: ${revoked.length} license(s) revoked — Order #${orderId}`,
+    subject: `${what}: ${revoked.length} license(s) revoked — Order ${orderName || `#${orderId}`}`,
     html: `
       <div style="font-family:Inter,sans-serif;max-width:640px;margin:0 auto;padding:32px 24px;background:#fff;border-radius:12px;border:1px solid #e5e7eb;">
         <h1 style="font-size:20px;font-weight:700;color:#111827;margin-bottom:4px;">Shopify ${what}</h1>
-        <p style="color:#6b7280;margin-bottom:20px;">Order <strong>#${esc(orderId)}</strong> — ${revoked.length} key(s) revoked automatically.</p>
+        <p style="color:#6b7280;margin-bottom:20px;">Order <strong>${esc(orderLabel(orderId, orderName))}</strong> — ${revoked.length} key(s) revoked automatically.</p>
         ${noteBlock}
         ${table}
         <p style="color:#6b7280;font-size:13px;margin-bottom:20px;">A revoked key can be restored from the License Keys page if this was a mistake.</p>

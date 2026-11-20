@@ -59,7 +59,7 @@ model User {
   isBanned       Boolean          @default(false)
   isSuspended    Boolean          @default(false)
   banReason      String?
-  maxDevices     Int              @default(1)
+  maxDevices     Int              @default(2) // concurrent sessions; 0 = unlimited. Two devices per learner (client requirement).
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
   licenses       License[]
@@ -244,6 +244,18 @@ model ShopifyOrder {
   // delivery order, so a late or retried orders/paid must find out the order
   // was cancelled even when no key existed yet at cancel time. Never cleared.
   cancelledAt DateTime?
+  // Shopify's order number as staff and customers see it ("#1001"), and the
+  // buyer's email. Null on orders processed before these were recorded.
+  orderName     String?
+  customerEmail String?
+  // Paid line items that matched no course (wrong SKU / product id): the
+  // buyer paid for them but got no key. unmappedAt is set while that is
+  // outstanding and cleared when a later delivery maps them or an admin
+  // marks the order resolved on the License Keys page.
+  unmappedItems Json?
+  unmappedAt    DateTime?
+
+  @@index([unmappedAt])
 }
 
 // One row per processed Shopify refund (refunds/create). Inserted in the same
@@ -446,6 +458,9 @@ model License {
   userId         String?
   user           User?         @relation(fields: [userId], references: [id])
   shopifyOrderId String?
+  // The order number staff see in Shopify ("#1001"); shopifyOrderId is
+  // Shopify's internal id. Null on admin keys and keys minted before this.
+  shopifyOrderName String?
   // Shopify line item the key was minted for. Lets a refund revoke exactly the
   // seats that were returned, and lets a re-sent orders/paid webhook top up a
   // line item whose key was deleted. Null on admin keys and on keys minted
@@ -470,6 +485,7 @@ model License {
   @@index([userId, courseId, status])
   @@index([courseId])
   @@index([shopifyOrderId])
+  @@index([shopifyOrderName])
 }
 
 // ─── QuizAttempt ──────────────────────────────────────────────────────────────

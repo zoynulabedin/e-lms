@@ -298,7 +298,7 @@ Sidebar width remains `w-[360px]` so screen real estate is preserved.
 | `isBanned` | `Boolean @default(false)` | Hard block |
 | `isSuspended` | `Boolean @default(false)` | Soft block (temporary) |
 | `banReason` | `String?` | Optional |
-| `maxDevices` | `Int @default(1)` | Concurrent session limit (0 = unlimited) |
+| `maxDevices` | `Int @default(2)` | Concurrent session limit (0 = unlimited); two devices per learner by default |
 | `createdAt`, `updatedAt` | `DateTime` | Timestamps |
 
 Relations: `licenses`, `progress`, `lessonProgress`, `enrollments`, `passwordResets`, `sessions`.
@@ -612,10 +612,11 @@ Login → createSession() →
 | `deriveSecret(label)` | Purpose-specific HMAC key derived from `JWT_SECRET` (video-proxy URL signing) |
 | `generateLicenseKey()` | `LIC-XXXX-XXXX-XXXX` from `LICENSE_KEY_ALPHABET` (31 symbols, no 0/O/1/I/L) |
 
-### 8.7 Single-Device Enforcement
+### 8.7 Device-Limit Enforcement
 
 `User.maxDevices` controls concurrency:
-- `maxDevices = 1` (default) — login invalidates the previous session
+- `maxDevices = 2` (default, since 2026-11) — up to two live sessions
+- `maxDevices = 1` — login invalidates the previous session
 - `maxDevices = N` — up to N live sessions; on overflow the least recently used one is signed out (sessions from the same device first, when the IP is trusted)
 - `maxDevices = 0` — unlimited (skip enforcement)
 

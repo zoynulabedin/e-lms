@@ -148,6 +148,10 @@ try {
   await tryQuery('column License."revokedReason"', 'SELECT "revokedReason" FROM "License" LIMIT 1');
   await tryQuery('column ShopifyOrder."cancelledAt"', 'SELECT "cancelledAt" FROM "ShopifyOrder" LIMIT 1');
   await tryQuery('column ShopifyRefund."lineItems"', 'SELECT "lineItems" FROM "ShopifyRefund" LIMIT 1');
+  // 2026-11 order reconciliation (migration 20261120110000_shopify_order_tracking)
+  await tryQuery('column License."shopifyOrderName"', 'SELECT "shopifyOrderName" FROM "License" LIMIT 1');
+  await tryQuery('column ShopifyOrder."orderName"', 'SELECT "orderName" FROM "ShopifyOrder" LIMIT 1');
+  await tryQuery('column ShopifyOrder."unmappedAt"', 'SELECT "unmappedAt", "unmappedItems", "customerEmail" FROM "ShopifyOrder" LIMIT 1');
   // Without these the Resources page and the certificate designer degrade to
   // empty rather than erroring, which looks like "the feature does nothing".
   await tryQuery('table "CourseResource"', 'SELECT 1 FROM "CourseResource" LIMIT 1');
@@ -234,7 +238,8 @@ try {
   for (const [k, required] of [
     ["DATABASE_URL", true],
     ["JWT_SECRET", true],
-    ["APP_URL", false],
+    // Required: in production the app refuses to start without it (emails link to it).
+    ["APP_URL", true],
     ["RESEND_API_KEY", false],
     ["CLOUDINARY_CLOUD_NAME", false],
     ["SHOPIFY_WEBHOOK_SECRET", false],
@@ -257,6 +262,14 @@ try {
     `  - TRUST_PROXY ${process.env.TRUST_PROXY ? `is "${process.env.TRUST_PROXY}", which is ignored` : "not set"}` +
       " (recommended on Plesk: TRUST_PROXY=true turns on the per-IP rate limits)",
   );
+  if (process.env.APP_URL && !/^https?:\/\/[^\s/]+/i.test(process.env.APP_URL.trim())) {
+    problems++;
+    bad(`APP_URL "${process.env.APP_URL}" is not an http(s) URL — the app refuses to start in production`);
+  }
+  // Staging only. On the live store it would let a test payment unlock a course for free.
+  if (process.env.SHOPIFY_ALLOW_TEST_ORDERS === "true") {
+    warn("SHOPIFY_ALLOW_TEST_ORDERS=true — Shopify test orders issue REAL keys. Fine on a staging server; remove it in production.");
+  }
   if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 16) {
     problems++;
     bad("JWT_SECRET is shorter than 16 characters — the app refuses to start in production");

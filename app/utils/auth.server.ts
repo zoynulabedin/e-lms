@@ -189,7 +189,7 @@ export async function createSession(
     const rows = await tx.$queryRaw<Array<{ maxDevices: number }>>`
       SELECT "maxDevices" FROM "User" WHERE id = ${userId} FOR UPDATE
     `;
-    const limit = rows[0]?.maxDevices ?? 1;
+    const limit = rows[0]?.maxDevices ?? 2; // schema default: two devices
 
     if (limit > 0) {
       // Oldest sessions first; keep (limit - 1) so the new one fits. With a

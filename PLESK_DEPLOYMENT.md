@@ -128,7 +128,7 @@ Under the **Custom environment variables** section on the Plesk Node.js page, ma
 
 Crucial variables include:
 - `NODE_ENV`: `production`
-- `APP_URL`: Your actual live URL (e.g., `https://lms.instructionalgraphics.org`)
+- `APP_URL`: Your actual live URL (e.g., `https://lms.instructionalgraphics.org`). **Required** — since 2026-11 the app refuses to start in production without it, because activation and password-reset emails are built from it.
 - `DATABASE_URL`: Your production database URL 
 - `JWT_SECRET`: A secure, random string (≥ 16 chars — the app refuses to start in production without it)
 - `TRUST_PROXY`: `true` — exactly that lowercase word (Plesk's nginx/Apache sit in front of Node). It enables per-IP rate limiting on login/register/redeem, the real client IP on the Sessions page and same-device-first sign-out. `1`, `TRUE` or `yes` are ignored; with more than one proxy in front use `TRUST_PROXY_HOPS=<n>` instead. When it is missing or not understood the app logs `[rate-limit] TRUST_PROXY ...` once per start — on the first sign-in / register / redeem request, not at boot — and `npm run doctor` reports it any time.
@@ -207,6 +207,8 @@ Register the **same URL** — `https://lms.instructionalgraphics.org/shopify/web
 | `orders/cancelled` (Order cancellation) | Revokes every key of the order and emails `ADMIN_EMAIL` |
 
 All three are signed with the store's webhook secret shown on that page (`SHOPIFY_WEBHOOK_SECRET`). A revoked key can be restored from the License Keys page. Before 2026-11 only `orders/paid` was used — add the other two once, **after** the new build is running (Restart App done, `npm run doctor` clean): the old build answers those topics with 200 "ignored", and Shopify never re-sends a delivery that got a 2xx.
+
+**Test orders:** Shopify test orders (Bogus Gateway / Shopify Payments test mode — no money taken) issue **no** keys; the admin gets an email saying so. For manual end-to-end tests on a **staging** copy, set `SHOPIFY_ALLOW_TEST_ORDERS=true` there. Never set it on the live server.
 
 A refund that returns the course items in full revokes their keys. A *partial-amount* refund (items ticked, but less money returned than they cost — e.g. a goodwill refund) revokes nothing; the admin email says so, and the key can be revoked by hand.
 

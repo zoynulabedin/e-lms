@@ -1,6 +1,7 @@
 import { useLoaderData, Form, Link, useFetcher } from "react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { data } from "react-router";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../utils/db.server";
 import { requireAdmin } from "../utils/auth.server";
 import { generateLicenseKey } from "../utils/auth.server";
@@ -109,13 +110,16 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   // A search narrows the status filter, never replaces it. Keys are matched
   // both loosely and in canonical form, so "lic abcd efgh jkmn" finds
-  // LIC-ABCD-EFGH-JKMN. The order id is the "#..." the admin emails quote.
+  // LIC-ABCD-EFGH-JKMN. An order is found by the number staff see in Shopify
+  // ("#1001", with or without the "#") or by Shopify's internal order id.
+  const orderQ = q.replace(/^#/, "");
   const search = q
     ? {
         OR: [
           { key: { contains: q, mode: "insensitive" as const } },
           { key: normalizeLicenseKey(q) },
-          { shopifyOrderId: q.replace(/^#/, "") },
+          { shopifyOrderId: orderQ },
+          { shopifyOrderName: { in: [q, orderQ, `#${orderQ}`], mode: "insensitive" as const } },
           { customerEmail: { contains: q, mode: "insensitive" as const } },
           { user: { email: { contains: q, mode: "insensitive" as const } } },
           { user: { name: { contains: q, mode: "insensitive" as const } } },
@@ -133,7 +137,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const totalPages = Math.max(1, Math.ceil(totalCount / PER_PAGE));
   const page = Math.min(requestedPage, totalPages);
 
-  const [licenses, courses, unusedGroups, keptGroups] = await Promise.all([
+  const [licenses, courses, unusedGroups, keptGroups, attentionOrders] = await Promise.all([
     prisma.license.findMany({
       where,
       include: {
@@ -160,6 +164,14 @@ export async function loader({ request }: LoaderFunctionArgs) {
       where: ISSUED_BUT_UNREDEEMED,
       _count: { _all: true },
     }),
+    // Paid Shopify orders with line items that matched no course: the buyer
+    // paid and got no key for them. Listed until resolved (or cancelled).
+    prisma.shopifyOrder.findMany({
+      where: { unmappedAt: { not: null }, cancelledAt: null },
+      orderBy: { unmappedAt: "desc" },
+      take: 25,
+      select: { orderId: true, orderName: true, customerEmail: true, unmappedItems: true, unmappedAt: true },
+    }),
   ]);
 
   const unusedByCourse: Record<string, number> = {};
@@ -170,6 +182,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
   return {
     licenses, courses, statusFilter, q, page, totalPages, totalCount,
     unusedByCourse, keptByCourse,
+    attentionOrders: attentionOrders.map((o) => ({
+      ...o,
+      unmappedItems: Array.isArray(o.unmappedItems) ? o.unmappedItems.map(String) : [],
+    })),
   };
 }
 
@@ -647,6 +663,22 @@ export async function action({ request }: ActionFunctionArgs) {
     });
   }
 
+  // The admin has dealt with an order's unissued items by hand (issued the
+  // missing keys, refunded, or confirmed nothing is owed): stop listing it.
+  if (intent === "resolve_unmapped") {
+    const orderId = String(formData.get("orderId") || "");
+    if (!orderId) return data({ error: "Missing order id." }, { status: 400 });
+    const r = await prisma.shopifyOrder.updateMany({
+      where: { orderId, unmappedAt: { not: null } },
+      data: { unmappedItems: Prisma.DbNull, unmappedAt: null },
+    });
+    if (r.count === 0) {
+      return data({ error: "That order no longer needs attention." }, { status: 404 });
+    }
+    console.warn(`[licenses] ${admin.email} marked Shopify order ${orderId} resolved (unissued items handled by hand)`);
+    return data({ success: true, message: "Order marked as resolved." });
+  }
+
   if (intent === "generate_bulk") {
     const rawCount = formData.get("count") as string;
     const courseId = (formData.get("courseId") as string)?.trim();
@@ -732,7 +764,11 @@ function DeleteLicenseDialog({
       <ShoppingBag size={14} className="shrink-0 mt-0.5" />
       <span>
         This key came from Shopify order{" "}
-        <strong>{license.shopifyOrderId}</strong>.{" "}
+        <strong>
+          {license.shopifyOrderName
+            ? `${license.shopifyOrderName} (id ${license.shopifyOrderId})`
+            : license.shopifyOrderId}
+        </strong>.{" "}
         {license.status === "REVOKED" && isMoneyRevocation(license.revokedReason)
           ? "This seat was refunded or cancelled in Shopify, so re-sending the webhook will not issue a replacement key."
           : license.shopifyLineItemId
@@ -1277,7 +1313,7 @@ function ResendEmailButton({ licenseId }: { licenseId: string }) {
 export default function LicenseManagement() {
   const {
     licenses, courses, statusFilter, q, page, totalPages, totalCount,
-    unusedByCourse, keptByCourse,
+    unusedByCourse, keptByCourse, attentionOrders,
   } = useLoaderData<typeof loader>();
   const [isModalOpen, setIsModalOpen] = useState(false);
   /** The licence the admin is about to delete, or null when the dialog is shut. */
@@ -1385,6 +1421,68 @@ export default function LicenseManagement() {
         </div>
       )}
 
+      {/* Paid Shopify orders with items that issued no key. Before, these
+          existed only in the admin email and the server log. */}
+      {attentionOrders.length > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <div className="flex items-start gap-2 text-amber-900">
+            <AlertCircle size={16} className="shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold">
+                Paid orders with items that issued no key ({attentionOrders.length})
+              </p>
+              <p className="text-xs text-amber-800 mt-0.5">
+                These line items matched no course: check the variant SKU or the Shopify Product ID in the
+                course builder. Issue the missing keys with Generate Bulk Keys or Grant Access, then mark the
+                order resolved.
+              </p>
+              <ul className="mt-3 space-y-2">
+                {attentionOrders.map((o) => (
+                  <li
+                    key={o.orderId}
+                    className="rounded-md bg-white border border-amber-200 px-3 py-2 text-xs flex flex-wrap items-start justify-between gap-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-semibold text-gray-900">
+                        Order {o.orderName ?? `#${o.orderId}`}{" "}
+                        <span className="font-normal text-gray-500">
+                          · {o.customerEmail || "no email on the order"}
+                          {o.unmappedAt ? ` · ${new Date(o.unmappedAt).toLocaleDateString()}` : ""}
+                        </span>
+                      </p>
+                      {o.unmappedItems.map((item, i) => (
+                        <p key={i} className="text-gray-600 font-mono break-all mt-0.5">
+                          {item}
+                        </p>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Link
+                        to={`/licenses?q=${encodeURIComponent(o.orderName ?? o.orderId)}`}
+                        className="text-brand-navy hover:underline"
+                      >
+                        Keys for this order
+                      </Link>
+                      <fetcher.Form method="post">
+                        <input type="hidden" name="intent" value="resolve_unmapped" />
+                        <input type="hidden" name="orderId" value={o.orderId} />
+                        <button
+                          type="submit"
+                          disabled={isSubmitting}
+                          className="border border-amber-300 text-amber-900 px-2.5 py-1 rounded-md font-medium hover:bg-amber-100 disabled:opacity-50"
+                        >
+                          Mark resolved
+                        </button>
+                      </fetcher.Form>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Filter & Table */}
       <div className="bg-white shadow-sm border border-gray-200 rounded-lg">
         <div className="p-4 border-b border-gray-200 flex flex-wrap gap-4 items-center justify-between">
@@ -1399,7 +1497,7 @@ export default function LicenseManagement() {
                 type="text"
                 defaultValue={q}
                 aria-label="Search licenses"
-                placeholder="Search key, email or name…"
+                placeholder="Key, email, name or order #…"
                 className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-navy focus:border-transparent"
               />
             </div>
@@ -1443,6 +1541,7 @@ export default function LicenseManagement() {
                   "License Key",
                   "Course",
                   "Customer / User",
+                  "Order",
                   "Status",
                   "Created",
                   "Actions",
@@ -1460,7 +1559,7 @@ export default function LicenseManagement() {
             <tbody className="bg-white divide-y divide-gray-200 text-sm">
               {licenses.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center">
+                  <td colSpan={7} className="px-6 py-12 text-center">
                     <div className="flex flex-col items-center gap-2 text-gray-400">
                       <Key size={32} className="opacity-30" />
                       <p className="font-medium text-gray-500">
@@ -1512,6 +1611,21 @@ export default function LicenseManagement() {
                           ? license.user.email
                           : license.customerEmail}
                       </p>
+                    </td>
+                    {/* The Shopify order the key was bought with: its number as
+                        staff see it in Shopify; a click lists every key from it. */}
+                    <td className="px-6 py-3 whitespace-nowrap text-xs">
+                      {license.shopifyOrderId ? (
+                        <Link
+                          to={`/licenses?q=${encodeURIComponent(license.shopifyOrderName ?? license.shopifyOrderId)}`}
+                          title={`Shopify order id ${license.shopifyOrderId} - show every key from this order`}
+                          className="text-brand-navy hover:underline"
+                        >
+                          {license.shopifyOrderName ?? `#${license.shopifyOrderId}`}
+                        </Link>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
                     </td>
                     <td className="px-6 py-3 whitespace-nowrap">
                       <span

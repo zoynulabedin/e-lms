@@ -36,6 +36,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     "User Name",
     "User Email",
     "Shopify Order",
+    "Shopify Order Number",
     "Amount Paid",
     "Created At",
     "Redeemed At",
@@ -53,6 +54,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       l.user?.name || "",
       l.user?.email || "",
       l.shopifyOrderId || "",
+      l.shopifyOrderName || "", // "#1001" as staff see it in Shopify; blank on older keys
       l.amountPaid != null ? l.amountPaid.toFixed(2) : "", // per key, shop currency; blank = not recorded
       new Date(l.createdAt).toISOString(),
       l.redeemedAt ? new Date(l.redeemedAt).toISOString() : "",
