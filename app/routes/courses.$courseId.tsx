@@ -11,6 +11,7 @@ import { recomputeCourseProgressForAllUsers } from "../utils/progress.server";
 import { normalizeModuleOrder } from "../utils/curriculum.server";
 import { normalizeShopifyProductId, shopifyProductIdVariants } from "../utils/shopify-product";
 import { MAX_DOCUMENT_BYTES, MAX_IMAGE_BYTES, formatLimit } from "../utils/upload-limits";
+import { showToast } from "../components/Toast";
 import { useState, useRef, useEffect } from "react";
 import {
   AlertCircle,
@@ -41,6 +42,46 @@ import {
   Globe,
 } from "lucide-react";
 
+// ── Uploads ───────────────────────────────────────────────────────────────────
+
+type UploadResponse = {
+  url: string;
+  fileName?: string;
+  fileType?: string | null;
+  fileSize?: number;
+};
+
+/**
+ * POSTs a file to /upload. Returns the stored file, or throws with a reason
+ * the admin can act on.
+ */
+async function uploadFile(file: File, kind?: "document"): Promise<UploadResponse> {
+  const fd = new FormData();
+  fd.append("file", file);
+  if (kind) fd.append("kind", kind);
+
+  let res: Response;
+  try {
+    res = await fetch("/upload", { method: "POST", body: fd });
+  } catch {
+    throw new Error("Network error. Check your connection and try again.");
+  }
+  const json = await res.json().catch(() => null);
+  if (json?.error) throw new Error(json.error);
+  if (!res.ok) throw new Error(`The server answered HTTP ${res.status}.`);
+  // An expired session redirects to the sign-in page, which arrives here as a
+  // 200 HTML page. Without this check it counted as a successful upload with
+  // no URL.
+  if (!json?.url) {
+    throw new Error("Your session may have expired. Reload the page and sign in again.");
+  }
+  return json as UploadResponse;
+}
+
+function uploadFailedMessage(reason: string) {
+  return /^upload failed/i.test(reason) ? reason : `Upload failed: ${reason}`;
+}
+
 // ── ImageUpload ───────────────────────────────────────────────────────────────
 
 function ImageUpload({
@@ -65,20 +106,21 @@ function ImageUpload({
     // fires onChange.
     input.value = "";
     if (file.size > MAX_IMAGE_BYTES) {
-      setError(`File too large. Maximum size is ${formatLimit(MAX_IMAGE_BYTES)}.`);
+      const reason = `File too large (${formatBytes(file.size)}). Maximum is ${formatLimit(MAX_IMAGE_BYTES)}.`;
+      setError(reason);
+      showToast(uploadFailedMessage(reason), "error");
       return;
     }
     setUploading(true);
     setError(null);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch("/upload", { method: "POST", body: fd });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || json.error) throw new Error(json.error ?? `Upload failed (HTTP ${res.status})`);
+      const json = await uploadFile(file);
       setUrl(json.url);
+      showToast(`"${file.name}" uploaded successfully.`);
     } catch (err: any) {
-      setError(err.message ?? "Upload failed");
+      const reason = err?.message || "Upload failed.";
+      setError(reason);
+      showToast(uploadFailedMessage(reason), "error");
     } finally {
       setUploading(false);
     }
@@ -120,7 +162,8 @@ function ImageUpload({
           disabled={uploading}
           className="w-full flex items-center justify-center gap-1.5 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-60"
         >
-          <Image size={13} /> Choose file
+          <Image size={13} /> Choose file{" "}
+          <span className="text-gray-400">(max {formatLimit(MAX_IMAGE_BYTES)})</span>
         </button>
       )}
       <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/avif" className="hidden" onChange={handleFile} />
@@ -2790,27 +2833,26 @@ function ResourceForm({
     // fires onChange.
     input.value = "";
     if (file.size > MAX_DOCUMENT_BYTES) {
-      setUploadError(
-        `File too large (${formatBytes(file.size)}). Maximum is ${formatLimit(MAX_DOCUMENT_BYTES)} — ` +
-          "compress or split it, or use External link.",
-      );
+      const reason =
+        `File too large (${formatBytes(file.size)}). Maximum is ${formatLimit(MAX_DOCUMENT_BYTES)}. ` +
+        "Compress or split it, or use External link.";
+      setUploadError(reason);
+      showToast(uploadFailedMessage(reason), "error");
       return;
     }
     setUploading(true);
     setUploadError(null);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("kind", "document");
-      const res = await fetch("/upload", { method: "POST", body: fd });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || json.error) throw new Error(json.error ?? `Upload failed (HTTP ${res.status})`);
+      const json = await uploadFile(file, "document");
       setUrl(json.url);
       setFileName(json.fileName ?? file.name);
       setFileType(json.fileType ?? file.type ?? "");
       setFileSize(json.fileSize ?? file.size);
+      showToast(`"${file.name}" uploaded successfully. Click Add resource to save it.`);
     } catch (err: any) {
-      setUploadError(err.message ?? "Upload failed");
+      const reason = err?.message || "Upload failed.";
+      setUploadError(reason);
+      showToast(uploadFailedMessage(reason), "error");
     } finally {
       setUploading(false);
     }
@@ -2852,7 +2894,10 @@ function ResourceForm({
 
       {kind === "FILE" ? (
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">File</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            File{" "}
+            <span className="font-normal text-gray-500">(max {formatLimit(MAX_DOCUMENT_BYTES)})</span>
+          </label>
           <div className="flex items-center gap-3">
             <label className="inline-flex items-center gap-2 text-sm border border-gray-300 bg-white hover:bg-gray-50 px-3 py-2 rounded-lg cursor-pointer transition-colors">
               {uploading ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
