@@ -10,6 +10,7 @@ import { isIconSet, iconSetImages } from "../utils/module-icons";
 import { recomputeCourseProgressForAllUsers } from "../utils/progress.server";
 import { normalizeModuleOrder } from "../utils/curriculum.server";
 import { normalizeShopifyProductId, shopifyProductIdVariants } from "../utils/shopify-product";
+import { MAX_DOCUMENT_BYTES, MAX_IMAGE_BYTES, formatLimit } from "../utils/upload-limits";
 import { useState, useRef, useEffect } from "react";
 import {
   AlertCircle,
@@ -57,16 +58,24 @@ function ImageUpload({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+    const input = e.target;
+    const file = input.files?.[0];
     if (!file) return;
+    // Clear the picker so choosing the same file again after an error still
+    // fires onChange.
+    input.value = "";
+    if (file.size > MAX_IMAGE_BYTES) {
+      setError(`File too large. Maximum size is ${formatLimit(MAX_IMAGE_BYTES)}.`);
+      return;
+    }
     setUploading(true);
     setError(null);
     try {
       const fd = new FormData();
       fd.append("file", file);
       const res = await fetch("/upload", { method: "POST", body: fd });
-      const json = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error ?? "Upload failed");
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.error) throw new Error(json.error ?? `Upload failed (HTTP ${res.status})`);
       setUrl(json.url);
     } catch (err: any) {
       setError(err.message ?? "Upload failed");
@@ -116,7 +125,7 @@ function ImageUpload({
       )}
       <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/avif" className="hidden" onChange={handleFile} />
       {error && <p className="text-xs text-red-500">{error}</p>}
-      <p className="text-[11px] text-gray-400">JPEG, PNG, GIF, WebP — max 10 MB</p>
+      <p className="text-[11px] text-gray-400">JPEG, PNG, GIF, WebP — max {formatLimit(MAX_IMAGE_BYTES)}</p>
     </div>
   );
 }
@@ -2725,8 +2734,19 @@ function ResourceForm({
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+    const input = e.target;
+    const file = input.files?.[0];
     if (!file) return;
+    // Clear the picker so choosing the same file again after an error still
+    // fires onChange.
+    input.value = "";
+    if (file.size > MAX_DOCUMENT_BYTES) {
+      setUploadError(
+        `File too large (${formatBytes(file.size)}). Maximum is ${formatLimit(MAX_DOCUMENT_BYTES)} — ` +
+          "compress or split it, or use External link.",
+      );
+      return;
+    }
     setUploading(true);
     setUploadError(null);
     try {
@@ -2734,8 +2754,8 @@ function ResourceForm({
       fd.append("file", file);
       fd.append("kind", "document");
       const res = await fetch("/upload", { method: "POST", body: fd });
-      const json = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error ?? "Upload failed");
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.error) throw new Error(json.error ?? `Upload failed (HTTP ${res.status})`);
       setUrl(json.url);
       setFileName(json.fileName ?? file.name);
       setFileType(json.fileType ?? file.type ?? "");
@@ -2804,7 +2824,7 @@ function ResourceForm({
             )}
           </div>
           <p className="text-[11px] text-gray-400 mt-1">
-            PDF, Word, Excel, PowerPoint, TXT, CSV, ZIP — up to 50 MB.
+            PDF, Word, Excel, PowerPoint, TXT, CSV, ZIP — up to {formatLimit(MAX_DOCUMENT_BYTES)}.
           </p>
           {uploadError && <p className="text-xs text-red-600 mt-1">{uploadError}</p>}
         </div>
