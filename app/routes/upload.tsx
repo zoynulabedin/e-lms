@@ -2,6 +2,7 @@ import type { ActionFunctionArgs } from "react-router";
 import { data } from "react-router";
 import { requireAdmin } from "../utils/auth.server";
 import { uploadToCloudinary, type UploadKind } from "../utils/cloudinary.server";
+import { MAX_DOCUMENT_BYTES, MAX_IMAGE_BYTES, formatLimit } from "../utils/upload-limits";
 
 /**
  * Admin file upload. Two modes, chosen with the `kind` field:
@@ -35,8 +36,42 @@ const DOCUMENT_TYPES = [
 // Some browsers send an empty or generic type; fall back to the extension.
 const DOCUMENT_EXTENSIONS = /\.(pdf|docx?|xlsx?|pptx?|txt|csv|zip|rtf)$/i;
 
-const MAX_IMAGE = 10 * 1024 * 1024; // 10 MB
-const MAX_DOCUMENT = 50 * 1024 * 1024; // 50 MB
+/**
+ * Turns a Cloudinary upload error into something the admin can act on.
+ * This route is admin-only, so passing Cloudinary's own wording through is
+ * safe, and it is far more useful than a generic "check your settings" when
+ * the real cause is a plan limit or a file Cloudinary cannot read.
+ */
+function describeUploadError(e: unknown): { status: number; error: string } {
+  const err = e as { message?: string; http_code?: number } | undefined;
+  const message = String(err?.message ?? "").trim();
+  const code = err?.http_code;
+
+  if (/file size too large/i.test(message)) {
+    // e.g. "File size too large. Got 11534345. Maximum is 10485760."
+    const max = Number(message.match(/maximum is (\d+)/i)?.[1]);
+    const limit = Number.isFinite(max) && max > 0 ? ` (${formatLimit(max)})` : "";
+    return {
+      status: 413,
+      error:
+        `File too large for the Cloudinary plan${limit}. ` +
+        "Compress it, split it, or add it as an External link.",
+    };
+  }
+  if (
+    code === 401 ||
+    /api_key|api key|signature|cloud_name|cloud name/i.test(message)
+  ) {
+    return {
+      status: 502,
+      error: `Cloudinary rejected the credentials (${message || "unauthorised"}). Check the CLOUDINARY_* settings.`,
+    };
+  }
+  return {
+    status: 502,
+    error: message ? `Upload failed: ${message}` : "Upload failed. Please try again.",
+  };
+}
 
 export async function action({ request }: ActionFunctionArgs) {
   await requireAdmin(request);
@@ -59,8 +94,11 @@ export async function action({ request }: ActionFunctionArgs) {
         { status: 400 },
       );
     }
-    if (file.size > MAX_DOCUMENT) {
-      return data({ error: "File too large. Maximum size is 50 MB." }, { status: 400 });
+    if (file.size > MAX_DOCUMENT_BYTES) {
+      return data(
+        { error: `File too large. Maximum size is ${formatLimit(MAX_DOCUMENT_BYTES)}.` },
+        { status: 413 },
+      );
     }
     kind = "raw";
   } else {
@@ -70,8 +108,11 @@ export async function action({ request }: ActionFunctionArgs) {
         { status: 400 },
       );
     }
-    if (file.size > MAX_IMAGE) {
-      return data({ error: "File too large. Maximum size is 10 MB." }, { status: 400 });
+    if (file.size > MAX_IMAGE_BYTES) {
+      return data(
+        { error: `File too large. Maximum size is ${formatLimit(MAX_IMAGE_BYTES)}.` },
+        { status: 413 },
+      );
     }
     kind = "image";
   }
@@ -90,9 +131,7 @@ export async function action({ request }: ActionFunctionArgs) {
     });
   } catch (e) {
     console.error("[upload] Cloudinary upload failed:", e);
-    return data(
-      { error: "Upload failed. Check the CLOUDINARY_* settings and try again." },
-      { status: 502 },
-    );
+    const { status, error } = describeUploadError(e);
+    return data({ error }, { status });
   }
 }
