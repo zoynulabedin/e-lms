@@ -125,7 +125,7 @@ export default function Settings() {
           {actionData && "error" in actionData && actionData.error && <p className="text-red-700">{actionData.error}</p>}
           <Form method="post" className="flex flex-wrap items-center gap-2">
             <input type="hidden" name="intent" value="mfa_codes" />
-            <input name="code" required inputMode="numeric" maxLength={6} placeholder="Code from your app" aria-label="Code from your authenticator app" className="w-44 border border-gray-300 rounded-md px-3 py-1.5" />
+            <input name="code" required inputMode="numeric" maxLength={6} placeholder="Google Authenticator code" aria-label="Google Authenticator code" className="w-44 border border-gray-300 rounded-md px-3 py-1.5" />
             <button type="submit" className="bg-brand-navy text-white px-4 py-1.5 rounded-md font-medium hover:bg-brand-navy-dark">Create new recovery codes</button>
           </Form>
         </div>

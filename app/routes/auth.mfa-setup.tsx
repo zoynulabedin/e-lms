@@ -164,9 +164,9 @@ export default function MfaSetup() {
           ) : (
             <>
               <ol className="text-sm space-y-1 list-decimal pl-5 text-slate-300">
-                <li>Install an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password…).</li>
-                <li>Scan this QR code with it, or type the key below.</li>
-                <li>Enter the 6-digit code the app shows.</li>
+                <li>Install Google Authenticator on your phone (or another authenticator app, such as Microsoft Authenticator or 1Password).</li>
+                <li>In the app, tap + and scan this QR code, or type the key below.</li>
+                <li>Enter the 6-digit Google Authenticator code the app shows for Teach Me Like a Tot.</li>
               </ol>
               <div className="flex flex-col items-center gap-3">
                 <div className="bg-white p-2 rounded-lg w-[200px] h-[200px]" aria-label="QR code for your authenticator app" dangerouslySetInnerHTML={{ __html: qr }} />
@@ -183,7 +183,7 @@ export default function MfaSetup() {
                   inputMode="numeric"
                   maxLength={6}
                   placeholder="123456"
-                  aria-label="6-digit code"
+                  aria-label="6-digit Google Authenticator code"
                   className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-white text-center text-xl tracking-[0.4em] placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-mustard"
                 />
                 <button type="submit" disabled={busy} className="w-full bg-brand-mustard hover:bg-brand-mustard/90 text-brand-navy-deeper font-semibold py-2.5 rounded-lg disabled:opacity-60">

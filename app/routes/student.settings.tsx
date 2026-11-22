@@ -509,7 +509,7 @@ function TwoStepCard({ enabled, unusedRecovery }: { enabled: boolean; unusedReco
 
         {!isOn && setup && (
           <div className="space-y-3">
-            <p className="text-sm text-brand-navy/80">Scan this with your authenticator app, or type the key, then enter the code it shows.</p>
+            <p className="text-sm text-brand-navy/80">Scan this with Google Authenticator (or another authenticator app), or type the key, then enter the 6-digit code it shows.</p>
             <div className="flex flex-wrap items-center gap-4">
               <div className="bg-white border border-brand-beige-dark p-2 rounded-lg w-[200px] h-[200px]" aria-label="QR code for your authenticator app" dangerouslySetInnerHTML={{ __html: setup.qr ?? "" }} />
               <p className="text-xs text-brand-navy/60">Key:<br /><span className="font-mono text-brand-navy select-all">{setup.manualKey}</span></p>
@@ -531,7 +531,7 @@ function TwoStepCard({ enabled, unusedRecovery }: { enabled: boolean; unusedReco
               <input type="hidden" name="intent" value="mfa_codes" />
               <label className={labelCls}>
                 New recovery codes
-                <input name="code" required inputMode="numeric" maxLength={6} placeholder="Code from the app" className={inputCls} />
+                <input name="code" required inputMode="numeric" maxLength={6} placeholder="Google Authenticator code" className={inputCls} />
               </label>
               <button type="submit" disabled={busy} className={buttonCls}>Create new codes</button>
             </fetcher.Form>
@@ -541,7 +541,7 @@ function TwoStepCard({ enabled, unusedRecovery }: { enabled: boolean; unusedReco
                 Turn off
                 <input name="password" type="password" required placeholder="Your password" autoComplete="current-password" className={inputCls} />
               </label>
-              <input name="code" required inputMode="numeric" maxLength={6} placeholder="Code from the app" aria-label="Code from the app" className={inputCls} />
+              <input name="code" required inputMode="numeric" maxLength={6} placeholder="Google Authenticator code" aria-label="Google Authenticator code" className={inputCls} />
               <button type="submit" disabled={busy} className="inline-flex items-center gap-2 border border-red-300 text-red-700 hover:bg-red-50 text-sm font-semibold px-5 py-2.5 rounded-lg disabled:opacity-60">
                 Turn off two-step verification
               </button>

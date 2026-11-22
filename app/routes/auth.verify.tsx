@@ -80,7 +80,14 @@ export async function action({ request }: ActionFunctionArgs) {
   if (!ok) {
     recordFailure("mfa_verify", request, user.id);
     return data(
-      { error: intent === "recovery" ? "That recovery code is not valid or was already used." : "That code is not correct." },
+      {
+        error:
+          intent === "recovery"
+            ? "That recovery code is not valid or was already used."
+            : pending.purpose === "mfa"
+              ? "That Google Authenticator code is not correct. Enter the code the app shows right now (it changes every 30 seconds)."
+              : "That code is not correct.",
+      },
       { status: 400 },
     );
   }
@@ -121,7 +128,7 @@ export default function Verify() {
             {purpose === "mfa"
               ? useRecovery
                 ? "Enter one of your recovery codes. Each code works once."
-                : "Enter the 6-digit code from your authenticator app."
+                : "Open Google Authenticator (or the authenticator app you set up) and enter the 6-digit code shown for Teach Me Like a Tot."
               : `This device is new to your account. We emailed a 6-digit code to ${maskedEmail}.`}
           </p>
         </div>
@@ -160,7 +167,7 @@ export default function Verify() {
               <Form method="post" className="space-y-4">
                 <input type="hidden" name="intent" value={useRecovery ? "recovery" : "verify"} />
                 <label htmlFor="code" className="block text-sm font-medium text-slate-300">
-                  {useRecovery ? "Recovery code" : "Code"}
+                  {useRecovery ? "Recovery code" : purpose === "mfa" ? "Google Authenticator code" : "Code from your email"}
                 </label>
                 <input
                   id="code"
@@ -184,7 +191,7 @@ export default function Verify() {
               <div className="flex items-center justify-between text-xs">
                 {purpose === "mfa" ? (
                   <button type="button" onClick={() => setUseRecovery((v) => !v)} className="text-brand-mustard hover:underline">
-                    {useRecovery ? "Use my authenticator app" : "Lost your phone? Use a recovery code"}
+                    {useRecovery ? "Use my Google Authenticator code" : "Lost your phone? Use a recovery code"}
                   </button>
                 ) : (
                   <Form method="post">
