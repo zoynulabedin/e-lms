@@ -25,7 +25,14 @@ const buckets = new Map<string, Bucket>();
 
 export const LIMITS = {
   login: { ip: 40, subject: 10, windowMs: 15 * 60_000 },
-  register: { ip: 20, subject: 5, windowMs: 60 * 60_000 },
+  // Every sign-up form post, valid or not (10 per email: room for a few typos;
+  // the emails themselves are capped by register_email below).
+  register: { ip: 20, subject: 10, windowMs: 60 * 60_000 },
+  // Sign-up verification emails (first send + "send a new code"), by email:
+  // nobody can use the form to flood an inbox, or our sender reputation.
+  register_email: { ip: 15, subject: 4, windowMs: 60 * 60_000 },
+  // Wrong sign-up codes, by email: 5 lock that sign-up for 15 minutes.
+  register_verify: { ip: 40, subject: 5, windowMs: 15 * 60_000 },
   forgot_password: { ip: 15, subject: 3, windowMs: 60 * 60_000 },
   reset_password: { ip: 30, subject: 10, windowMs: 15 * 60_000 },
   redeem: { ip: 40, subject: 10, windowMs: 15 * 60_000 },

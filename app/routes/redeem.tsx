@@ -24,6 +24,7 @@ import {
 } from "../utils/sign-in.server";
 import { Key, CheckCircle2, AlertCircle, BookOpen, ShieldAlert, Info } from "lucide-react";
 import { rateLimitResponse, recordFailure } from "../utils/rate-limit.server";
+import { emailDomainError, emailFormatError, nameError, normalizeName, passwordError } from "../utils/registration.server";
 import { isPlaceholderEmail, normalizeLicenseKey } from "../utils/license";
 import {
   resolveLicenseKey,
@@ -237,10 +238,19 @@ export async function action({ request }: ActionFunctionArgs) {
     let user = await prisma.user.findUnique({ where: { email }, select: accountFields });
     const isNew = !user;
     if (!user) {
+      // A new account gets the same name / email / password checks as
+      // /auth/register. No emailed code here: the key itself proves a purchase.
+      const cleanName = normalizeName(name);
+      const problem =
+        nameError(cleanName) ??
+        emailFormatError(email) ??
+        passwordError(password, { email, name: cleanName }) ??
+        (await emailDomainError(email));
+      if (problem) return data({ error: problem }, { status: 400 });
       const passwordHash = await hashPassword(password);
       try {
         user = await prisma.user.create({
-          data: { name, email, passwordHash, role: "STUDENT" },
+          data: { name: cleanName, email, passwordHash, role: "STUDENT" },
           select: accountFields,
         });
       } catch (e: any) {

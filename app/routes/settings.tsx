@@ -260,6 +260,8 @@ SHOPIFY_STORE_DOMAIN=yourstore.myshopify.com
 SHOPIFY_ACCESS_TOKEN=shpat_...       # optional: order re-sync (read_orders scope)
 SHOPIFY_API_VERSION=2026-07          # optional: Admin API version for re-sync
 NEW_DEVICE_VERIFICATION=false        # optional: turn off emailed new-device codes
+TRUST_PROXY=true                     # behind Plesk/nginx: turns on per-IP rate limits
+TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY  # optional: Cloudflare bot check on sign-up
 SHOPIFY_ALLOW_TEST_ORDERS=true       # STAGING ONLY: test orders issue real keys
 CLOUDINARY_CLOUD_NAME=...
 CLOUDINARY_API_KEY=...

@@ -20,7 +20,8 @@ export function headers() {
     // clickjacking, HSTS pins HTTPS, nosniff stops MIME confusion.
     "Content-Security-Policy": [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+      // challenges.cloudflare.com: the Turnstile check on the sign-up form (only loaded when its keys are set).
+      "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://challenges.cloudflare.com",
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "img-src 'self' data: blob: https:",
       "media-src 'self' blob: https:",

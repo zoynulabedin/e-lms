@@ -735,6 +735,24 @@ export async function sendNewDeviceCodeEmail({ to, code }: { to: string; code: s
   });
 }
 
+/** The 6-digit code that confirms a new account's email address (no account exists until it is entered). */
+export async function sendRegistrationCodeEmail({ to, name, code }: { to: string; name: string; code: string }): Promise<EmailResult> {
+  return send("registration code email", {
+    from: FROM,
+    to: [to],
+    replyTo: REPLY_TO,
+    subject: `Your verification code: ${code}`,
+    html: card(
+      "Confirm Your Email",
+      `<p style="margin:0 0 12px;">Hi ${esc(name)}, thanks for signing up. Enter this code on the sign-up page to create your learning account:</p>
+       <div style="background:#f9fafb;border:2px dashed #d1d5db;border-radius:8px;padding:18px;text-align:center;margin:0 0 16px;">
+         <span style="font-family:monospace;font-size:30px;font-weight:700;letter-spacing:.3em;color:#1D375F;">${esc(code)}</span>
+       </div>
+       <p style="margin:0;font-size:13px;color:#6b7280;">The code expires in 15 minutes. If you didn't sign up, ignore this email - no account is created without the code.</p>`,
+    ),
+  });
+}
+
 /** A link that signs out every device on the account (when the device limit blocks a sign-in). */
 export async function sendReleaseDevicesEmail({ to, token }: { to: string; token: string }): Promise<EmailResult> {
   const url = `${APP_URL}/auth/release-devices?token=${encodeURIComponent(token)}`;

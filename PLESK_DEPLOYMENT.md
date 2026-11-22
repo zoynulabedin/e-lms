@@ -229,6 +229,16 @@ Each course is matched by variant SKU = the course ID, or by the numeric Shopify
 - **New-device check:** a learner signing in on a browser their account hasn't used gets a 6-digit code by email (needs `RESEND_API_KEY`; set `NEW_DEVICE_VERIFICATION=false` to switch it off).
 - **Device limit:** two devices per learner by default. A third sign-in is refused with a clear message and an "email me a link to sign out my other devices" button; admins can also end sessions on **Sessions** / **Users**.
 
+## Sign-up protection (2026-11)
+
+`/auth/register` only creates an account for a real person with a working inbox:
+
+- **Email code:** after the form, a 6-digit code is emailed (valid 15 minutes, 5 wrong tries per 15 minutes, "Send a new code" up to 4 emails an hour). The account is created only when the code is entered, so a fake or mistyped address never becomes an account. Needs `RESEND_API_KEY` — without it nobody can sign up.
+- **Valid details:** first and last name in letters (no digits, links or symbols; it is printed on certificates), a well-formed email whose domain has a mail server (DNS MX), no throwaway inboxes (mailinator, yopmail, temp-mail …), a "did you mean gmail.com?" check, and a password of 8+ characters with letters and numbers that is not a common one and doesn't contain the name or email. New accounts made on `/redeem` get the same checks (no email code there: the key proves the purchase).
+- **Bots:** a hidden honeypot field, a signed form token (a post that never loaded the page, or came back within 2 seconds, is refused) and the rate limits.
+- **`TRUST_PROXY=true` is required** for the per-IP limits (20 sign-ups and 15 code emails per IP per hour). Without it only the per-email limits apply, which a bot avoids by using a new address each time.
+- **Optional — Cloudflare Turnstile:** set `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` (Cloudflare dashboard → Turnstile → add the site's domain; free) and Restart App. The sign-up form then shows the check and refuses posts that fail it. Leave both unset to keep it off; setting only one keeps it off.
+
 ## Licence migration of 2026-11
 
 `prisma/migrations/20261119120000_license_line_items_refunds` adds nullable columns to `License` (`shopifyLineItemId`, `amountPaid`, `revokedAt`, `revokedReason`) and `ShopifyOrder` (`cancelledAt`), and the `ShopifyRefund` table. It is applied automatically by **Restart App** (`server.js` → `scripts/migrate.mjs`). Check with `npm run doctor` afterwards — the licence pages, the dashboard and the Shopify webhook need these columns.
