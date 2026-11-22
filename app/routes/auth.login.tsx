@@ -380,7 +380,9 @@ export default function Login() {
           aria-hidden
           viewBox="0 0 1526 165"
           preserveAspectRatio="none"
-          className="absolute bottom-full left-0 h-[62px] w-full sm:h-[110px] lg:h-[165px]"
+          // Decorative wave that rises above the footer over the bottom of the
+          // card: it must not swallow clicks on "Create an account".
+          className="pointer-events-none absolute bottom-full left-0 h-[62px] w-full sm:h-[110px] lg:h-[165px]"
         >
           <path d={`${CURVE} L1526,165 L0,165 Z`} fill={NAVY} />
           <path d={CURVE} fill="none" stroke={GOLD} strokeWidth="4" />
